@@ -12,7 +12,7 @@
 | Codex CLI   | stdio MCP                       | `codex exec --json`           | [Codex App / CLI](docs/agents/codex.md)   |
 | Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
 
-接入文档开头有可直接复制给 agent 的安装提示词。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。CLI runner 每次调度创建新的原生会话，托管执行支持 Linux/macOS。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+接入文档开头有可直接复制给 agent 的安装提示词：将整段发给对应 agent 即可，无需预先填写参数；agent 会检查本机环境并向你询问缺少的配置，再引导完成接入。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。CLI runner 每次调度创建新的原生会话，托管执行支持 Linux/macOS。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。目前尚未推送及发布到 PyPI；文档中的远程安装命令待发布后使用，也可先使用可信本地 checkout。
 

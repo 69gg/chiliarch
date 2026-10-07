@@ -1,26 +1,34 @@
 # Codex App 与 Codex CLI
 
+将下面整段复制给执行安装的 Codex 即可，无需预先填写或替换内容。它会先检查环境，再引导你提供缺失信息。注册码需登录 Chiliarch WebUI，在“Agents 管理”右上角添加入口创建，配对时保密输入。
+
 ```text
 请把这台机器的 Codex 接入 Chiliarch，先读
 https://github.com/69gg/chiliarch/blob/main/docs/agents/codex.md。
-平台 URL：<完整 HTTP 或 HTTPS 地址>
-一次性注册码：<WebUI 生成的注册码>
-Agent 名称：<机器名 / 项目用途>
-工作目录：<已有目录的绝对路径>
-状态路径：<当前用户私有目录中的绝对路径>/codex-agent.db
-接入目标：<Codex App 当前会话，或 Codex CLI>
-复用已有 Codex 和登录，不运行 codex exec、不启动 app-server、不枚举或读取历史会话，
-也不读取 auth.json。仅安装 Chiliarch 工具，使用 uv 管理 Python。
+先只读了解操作系统、当前工作目录、uv/Python、Chiliarch
+及 Codex 的已有安装位置和非敏感配置结构，复用已经安装的工具与登录。
+不要运行 codex exec、启动 app-server、枚举或读取历史会话，也不要读取 auth.json。
+然后主动询问尚未提供的平台完整 HTTP/HTTPS URL、agent 名称与用途、接入 Codex App
+还是 Codex CLI、使用当前会话协作还是无人值守、工作目录，以及 MCP 配置只用于当前
+项目还是用户全局。解释两种协作方式的区别，默认建议当前会话。
+已给出的信息不要重复问，可以一次说明几个相关选项让我选择。
+询问一次性注册码是否已准备好；若没有，引导我登录平台 WebUI，在“Agents 管理”的
+添加入口创建。配对时引导我通过保密输入填写，不要求粘贴进聊天，不写入日志、
+配置、shell 历史或版本库。如果当前交互环境无法提供用户可操作的私密输入，
+请我亲自完成配对命令，随后继续其余安装步骤。
+请根据当前用户的私有目录建议独立状态路径，并向我说明位置与用途，不要求我先猜
+一个路径。如已有同名状态库、MCP 服务或配置冲突，询问处理方式，不覆盖、不复用
+别的运行实例的凭证。先确认需要的信息，再安装 Chiliarch 接入工具，用 uv 管理 Python。
 如果官方仓库尚未推送或 PyPI 尚未发布，优先使用我提供的可信本地 checkout；
-没有可用源码时报告这一阻塞，不下载其他同名项目。
-执行 chiliarch agent pair --server <URL> --name <NAME> --adapter <codex-app 或 codex>
---state <绝对路径>，保密输入注册码。用 chiliarch agent config --host <codex-app 或 codex>
---state <绝对路径> 生成 stdio MCP 配置，保留已有服务器，只合并 chiliarch 一项。
-运行 chiliarch agent doctor 后告诉我实际修改位置和重新加载 MCP 的方法。
+没有可用源码时先询问我是否有可信本地源码路径；仍不可用则报告阻塞，不下载其他同名项目。
+使用确认的信息执行 chiliarch agent pair、agent config 和 agent doctor，生成 stdio
+MCP 配置，按我选择的作用范围保留已有服务器，只合并 chiliarch 一项。
+不要用真实模型推理做安装后的自动验收；告诉我实际修改位置和重新加载 MCP 的方法。
 我重新打开会话后，要能主动领取任务、报告进度/结果、给总管发消息、申请查询其他 agent
 及协调任务，并查看总管或用户的回复；不能声称连接 MCP 会自动唤醒 App 当前会话。
 只有我明确要求无人值守时，才配置 kind="codex" 的托管 runner 并启动 agent run，
-先确认本地固定工作目录与 read-only/workspace-write 权限，不使用 sandbox 绕过。
+先确认本地固定工作目录、read-only/workspace-write 权限与可能的模型费用，
+不使用 sandbox 绕过。最后说明已经完成的安装、仍需我做的重载步骤、能力与限制。
 ```
 
 ## 选择接入方式

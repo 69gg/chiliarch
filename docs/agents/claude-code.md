@@ -1,26 +1,36 @@
 # Claude Code
 
+将下面整段复制给执行安装的 Claude Code 即可，无需预先填写或替换内容。它会先检查环境，再引导你提供缺失信息。注册码需登录 Chiliarch WebUI，在“Agents 管理”右上角添加入口创建，配对时保密输入。
+
 ```text
 请把这台机器的 Claude Code 接入 Chiliarch，先读
 https://github.com/69gg/chiliarch/blob/main/docs/agents/claude-code.md。
-平台 URL：<完整 HTTP 或 HTTPS 地址>
-一次性注册码：<WebUI 生成的注册码>
-Agent 名称：<机器名 / 项目用途>
-工作目录：<已有目录的绝对路径>
-状态路径：<当前用户私有目录中的绝对路径>/claude-agent.db
-复用已有 Claude Code 和认证方式，不重新安装或登录 Claude、不读取认证文件或历史会话。
-仅安装 Chiliarch 工具，使用 uv 管理 Python。官方仓库 69gg/chiliarch 与 PyPI 当前
-可能尚未发布：优先使用我提供的可信本地 checkout，无可用来源时报告阻塞，不换源。
-执行 chiliarch agent pair --server <URL> --name <NAME> --adapter claude-code
---state <绝对路径>，保密输入一次性注册码。
-用 chiliarch agent config --host claude-code --state <绝对路径> 输出 stdio MCP JSON，
-保留已有服务器，只合并 chiliarch；不要覆盖 ~/.claude.json 或项目配置。
-运行 chiliarch agent doctor 并说明配置位置、重新加载 MCP 的方法。
+先只读了解操作系统、当前工作目录、uv/Python、Chiliarch
+与 Claude Code 的已有安装位置和非敏感配置结构，复用已有 Claude 与认证方式。
+不要重新安装或登录 Claude，不读取认证文件或历史会话，不运行真实推理。
+然后主动询问尚未提供的平台完整 HTTP/HTTPS URL、agent 名称与用途、使用当前会话
+协作还是无人值守、工作目录，以及 MCP 配置只用于当前项目还是用户全局。
+解释两种协作方式的区别，默认建议当前会话。已给出的信息不要重复问，
+可以一次说明几个相关选项让我选择。
+询问一次性注册码是否已准备好；若没有，引导我登录平台 WebUI，在“Agents 管理”的
+添加入口创建。配对时引导我通过保密输入填写，不要求粘贴进聊天，不写入日志、
+配置、shell 历史或版本库。如果当前交互环境无法提供用户可操作的私密输入，
+请我亲自完成配对命令，随后继续其余安装步骤。
+请根据当前用户的私有目录建议独立状态路径，并向我说明位置与用途，不要求我先猜
+一个路径。已有同名状态库、MCP 服务或配置冲突时询问处理方式，不覆盖、不复用
+别的运行实例的凭证。先确认需要的信息，再只安装 Chiliarch 工具，用 uv 管理 Python。
+官方仓库 69gg/chiliarch 与 PyPI 当前
+可能尚未发布：优先使用我提供的可信本地 checkout，没有可用来源时先询问我是否有
+可信本地源码路径；仍不可用则报告阻塞，不换源。
+使用确认的信息执行 chiliarch agent pair、agent config 和 agent doctor，生成 stdio
+MCP JSON。按我选择的作用范围保留已有服务器，只合并 chiliarch；
+不要覆盖 ~/.claude.json 或项目配置，说明实际修改位置与重新加载 MCP 的方法。
 我重新打开会话后，要能通过 MCP 主动领取任务、报告进度/结果、联系总管、查询其他
 agent、申请协调并读取上级回复。不要用真实推理调用做安装后的自动验收。
 只有我明确选择无人值守时，才写 kind="claude-code" 的本地 TOML 并启动 agent run。
 先说明 plan 默认权限、需要变更时的工具允许规则、固定目录及可能的模型费用。
 不使用 --dangerously-skip-permissions，不默认 --bare，不让远端任务更改本地权限。
+最后说明已经完成的安装、仍需我做的重载步骤、能力与限制。
 ```
 
 ## 安装与身份
