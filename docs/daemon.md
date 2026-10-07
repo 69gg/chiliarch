@@ -1,79 +1,133 @@
-# 跨平台守护进程设计
+# 本机共享守护进程
 
-本文记录已确定的接入与运行要求，作为守护进程的实现依据。当前代码提供 MCP 会话桥和单个 CLI runner，尚未提供本节描述的统一安装入口、多 agent 守护进程或系统自启动管理；现有托管 runner 仍依赖 POSIX 进程组，不能据此宣称已支持 Windows 托管执行。
+Chiliarch 的 agent 接入默认使用当前系统用户的共享守护进程。它管理本机多个 agent 的独立身份、消息队列和出站连接；原生宿主中的 stdio MCP 只向本地守护进程转发工具调用。平台服务 `chiliarch serve` 和本机守护进程是两种用途，不需要在每台 agent 机器运行 WebUI 或设置登录密码。
 
-## 安装顺序
+## 安装、发现与复用
 
-agent 自助接入和用户手动安装必须进入同一套检查流程，顺序如下：
+先检查已有服务，再安装或启动，健康后才配对当前 agent：
 
-```mermaid
-flowchart TD
-    Check[检查当前用户的守护进程] --> Present{已安装且兼容？}
-    Present -->|否| Install[安装共享组件或处理版本不兼容]
-    Present -->|是| Running{正在运行且健康？}
-    Install --> Start[配置并启动守护进程]
-    Running -->|否| Start
-    Running -->|是| Register[注册当前 agent]
-    Start --> Health[验证本地服务健康]
-    Health --> Register
-    Register --> MCP[配置当前宿主的 MCP 工具]
-    MCP --> Verify[验证任务领取、消息和回复]
+```bash
+chiliarch daemon status
 ```
 
-已有健康守护进程直接复用；已安装但未运行时启动已有服务；没有安装时先安装共享组件。版本不兼容时明确报告兼容要求，升级时保留凭证、任务和其他 agent 的配置。守护进程没有通过本地健康检查前，不能宣称 agent 已接入。
+已安装且健康时直接复用；已安装但停止时运行 `chiliarch daemon start`。尚未安装 Chiliarch 时，使用持久的 uv 工具环境，选择一种可信来源：
 
-守护进程和 MCP 桥由同一个 `chiliarch` 包提供，Python 继续使用 uv 管理。共享组件只安装一份，后续 agent 添加自己的登记、工作目录、执行策略和宿主 MCP 配置，不重新配对已有 agent 或覆盖其配置。这里的复用不合并各 agent 的平台身份：首版仍保留各自身份和队列，新 agent 按自己的身份完成配对，由守护进程统一管理其出站连接。
+```bash
+uv tool install chiliarch
+# 或：uv tool install git+https://github.com/69gg/chiliarch.git
+# 或：uv tool install /绝对路径/可信本地checkout
+chiliarch daemon install
+chiliarch daemon status
+```
 
-使用持久的 uv 工具安装环境，系统启动配置记录实际可执行程序的绝对路径。临时执行环境、安装时的 shell PATH 和当前项目目录不能成为后台服务的隐式依赖。[uv 工具管理文档](https://docs.astral.sh/uv/concepts/tools/)
+`install` 登记当前用户登录后的自启动，并启动本地守护进程。后续 `agent pair` 使用同一发现与复用流程：已有健康服务复用，没有时安装或启动；健康检查失败不兑换注册码。
 
-检查守护进程时验证本地接口、程序版本、协议兼容性、运行用户和健康状态。PID 文件、端口被占用或系统启动项存在都不足以证明服务可用。多个 agent 同时安装时，通过单实例锁和原子注册保证不会启动重复服务。
+健康检查验证经过认证的本地接口和版本，不能仅凭进程、端口或启动项存在判断已接入。多个安装流程由单实例锁协调；已有身份不会自动重新配对，数据与其他 agent 登记不会被覆盖。系统管理器不可用时可启动后台进程，但状态明确显示自启动尚未启用；容器或非登录环境也可运行 `chiliarch daemon run` 前台入口。
 
-## 默认在用户登录后启动
+系统启动项记录实际 Python 解释器的绝对路径、工作目录和必要环境，不依赖调用时的 shell 或项目 cwd。优先用 `uv tool install` 的持久环境；修改或删除其安装环境后应重新检查启动配置。[uv 工具管理](https://docs.astral.sh/uv/concepts/tools/)
 
-默认方式已经确定为：**当前系统用户登录后自动启动**。守护进程使用该用户的权限、目录和既有原生 agent 环境，安装完成后也可以立即启动，无需等待下次登录。
+## 注册当前 agent
 
-| 系统 | 默认管理方式 | 运行身份 |
-| --- | --- | --- |
-| Windows | 任务计划程序，绑定当前用户的登录触发器与交互登录令牌 | 当前用户，普通权限 |
-| macOS | 当前用户的 LaunchAgent，由 launchd 管理 | 当前用户 |
-| Linux | 可用时使用 systemd 用户服务 | 当前用户 |
+登录平台 WebUI，在“Agents 管理”右上角添加入口创建一次性注册码，然后在 agent 所在机器执行：
 
-Windows 登录任务采用明确的用户绑定，不注册为“任意用户登录”触发，不默认以 SYSTEM 运行；任务配置要允许长期运行，并明确电池、休眠恢复和失败重启行为。[Windows 任务计划文档](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create)
+```bash
+chiliarch agent pair \
+  --server "http://平台主机:8000" \
+  --name "机器名 / Codex App" \
+  --adapter codex-app \
+  --agent codex-app-main \
+  --state "/绝对路径/私有目录/codex-app.db"
+chiliarch agent config --host codex-app --agent codex-app-main
+chiliarch agent doctor --agent codex-app-main
+```
 
-macOS 的用户服务使用用户 `Library/LaunchAgents` 目录，配置完整启动参数和日志位置。[Apple LaunchAgent 文档](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
+示例中的多行续行适用于 POSIX shell；Windows 可将同一命令写成一行并替换为实际路径。注册码交互输入，不放入聊天、MCP 配置或日志。`--agent` 是本机稳定标识（ASCII 字母、数字、下划线、点或短横线，最多 128 字符）；省略时使用该身份的平台 agent ID，配对完成后打印实际标识。每个独立 agent 保留自己的状态库和凭证。同类型 agent 可以登记多个实例，同一个本地标识不能指向不同状态库。
 
-Linux 检测 systemd 用户管理器是否实际可用，再写入用户服务配置；默认不启用让用户服务在未登录时运行的 linger。用户配置遵循 XDG 目录约定。[systemd 用户单元路径](https://github.com/systemd/systemd/blob/main/man/systemd.unit.xml)
+已有配对状态、配对完成但登记失败，或需要更改 runner 设置时，使用登记入口，不要再次兑换注册码：
 
-系统管理器不可用、环境禁止注册启动项，或运行在没有登录会话的容器中时，仍提供同一个前台运行入口，可交给已有进程管理器管理。诊断明确区分“可手动运行”和“已经注册自启动”，不能静默假装成功。系统启动后、用户未登录时运行作为另外的显式配置，不改变默认行为。
+```bash
+chiliarch daemon register \
+  --state "/绝对路径/私有目录/codex-app.db" \
+  --agent codex-app-main
+chiliarch daemon agents
+```
 
-## 灵活运行与本地边界
+相同状态重复登记是幂等操作；状态或标识冲突明确拒绝。登记后守护进程持有该 agent 的唯一出站连接。不要同时用 legacy `agent mcp --mode standalone` 或 `agent run` 连接同一状态库。
 
-默认每个系统用户运行一个守护进程；同一机器上不同用户的凭证、消息和 agent 配置分别管理。每个 agent 保留独立编号、工作目录、任务归属、权限策略和并发限制，同类型 agent 也可登记多个实例。
+## 默认登录后自启动
 
-共享运行逻辑处理平台出站连接、重连、持久队列、agent 登记与任务路由。系统差异集中在用户目录、服务管理与原生进程控制三个适配位置。所有平台共用本地通信协议，可以通过回环地址服务连接；现有 stdio MCP 宿主使用轻量桥接进程转发。接口仅供本机使用，注册与调用绑定实际 agent 身份，长期平台凭证由守护进程管理，不作为 MCP 工具结果返回。
+| 系统    | 当前用户服务                            | 默认运行身份                |
+| ------- | --------------------------------------- | --------------------------- |
+| Windows | 任务计划程序，绑定当前用户登录触发器    | 当前用户，普通权限          |
+| macOS   | `Library/LaunchAgents` 中的 LaunchAgent | 当前用户                    |
+| Linux   | systemd 用户服务                        | 当前用户，不默认启用 linger |
 
-路径、监听端口、原生可执行程序与模型设置可配置；默认值按运行平台和当前用户解析，不能硬编码开发机器路径。后台进程显式设置工作目录和必要环境，支持含空格、中文的路径。
+Windows 登录任务绑定当前用户 SID、交互登录令牌，不以 SYSTEM 运行；任务允许长期运行，不因为切换电池供电立即停止。macOS 使用 launchd，Linux 先检查 systemd 用户管理器可用性。自启动注册成功和本机健康检查是不同事实；没有原生管理器、禁止注册启动项或无用户登录会话时，不伪报自启动成功。
 
-所有到 Chiliarch 平台的连接仍由本机守护进程主动出站发起，保留 WS → SSE＋POST → 长轮询降级。平台不能反向连接本机。将多个逻辑身份合并到一条物理连接，需要另行定义协议中的身份与授权边界，不直接共用一个 agent 的任务身份。
+```bash
+chiliarch daemon autostart status
+chiliarch daemon autostart disable
+chiliarch daemon autostart enable
+```
 
-MCP 会话主动调用工具领取任务和联系总管；守护进程托管执行时启动本机 CLI。MCP 连接本身不保证唤醒空闲的 Codex App。是否允许托管执行、使用哪个工作目录以及允许哪些原生工具，由机器本地配置决定。
+禁用自启动不等于删除已配对状态。禁用后仍可用 `daemon start` 手动运行，此时使用后台进程并保留自启动禁用设置。默认登录后运行，注销和操作系统休眠行为由当前用户服务管理器决定；需要未登录就运行的部署，应明确配置专用运行用户及自己的进程管理方式。
 
-## Windows、macOS、Linux 的完整支持
+## 目录与本地通信
 
-三种系统都需要完成安装、发现、共享守护进程、MCP 接入、托管 CLI 执行、取消和退出清理，不能只把“能连接 MCP”标成完整支持。
+默认目录按当前用户和操作系统解析：Linux 使用 `XDG_STATE_HOME`（未设置则为 `~/.local/state`），macOS 使用 `~/Library/Application Support`，Windows 使用 `LOCALAPPDATA`，其下为 `chiliarch/daemon`。状态、服务发现信息、登记与日志归当前用户所有，不放入项目仓库或共享目录。
 
-现有 Linux/macOS runner 的进程组管理继续复用。Windows 增加原生进程树管理，例如通过 Job Object 管理任务及其后代，并在取消、超时、退出时完成整组清理；不能只结束最外层 CLI 进程。[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+需要独立目录时，所有相关命令保持一致：
 
-原生进程退出码和成功终态共同决定任务完成；取消需要确认实际停止。服务崩溃后，结果未知的工作保持中断状态，不因自启动或自动重启而重新执行。普通网络断线继续使用已有持久队列，不重复启动任务。休眠恢复后重新建立连接，并核对已经执行任务的状态。
+```bash
+chiliarch daemon install --directory "/绝对路径/私有目录/daemon"
+chiliarch agent pair --daemon-directory "/绝对路径/私有目录/daemon" \
+  --server "http://平台主机:8000" --name "工作机" --adapter codex \
+  --agent worker --state "/绝对路径/私有目录/worker.db"
+chiliarch agent config --host codex --agent worker \
+  --daemon-directory "/绝对路径/私有目录/daemon"
+```
 
-运行管理提供安装、启动、停止、重启、状态、日志、启用/禁用自启动和卸载入口。卸载当前 agent 只移除该实例；其他 agent 仍在使用时保留共享服务，删除守护进程与清理持久状态是明确的独立操作。升级在任务安全停止或排空后替换程序，继续复用原有状态。
+每个 agent 的凭证仍保存在其独立 SQLite 状态库；MCP 配置只携带本地标识和守护目录，不携带平台凭证。本地接口仅绑定回环地址，由私有发现信息和本地认证保护，不为外部机器开放。当前系统用户能访问的本地权限边界仍由操作系统及目录权限决定。
 
-## 验收要求
+到平台的网络连接始终由守护进程主动出站发起，降级顺序为 WS → SSE＋HTTP POST → 长轮询。多个 agent 共用进程，不共用平台身份或凭证，也不合并为一条未定义身份边界的物理连接。平台永远不主动连接 agent 的地址。
 
-- Windows、macOS、Linux 原生 CI 覆盖 Python 3.11–3.13；不能用 Linux mock 代替 Windows 进程清理验收。
-- 安装入口验证全新安装、健康服务复用、已有服务未运行、版本不兼容和多个 agent 同时安装；保护已有凭证与配置。
-- 两个 agent 同时运行时任务、取消、消息和结果不能串线；独立限制并发。
-- 使用测试子进程验证成功、失败、取消、超时、服务退出及后代清理，不调用真实厂商推理做自动验收。
-- 三种系统分别验证自启动配置的注册、查询、禁用和移除；登录后实际启动另做原生会话验收，不凭配置文件存在宣称已启动。
-- 验证后台 PATH、含空格和中文的路径、端口冲突、休眠恢复、网络重连、崩溃恢复和日志轮换。
-- agent 自助接入指南与用户安装文档同步采用“检查守护进程 → 安装或复用 → 健康检查 → 注册当前 agent → 配置 MCP”的流程。
+## 当前会话与托管执行
+
+当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入。你可以主动领取工作、汇报进度与结果、联系总管和查询上级回复；守护进程常驻并不意味着它能自动唤醒空闲 Codex App 或 Claude Code 会话。
+
+只有明确需要无人值守时，为独立身份配置固定工作目录和执行策略，将本地 TOML 交给守护进程：
+
+```bash
+chiliarch daemon register \
+  --state "/绝对路径/私有目录/codex-runner.db" \
+  --agent codex-worker \
+  --settings "/绝对路径/local-agent.toml" \
+  --max-concurrent-tasks 1 \
+  --transport ws
+```
+
+本地设置控制启动程序、工作目录、原生权限与并发，远端任务不能改写这些边界。任务内临时 MCP 使用 mailbox 模式，由父连接传输；模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)。
+
+Windows、macOS、Linux 复用同一登记与调度流程。POSIX 清理原生进程组；Windows 使用 Job Object 清理整个任务进程树。Windows 支持原生 `.exe`、标准 npm 安装的 `.cmd`（解析原生包的对应入口并直接启动 Node）及明确的 Python wrapper；自定义 `.cmd`/`.bat` 无法保证参数边界时拒绝运行，请设置实际可执行入口。路径包含空格或中文时仍作为参数传递，不拼接任务 shell 命令。
+
+取消、超时和退出先停止并清理本地任务进程，再确认取消。崩溃后执行结果未知的任务保持中断，不因自启动或恢复连接而自动重做；普通断线继续持久排队，不重复启动任务。三系统的原生 CI 测试进程清理，测试使用测试子进程，不能以配置文件存在或 Linux mock 代替实际登录后验收。
+
+## 状态、维护与卸载
+
+```bash
+chiliarch daemon status
+chiliarch daemon agents
+chiliarch daemon stop
+chiliarch daemon start
+chiliarch daemon restart
+chiliarch daemon remove --agent codex-app-main
+chiliarch daemon uninstall
+```
+
+`status` 区分本地健康与系统服务状态；`agents` 展示独立身份、manual/managed 模式、连接、传输及可公开的错误。`doctor --agent` 是只读检查，不隐式安装、启动或登录原生宿主；本地健康和登记成功不代替平台在线、凭证有效或任务成功的确认。
+
+移除 agent 登记会停止该身份的连接并取消、清理其托管任务，不吊销平台凭证或删除 SQLite 状态库；其他 agent 继续使用共享服务。`stop`、`restart` 与 `uninstall` 会停止此守护进程的所有身份和托管工作，等待任务进程树清理。手动 MCP 会话中的实际工作仍由原生宿主负责，守护进程不会强行关闭用户的 App 对话。恢复发现仍标为 running/cancelling 的工作时报告中断与结果未知，不自动重放副作用。
+
+卸载移除当前用户服务及自启动，保留守护目录、登记、凭证和日志；下次安装可恢复登记。需要清理数据时先核对未上传结果、未知执行副作用与平台身份。升级前停止或排空工作，备份登记、状态库和设置，再更新 uv 工具环境与启动配置。
+
+结构化日志按大小轮换，目录为守护目录下的 `logs`，stdio MCP 的 stdout 只承载协议。保留共享状态库与日志的权限，勿复制同一凭证到另一机器并发运行。详见 [日志配置](configuration.md#日志存储与轮换) 和 [部署维护](deployment.md)。

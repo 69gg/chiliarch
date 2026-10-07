@@ -10,7 +10,7 @@
 
 ## 安装与身份
 
-按 [通用安装说明](index.md#安装接入工具) 安装 Chiliarch。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
+按 [通用安装说明](index.md#安装接入工具) 先发现当前用户守护进程，健康时复用；缺失时安装并启动。默认登录后自启动，三系统管理入口见 [本机守护进程](../daemon.md)。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 Chiliarch 复用本机 `claude` 与其原生认证配置，不读取或上传认证文件，不负责订阅、模型服务或原生安装。交互式 Claude Code 使用当前会话 MCP；无人值守使用独立状态库与托管 runner。两者不要同时占用一个客户端状态库。
 
@@ -19,6 +19,7 @@ chiliarch agent pair \
   --server "http://平台主机:8000" \
   --name "机器名 / Claude Code" \
   --adapter claude-code \
+  --agent claude-main \
   --state "/绝对路径/私有目录/claude-agent.db"
 ```
 
@@ -29,7 +30,7 @@ chiliarch agent pair \
 生成与本地安装环境匹配的配置，不会改写 Claude Code 设置：
 
 ```bash
-chiliarch agent config --host claude-code --state "/绝对路径/私有目录/claude-agent.db"
+chiliarch agent config --host claude-code --agent claude-main
 ```
 
 标准 MCP JSON 结构如下。使用生成器给出的真实 `command` 和 `args`，尤其源码环境下的解释器路径：
@@ -43,10 +44,12 @@ chiliarch agent config --host claude-code --state "/绝对路径/私有目录/cl
       "args": [
         "agent",
         "mcp",
-        "--state",
-        "/绝对路径/私有目录/claude-agent.db",
         "--mode",
-        "standalone"
+        "daemon",
+        "--daemon-directory",
+        "/绝对路径/当前用户守护目录",
+        "--agent",
+        "claude-main"
       ]
     }
   }
@@ -57,7 +60,8 @@ chiliarch agent config --host claude-code --state "/绝对路径/私有目录/cl
 
 ```bash
 claude mcp add --transport stdio --scope user chiliarch -- \
-  chiliarch agent mcp --state "/绝对路径/私有目录/claude-agent.db" --mode standalone
+  chiliarch agent mcp --mode daemon --agent claude-main \
+    --daemon-directory "/绝对路径/当前用户守护目录"
 ```
 
 这条命令会修改 Claude Code 的 MCP 配置，安装提示词授权接入后再执行。`--` 后是 MCP 服务程序和参数；没有它时原生 CLI 可能把 Chiliarch 参数误当自己的选项。上述两种注册方式选一种。项目 MCP 的信任确认、组织策略和允许/拒绝规则仍由 Claude Code 管理。[官方 MCP 配置](https://code.claude.com/docs/en/mcp)
@@ -77,7 +81,7 @@ MCP 连接本身不会保证空闲原生会话持续自动领取；长期无人�
 
 ## 托管 runner 配置
 
-本版 runner 支持 Linux/macOS，需要已安装的 `claude`。创建本地 TOML，目录必须已经存在：
+本版 runner 支持 Windows、macOS、Linux，需要已安装的 `claude`。Windows 复用原生 `.exe`、标准 npm `.cmd` 的实际 Node 入口或明确的 Python wrapper；不执行任意自定义 `.cmd`/`.bat`，需要时指定实际可执行入口。创建本地 TOML，目录必须已经存在：
 
 ```toml
 kind = "claude-code"
@@ -95,17 +99,15 @@ max_line_bytes = 262144
 # model = "你的模型名称"
 ```
 
-先为该 runner 配对一个独立状态库，再执行：
+先为该 runner 配对独立状态库及本机标识（例如 `--agent claude-worker`），再登记给现有守护进程：
 
 ```bash
-chiliarch agent doctor \
+chiliarch daemon register \
   --state "/绝对路径/私有目录/claude-runner.db" \
-  --settings "/绝对路径/local-agent.toml"
-
-chiliarch agent run \
+  --agent claude-worker \
   --settings "/绝对路径/local-agent.toml" \
-  --state "/绝对路径/私有目录/claude-runner.db" \
   --max-concurrent-tasks 1
+chiliarch agent doctor --agent claude-worker --settings "/绝对路径/local-agent.toml"
 ```
 
 `plan` 默认用于分析和规划，并不适合需要修改文件的调度。机器所有者可以选择 `dontAsk`、`default` 或 `acceptEdits`，并设置 `claude_allowed_tools`。例如只自动允许某些明确工具，按 Claude 官方规则填写数组；不要添加泛化的 shell 通配规则作为默认值。
@@ -128,6 +130,6 @@ runner 按结构化原生结果汇报：要求最终 `result` 为成功 subtype�
 
 只有 agent 所在机器主动连接平台；代理不支持 WS 时降级 SSE＋POST、长轮询，服务器不联系你的机器 IP。断网消息和结果先入本地队列，重连再上传。
 
-取消与超时会停止当前原生进程组并清理后台进程。平台取消请求尚未被客户端确认时，不能视为已停止。Chiliarch 不保留原生任务启动的后台服务，也不自动 resume 用户现有会话。
+取消与超时会停止当前原生进程树并清理后台进程。平台取消请求尚未被客户端确认时，不能视为已停止。Chiliarch 不保留原生任务启动的后台服务，也不自动 resume 用户现有会话。
 
 异常退出或断电后，上次执行中的任务结果未知，客户端不自动再次执行。先核对本地改动、原生任务记录及平台状态，再人工决定恢复或新派发。凭证吊销后客户端停止通信；同一状态库的单连接规则、诊断和日志见 [接入总览](index.md)。

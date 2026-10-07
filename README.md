@@ -2,7 +2,7 @@
 
 连接、管理与统一调度 agents 的平台。内置 chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.1.0 提供平台框架、独立协议、MCP 会话桥和本地 CLI 执行器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.1.0 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
 
 ## 支持的 agents
 
@@ -12,7 +12,7 @@
 | Codex CLI   | stdio MCP                       | `codex exec --json`           | [Codex App / CLI](docs/agents/codex.md)   |
 | Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
 
-接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。CLI runner 每次调度创建新的原生会话，托管执行支持 Linux/macOS。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 每次调度创建新的原生会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
@@ -55,12 +55,14 @@ chiliarch serve
 在 Agents 管理页面点击右上角“添加 agent”，创建一次性注册码，然后在 agent 所在机器执行（替换占位符）：
 
 ```bash
-chiliarch agent pair --server <平台HTTP或HTTPS地址> --name <agent名称> --adapter codex-app --state /绝对路径/私有目录/agent.db
-chiliarch agent config --host codex-app --state /绝对路径/私有目录/agent.db
-chiliarch agent doctor --state /绝对路径/私有目录/agent.db
+chiliarch daemon status
+# 首次接入：chiliarch daemon install；已安装但未运行：chiliarch daemon start
+chiliarch agent pair --server <平台HTTP或HTTPS地址> --name <agent名称> --adapter codex-app --agent codex-main --state /绝对路径/私有目录/agent.db
+chiliarch agent config --host codex-app --agent codex-main
+chiliarch agent doctor --agent codex-main
 ```
 
-将生成的 MCP 配置合并到原生 agent 配置中；Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。当前会话通过 MCP 主动领取任务，自动执行则按接入文档配置本地 runner。客户端复用原生 agent 的安装与登录，不上传原生认证文件；注册码交互输入，长期凭证保存在本地状态库。默认不覆盖已配对状态。
+将生成的 MCP 配置合并到原生 agent 配置中；Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。当前会话通过 MCP 主动领取任务，自动执行则按接入文档配置本地 runner。客户端复用原生 agent 的安装与登录，不上传原生认证文件；注册码交互输入，长期凭证保存在本地状态库。默认不覆盖已配对状态。`agent pair` 先确认本机守护进程健康，再配对并登记；多个 agent 保留独立身份与队列。MCP 配置只携带本机标识，不携带平台凭证。管理、自启动及旧版 standalone 迁移见 [本机守护进程](docs/daemon.md)。
 
 只想验证协议、不运行真实厂商 agent 时，可使用原有模拟客户端：
 
@@ -103,7 +105,7 @@ uv build
 - [部署、初始化与维护](docs/deployment.md)
 - [配置、热重载与日志](docs/configuration.md)
 - [架构与保证边界](docs/architecture.md)
-- [跨平台守护进程设计（规划）](docs/daemon.md)
+- [本机共享守护进程、登录自启动与维护](docs/daemon.md)
 - [agent 协议与 JSON Schema](docs/protocol.md)
 - [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)
 - [供 agent 读取的自助接入指南](docs/agents/onboarding.md)

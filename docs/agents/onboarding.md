@@ -25,22 +25,28 @@
 
 根据操作系统和现有目录，建议当前用户私有目录中的独立状态路径，向用户说明位置与用途。每个独立实例使用独立状态库；已有配对状态、同名 MCP 服务或配置冲突时先询问处理方式，不覆盖或复用其他运行实例的凭证。
 
-## 3. 安装、配对与配置 MCP
+## 3. 先发现并复用共享守护进程
 
-仅安装 Chiliarch 接入工具，使用 uv 管理 Python，按通用技术文档从 PyPI 或官方 GitHub 仓库安装。
+本机接入使用同一个当前用户守护进程，由它管理各 agent 独立的身份、状态库和出站连接。先运行 `chiliarch daemon status`；不要仅凭 PID、端口或启动项存在判断健康。已安装且健康时复用；存在但未运行时用 `chiliarch daemon start`；尚未安装时再用 uv 从 PyPI 或官方 GitHub 仓库安装 Chiliarch，并执行 `chiliarch daemon install`。
 
-使用已确认的信息执行 `chiliarch agent pair` 完成配对。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
+安装默认登记当前用户登录后自启动，并启动、检查本地服务；它不是开机时以系统账户运行的服务，不需要管理员权限。Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务。系统管理器不可用时明确告知用户，用 `chiliarch daemon run` 前台运行或接入用户已有管理器，不能宣称已登记自启动。
 
-用 `chiliarch agent config` 生成当前宿主对应的 MCP 配置，按用户选择的作用范围合并 `chiliarch` 一项，保留已有服务和其他配置。使用生成器输出的真实程序路径与参数，不凭空拼装其他宿主格式：
+读取 <https://raw.githubusercontent.com/69gg/chiliarch/main/docs/daemon.md> 核对管理入口、目录和故障处理。默认目录由操作系统和当前用户解析；用户指定独立目录时后续命令一致传入 `--directory` 或 `--daemon-directory`。不得覆盖其他 agent 的登记、状态库、执行策略或 MCP 配置。健康检查失败或版本不兼容时先处理阻塞，保留已有数据。
+
+## 4. 配对、登记当前身份并配置 MCP
+
+选择一个便于当前宿主引用的本地 `--agent` 标识，用已确认的信息执行 `chiliarch agent pair` 完成配对。该命令先确认守护进程健康，配对后登记独立状态库；后续 MCP 通过这个标识调用已有守护进程，不再为每个会话启动平台连接。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
+
+用 `chiliarch agent config --agent <本地标识>` 生成当前宿主对应的 MCP 配置，按用户选择的作用范围合并 `chiliarch` 一项，保留已有服务和其他配置。使用生成器输出的真实程序路径与参数，不凭空拼装其他宿主格式：
 
 - Codex 按专用文档合并标准 MCP TOML；不读取 `auth.json`，不启动 `app-server`，不运行 `codex exec` 做安装验收。
 - Claude Code 按专用文档配置项目或用户作用域的 stdio MCP；不覆盖整个 `~/.claude.json` 或项目配置，不读取原生认证文件，不运行真实推理做安装验收。
 
 全部网络连接由 agent 侧主动出站发起。不要让平台主动连接本机，也不要为接入开放本机入站端口；WS、SSE＋HTTP POST、长轮询降级由 Chiliarch 客户端处理。
 
-## 4. 检查并说明如何开始协作
+## 5. 检查并说明如何开始协作
 
-运行 `chiliarch agent doctor` 检查本地身份、工具路径与设置，不用真实模型推理做自动验收。该命令不会连接平台，不能把它通过当作已经在线；实际连接情况以 MCP 状态、平台心跳和消息投递确认。
+运行 `chiliarch agent doctor --agent <本地标识>` 检查本地身份、工具路径与设置，不用真实模型推理做自动验收。daemon 模式同时检查本地服务健康与该 agent 的登记，不启动原生推理；健康与登记成功不能代替平台上线、凭证有效性或任务完成的确认，实际连接以平台心跳和消息投递为准。
 
 按原生宿主要求引导用户重载 MCP 或打开新会话。工具可用后，你应能主动领取任务、汇报进度和真实结果、给 Chiliarch AI 发消息、查询其他 agents、申请协调并读取上级回复。完整工具参数、消息 cursor 和协作流程以通用技术文档为准。
 
@@ -48,11 +54,11 @@
 
 完成后告诉用户实际安装与配置位置、私有状态路径、已完成的检查、仍需重载的步骤、如何开始领取任务，以及可用能力和限制。不宣称尚未验证的上线或任务执行结果。
 
-## 5. 仅在用户选择时配置无人值守
+## 6. 仅在用户选择时配置无人值守
 
-只有用户明确选择无人值守时，才另设独立身份和状态库、创建本地 runner TOML 并启动 `chiliarch agent run`。先确认固定工作目录、原生工具权限和可能产生的模型费用。托管 runner 当前支持 Linux/macOS，Windows 使用当前会话 MCP 协作。
+只有用户明确选择无人值守时，才另设独立身份和状态库、创建本地 runner TOML，并通过 `chiliarch daemon register --settings` 登记给共享守护进程。先确认固定工作目录、原生工具权限、并发上限和可能产生的模型费用。Windows、macOS、Linux 复用同一登记流程；原生进程树由本机适配层负责取消、超时和退出清理。
 
 - Codex CLI 使用 `kind="codex"`，确认 `read-only` 或 `workspace-write` 权限，不使用 sandbox 绕过。
 - Claude Code 使用 `kind="claude-code"`，说明默认 `plan` 权限及需要变更时的工具允许规则；不使用 `--dangerously-skip-permissions`，不默认启用 `--bare`。
 
-不要让远端任务改写本地启动策略或权限。无人值守 runner 的网络连接由父进程持有，任务内 MCP 使用 mailbox 模式；同一状态库不能再由另一 standalone MCP 或 runner 并发连接。
+不要让远端任务改写本地启动策略或权限。无人值守 runner 的网络连接由守护进程持有，任务内 MCP 使用 mailbox 模式；同一状态库不能再由 legacy standalone MCP 或独立 runner 并发连接。

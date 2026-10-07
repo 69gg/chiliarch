@@ -12,7 +12,7 @@ import socket
 import sys
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import tomli_w
 
@@ -39,36 +39,89 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pair.add_argument("--machine", default=socket.gethostname())
     pair.add_argument("--adapter", choices=HOSTS, required=True)
     pair.add_argument("--state", type=Path, required=True)
+    pair.add_argument(
+        "--agent", help="Stable local handle; defaults to the paired platform identity"
+    )
+    pair.add_argument("--daemon-directory", type=Path)
     mcp = actions.add_parser("mcp", help="Serve the stdio MCP bridge; never opens a listening port")
-    mcp.add_argument("--state", type=Path, required=True)
-    mcp.add_argument("--mode", choices=("standalone", "mailbox"), default="standalone")
+    target = mcp.add_mutually_exclusive_group(required=True)
+    target.add_argument("--state", type=Path, help="Legacy standalone/mailbox state")
+    target.add_argument("--agent", help="Registered local daemon handle")
+    mcp.add_argument("--daemon-directory", type=Path)
+    mcp.add_argument("--mode", choices=("daemon", "standalone", "mailbox"))
     mcp.add_argument("--managed-task")
     run = actions.add_parser("run", help="Run native CLI workers within local execution policy")
     run.add_argument("--settings", type=Path, required=True)
     run.add_argument("--state", type=Path, required=True)
     run.add_argument("--max-concurrent-tasks", type=int, default=1)
-    for target in (mcp, run):
-        target.add_argument("--transport", choices=("ws", "sse", "poll"), default="ws")
-        target.add_argument("--log-directory", type=Path)
+    for bridge in (mcp, run):
+        bridge.add_argument("--transport", choices=("ws", "sse", "poll"), default="ws")
+        bridge.add_argument("--log-directory", type=Path)
     config = actions.add_parser(
         "config", help="Print native MCP configuration; does not edit user files"
     )
     config.add_argument("--host", choices=HOSTS, required=True)
-    config.add_argument("--state", type=Path, required=True)
+    target = config.add_mutually_exclusive_group(required=True)
+    target.add_argument("--state", type=Path, help="Legacy standalone/mailbox state")
+    target.add_argument("--agent", help="Registered local daemon handle")
+    config.add_argument("--mode", choices=("daemon", "standalone", "mailbox"))
+    config.add_argument("--daemon-directory", type=Path)
     doctor = actions.add_parser(
         "doctor", help="Inspect local availability without invoking vendor agents"
     )
-    doctor.add_argument("--state", type=Path)
+    target = doctor.add_mutually_exclusive_group()
+    target.add_argument(
+        "--state", type=Path, help="Read a legacy private state without network calls"
+    )
+    target.add_argument("--agent", help="Check one registered daemon identity")
+    doctor.add_argument("--daemon-directory", type=Path)
     doctor.add_argument("--settings", type=Path)
 
 
-def mcp_configuration(host: str, state_path: Path) -> dict[str, Any]:
+def _bridge_mode(arguments: argparse.Namespace) -> Literal["daemon", "standalone", "mailbox"]:
+    mode: Literal["daemon", "standalone", "mailbox"] = arguments.mode or (
+        "standalone" if arguments.state is not None else "daemon"
+    )
+    if mode == "daemon" and arguments.agent is None:
+        raise ValueError(
+            "Daemon MCP requires --agent; legacy state uses --mode standalone or mailbox"
+        )
+    if mode != "daemon" and arguments.state is None:
+        raise ValueError("Standalone/mailbox MCP requires --state")
+    return mode
+
+
+def mcp_configuration(
+    host: str,
+    state_path: Path | None = None,
+    *,
+    agent_handle: str | None = None,
+    daemon_directory: Path | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    from chiliarch.daemon_services import default_daemon_directory
+
+    selected_mode = mode or ("standalone" if state_path is not None else "daemon")
+    if selected_mode not in {"daemon", "standalone", "mailbox"}:
+        raise ValueError("Unknown MCP bridge mode")
+    if (state_path is None) == (agent_handle is None):
+        raise ValueError("Provide either one daemon agent handle or one legacy state path")
+    if (selected_mode == "daemon") != (agent_handle is not None):
+        raise ValueError("Daemon mode requires --agent; standalone/mailbox requires --state")
     command = shutil.which("chiliarch")
     arguments: list[str] = []
     if command is None:
         command = sys.executable
         arguments.extend(["-m", "chiliarch"])
-    arguments.extend(["agent", "mcp", "--state", str(state_path.expanduser().resolve())])
+    else:
+        command = str(Path(command).expanduser().resolve())
+    arguments.extend(["agent", "mcp", "--mode", selected_mode])
+    if agent_handle is not None:
+        directory = (daemon_directory or default_daemon_directory()).expanduser().resolve()
+        arguments.extend(["--daemon-directory", str(directory), "--agent", agent_handle])
+    else:
+        assert state_path is not None
+        arguments.extend(["--state", str(state_path.expanduser().resolve())])
     entry: dict[str, Any] = {"command": command, "args": arguments}
     if host in {"codex-app", "codex"}:
         entry["startup_timeout_sec"] = 30
@@ -93,11 +146,14 @@ def load_runner_settings(path: Path) -> RunnerSettings:
 
 
 async def _pair(arguments: argparse.Namespace) -> None:
+    from chiliarch.daemon_client import DaemonClient, ensure_daemon
+
     state_path = arguments.state.expanduser().resolve()
     async with connection_owner(state_path):
         if await asyncio.to_thread(state_path.exists):
             # Never overwrite a credential/task ledger, even if the platform is unreachable.
             raise ValueError("State already exists; use another path for a new paired identity")
+        await ensure_daemon(arguments.daemon_directory)
         await AgentClient.pair(
             arguments.server,
             arguments.code or getpass.getpass("一次性注册码: "),
@@ -111,7 +167,9 @@ async def _pair(arguments: argparse.Namespace) -> None:
                 f"adapter.{arguments.adapter}",
             ],
         )
-    print(f"配对完成，凭证保存在 {state_path}，不在终端显示。")
+    async with DaemonClient(arguments.daemon_directory) as daemon:
+        registration = await daemon.register(state_path, handle=arguments.agent)
+    print(f"配对完成，本地标识 {registration['handle']}；凭证保存在 {state_path}，不在终端显示。")
 
 
 async def _run(arguments: argparse.Namespace) -> None:
@@ -135,7 +193,7 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "codex_executable": shutil.which("codex"),
         "claude_executable": shutil.which("claude"),
-        "managed_runner_platform": sys.platform != "win32",
+        "managed_runner_platform": sys.platform in {"linux", "darwin", "win32"},
     }
     if arguments.settings is not None:
         settings = await asyncio.to_thread(load_runner_settings, arguments.settings)
@@ -166,12 +224,36 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
                 }
             finally:
                 await store.close()
+    else:
+        from chiliarch.daemon_client import DaemonClient
+        from chiliarch.daemon_models import DaemonError
+
+        try:
+            async with DaemonClient(arguments.daemon_directory) as daemon:
+                report["daemon"] = await daemon.health()
+                registrations = await daemon.agents()
+                if arguments.agent is not None:
+                    registrations = [
+                        agent for agent in registrations if agent.get("handle") == arguments.agent
+                    ]
+                    report["registered"] = bool(registrations)
+                report["agents"] = registrations
+        except (DaemonError, OSError) as error:
+            report["daemon"] = {"status": "unavailable", "error": str(error)}
+            if arguments.agent is not None:
+                report["registered"] = False
     return report
 
 
 def main(arguments: argparse.Namespace) -> None:
     if arguments.agent_command == "config":
-        content = mcp_configuration(arguments.host, arguments.state)
+        content = mcp_configuration(
+            arguments.host,
+            arguments.state,
+            agent_handle=arguments.agent,
+            daemon_directory=arguments.daemon_directory,
+            mode=_bridge_mode(arguments),
+        )
         print(
             tomli_w.dumps(content)
             if arguments.host != "claude-code"
@@ -184,6 +266,30 @@ def main(arguments: argparse.Namespace) -> None:
     if arguments.agent_command == "pair":
         asyncio.run(_pair(arguments))
         return
+    if arguments.agent_command == "mcp":
+        mode = _bridge_mode(arguments)
+        if mode == "daemon":
+            from chiliarch.daemon_services import default_daemon_directory
+
+            directory = (
+                (arguments.daemon_directory or default_daemon_directory()).expanduser().resolve()
+            )
+            configure_logging(
+                LogSettings(directory=arguments.log_directory or directory / "logs"), shared=True
+            )
+            try:
+                from chiliarch.adapters.mcp import create_mcp_server
+
+                create_mcp_server(
+                    mode="daemon",
+                    daemon_directory=directory,
+                    agent_handle=arguments.agent,
+                    preferred=arguments.transport,
+                    managed_task=arguments.managed_task,
+                ).run(transport="stdio")
+            finally:
+                close_logging()
+            return
     state_path = arguments.state.expanduser().resolve()
     configure_logging(
         LogSettings(directory=arguments.log_directory or state_path.parent / "logs"), shared=True
@@ -194,7 +300,7 @@ def main(arguments: argparse.Namespace) -> None:
 
             create_mcp_server(
                 state_path,
-                mode=arguments.mode,
+                mode=mode,
                 preferred=arguments.transport,
                 managed_task=arguments.managed_task,
             ).run(transport="stdio")

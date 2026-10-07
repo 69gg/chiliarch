@@ -24,7 +24,24 @@ CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加�
 
 ## 已发布包运行
 
-PyPI 发布完成后可以用 `uv tool install chiliarch` 或 `uv tool install chiliarch==<版本>` 安装。发布包已包含 WebUI，不需要 Node、pnpm 或前端开发服务器。源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
+可以用 `uv tool install chiliarch` 或 `uv tool install chiliarch==<版本>` 安装。发布包已包含 WebUI，不需要 Node、pnpm 或前端开发服务器。源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
+
+## Agent 机器：共享守护进程
+
+Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时使用 uv 从可信来源安装，再 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
+
+Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、旧 standalone 迁移和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
+
+服务健康后，在平台创建注册码，再在 agent 机器执行：
+
+```bash
+chiliarch agent pair --server "http://平台主机:8000" --name "工作机 / Codex App" \
+  --adapter codex-app --agent codex-main --state "/绝对路径/私有目录/agent.db"
+chiliarch agent config --host codex-app --agent codex-main
+chiliarch agent doctor --agent codex-main
+```
+
+`agent pair` 先确认守护进程健康再配对、登记；注册码交互输入。每个身份保留独立状态库，多个宿主 MCP 复用本机守护进程连接；MCP 配置携带本机标识，不携带长期平台凭证。Codex CLI/Claude Code 的宿主参数、安装提示词和固定 runner 配置见 [Agent 接入文档](agents/index.md)。当前会话不会自动被唤醒，明确需要无人值守时登记独立 runner。
 
 ## HTTP、HTTPS 与反向代理
 
@@ -42,7 +59,7 @@ HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设�
 4. 手动派发测试任务；parameters 可设 `{"steps":5,"delay":0.2}`，观察进度和完成结果中的 `simulated:true`。
 5. 停止客户端后派发任务，重新启动验证离线交付；吊销凭证后该客户端应停止，不能继续收发。
 
-模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。接入真实工具应实现参考客户端 handler 或同协议插件。
+模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。真实 Codex App、Codex CLI、Claude Code 使用上述守护进程接入；其他工具可实现参考客户端 handler 或同协议插件。
 
 Agents 管理列表以机器卡片展示实际连接状态、任务和待处理数；待处理徽标统计仍需处理的请求和审批。点击卡片进入详情，上方查看连接、心跳、能力与任务状态，下方派发指令、处理请求、查看任务或管理凭证。CPU、内存等机器遥测仅在 agent 实际上报时显示。
 
@@ -52,18 +69,18 @@ Agents 管理列表以机器卡片展示实际连接状态、任务和待处理�
 
 恢复时停止实例，恢复匹配的数据库和配置，再运行同版本服务。数据库 schema version 不兼容会明确拒绝启动，不能默默重建。升级前保留快照；本版只有初始 schema，未来迁移应明确版本、备份和回滚步骤。
 
-客户端本地状态同样需要保留；丢失它意味着丢失长期凭证、待上传结果和任务去重记录。重新配对前吊销旧身份；不要把同一个客户端数据库复制到两台机器同时运行。
+本机守护目录的登记与设置、各 agent 状态库和 runner TOML 同样需要保留；丢失它意味着丢失长期凭证、待上传结果和任务去重记录。重新配对前吊销旧身份；不要把同一个客户端数据库复制到两台机器同时运行。
 
 ## 常见问题
 
-| 现象 | 检查 |
-|---|---|
-| 启动缺少密码 | 使用正确 `--config` 文件，先执行 init |
-| 登录后操作 403 | 同源访问、公开地址、CSRF token 与 HTTPS cookie 设置 |
-| WebUI 503 | 源码运行先执行 pnpm build，安装包检查是否使用正式构建产物 |
-| agent 无法上线 | 从 agent 机器测试平台可达性；确认注册码未过期、凭证未吊销 |
-| agent 始终离线 | 确认客户端在运行并发送心跳；服务端不会主动联系机器 |
-| 总管没有回复 | 配置模型名称/地址/认证，检查 run 状态和脱敏日志 |
-| 任务 cancel_requested | agent 尚未确认取消；不能等同于已经停止 |
-| interrupted | 执行结果未知，先检查任务/操作记录，避免重复副作用 |
-| 热重载拒绝 | 修正配置类型和取值，上一份有效配置继续生效 |
+| 现象                  | 检查                                                      |
+| --------------------- | --------------------------------------------------------- |
+| 启动缺少密码          | 使用正确 `--config` 文件，先执行 init                     |
+| 登录后操作 403        | 同源访问、公开地址、CSRF token 与 HTTPS cookie 设置       |
+| WebUI 503             | 源码运行先执行 pnpm build，安装包检查是否使用正式构建产物 |
+| agent 无法上线        | 从 agent 机器测试平台可达性；确认注册码未过期、凭证未吊销 |
+| agent 始终离线        | 确认客户端在运行并发送心跳；服务端不会主动联系机器        |
+| 总管没有回复          | 配置模型名称/地址/认证，检查 run 状态和脱敏日志           |
+| 任务 cancel_requested | agent 尚未确认取消；不能等同于已经停止                    |
+| interrupted           | 执行结果未知，先检查任务/操作记录，避免重复副作用         |
+| 热重载拒绝            | 修正配置类型和取值，上一份有效配置继续生效                |

@@ -26,16 +26,16 @@ WebUI 修改先校验整份候选配置，然后用临时文件、fsync 和原�
 
 ### server / auth / database
 
-| 字段 | 用途 |
-|---|---|
-| server.host / port | 监听地址和端口，需重启 |
-| server.public_url | 浏览器公开 origin，用于反向代理后的 Origin 校验 |
-| server.config_poll_seconds | 文件配置检查间隔 |
-| auth.password_hash | init/密码修改生成的 scrypt 哈希，不手填明文 |
-| auth.session_ttl_seconds | 登录会话有效期；新会话采用新值 |
-| auth.max_login_attempts / login_window_seconds | 同来源登录限流 |
-| auth.secure_cookie | 新签发的 cookie 是否仅随 HTTPS 发送；HTTP 部署保持 false |
-| database.url | 默认 SQLite async URL，改动需重启；初版验收存储为 SQLite |
+| 字段                                           | 用途                                                     |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| server.host / port                             | 监听地址和端口，需重启                                   |
+| server.public_url                              | 浏览器公开 origin，用于反向代理后的 Origin 校验          |
+| server.config_poll_seconds                     | 文件配置检查间隔                                         |
+| auth.password_hash                             | init/密码修改生成的 scrypt 哈希，不手填明文              |
+| auth.session_ttl_seconds                       | 登录会话有效期；新会话采用新值                           |
+| auth.max_login_attempts / login_window_seconds | 同来源登录限流                                           |
+| auth.secure_cookie                             | 新签发的 cookie 是否仅随 HTTPS 发送；HTTP 部署保持 false |
+| database.url                                   | 默认 SQLite async URL，改动需重启；初版验收存储为 SQLite |
 
 UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie 和 `X-CSRF-Token`；登录会校验 Origin。初版为单用户，没有多用户、角色管理或默认管理员密码。
 
@@ -47,21 +47,27 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 ### transport
 
-| 字段 | 用途 |
-|---|---|
-| heartbeat_seconds | 参考客户端主动心跳间隔 |
-| offline_after_seconds | 超过最后主动活性记录多久显示离线，必须大于心跳间隔 |
-| poll_timeout_seconds | 长轮询最大等待，最长 60 秒 |
-| retry_seconds | 未 ACK 消息重投与检查间隔 |
-| queue_limit | 持久未确认消息数量上限 |
-| message_ttl_seconds | 下行消息有效期，过期后显式停止交付 |
-| max_message_bytes | 单条信封大小上限 |
-| reconnect_base_seconds / reconnect_max_seconds | 客户端退避范围，加入抖动 |
-| upgrade_interval_seconds | 降级传输定期重新尝试 WS 的间隔 |
+| 字段                                           | 用途                                               |
+| ---------------------------------------------- | -------------------------------------------------- |
+| heartbeat_seconds                              | 参考客户端主动心跳间隔                             |
+| offline_after_seconds                          | 超过最后主动活性记录多久显示离线，必须大于心跳间隔 |
+| poll_timeout_seconds                           | 长轮询最大等待，最长 60 秒                         |
+| retry_seconds                                  | 未 ACK 消息重投与检查间隔                          |
+| queue_limit                                    | 持久未确认消息数量上限                             |
+| message_ttl_seconds                            | 下行消息有效期，过期后显式停止交付                 |
+| max_message_bytes                              | 单条信封大小上限                                   |
+| reconnect_base_seconds / reconnect_max_seconds | 客户端退避范围，加入抖动                           |
+| upgrade_interval_seconds                       | 降级传输定期重新尝试 WS 的间隔                     |
 
 这些客户端字段只有使用对应配置启动参考客户端时才影响其行为。跨语言插件应使用自己的配置或协商默认值；本版不自动向任意插件推送所有服务端设置。
 
-真实 agent 的 `chiliarch agent` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后重启对应 runner，不受服务器配置热重载影响。具体示例见 [接入文档](agents/index.md)。
+真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。原有 standalone MCP 和独立 `agent run` 保留兼容，不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
+
+### 本机 daemon 配置
+
+共享守护目录中的 `daemon.json` 是独立私有配置，不属于平台 `chiliarch.toml`。它保存格式版本、agent 登记、本地调用凭证、监听端口、启动超时和日志/传输策略；`port=0` 让系统选择可用回环端口，发现信息供本机客户端读取。不要把该文件、运行时发现信息或每个 agent 的 SQLite 状态库写入仓库或共享给其他用户。
+
+新增或更新单个身份使用 `daemon register`，设置独立状态路径、可选 runner TOML、并发和起始传输，登记后即时生效。直接修改 `daemon.json` 需重启该守护进程；它没有平台配置的文件热重载功能。重启会取消本机托管工作并等待进程树清理，未知结果不会自动再次执行。具体管理命令见 [本机守护进程](daemon.md)。
 
 ### supervisor / model
 
@@ -81,4 +87,4 @@ SQLite 审计事件、会话消息、任务和操作记录是业务历史，不�
 
 日志包含操作信息，聊天数据库包含用户发送给模型的内容；保护目录权限与备份。秘密参数掩码依据敏感字段名，扩展开发者必须对自定义秘密字段自行脱敏。
 
-agent MCP/runner 默认在状态库旁的 `logs` 目录写同样的结构化轮换日志，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。状态库为 0600；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。
+共享守护进程与 daemon MCP 默认在守护目录下的 `logs` 写同样的结构化轮换日志；legacy MCP/runner 默认在状态库旁的 `logs`，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。POSIX 上状态库权限为 0600；Windows 使用当前用户私有目录及继承的 ACL，`chmod` 不替代 Windows 权限配置；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。

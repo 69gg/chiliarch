@@ -43,8 +43,10 @@ def parser() -> argparse.ArgumentParser:
     demo.add_argument("--state", type=Path, default=Path("data/agent.db"))
     demo.add_argument("--transport", choices=("ws", "sse", "poll"), default="ws")
     from chiliarch.adapters.cli import add_parser
+    from chiliarch.daemon_cli import add_parser as add_daemon_parser
 
     add_parser(commands)
+    add_daemon_parser(commands)
     for command in (initialize, serve, schema, pair, demo):
         command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     return root
@@ -95,7 +97,11 @@ async def _agent_command(arguments: argparse.Namespace) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        if arguments.command == "agent":
+        if arguments.command == "daemon":
+            from chiliarch.daemon_cli import main as daemon_main
+
+            asyncio.run(daemon_main(arguments))
+        elif arguments.command == "agent":
             from chiliarch.adapters.cli import main as agent_main
 
             agent_main(arguments)
@@ -135,5 +141,5 @@ def main() -> None:
             asyncio.run(_agent_command(arguments))
     except KeyboardInterrupt:
         pass
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, RuntimeError) as error:
         raise SystemExit(str(error)) from error

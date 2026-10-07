@@ -1,0 +1,263 @@
+"""Public onboarding commands never invoke real services or vendor agents in tests."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tomllib
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from chiliarch import cli
+from chiliarch.adapters.runtime import connection_owner
+from chiliarch.client import ClientStore
+from chiliarch.daemon_models import DaemonError
+
+JsonObject = dict[str, Any]
+
+
+def command(arguments: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["chiliarch", "agent", *arguments])
+    cli.main()
+
+
+@pytest.mark.parametrize("host", ["codex-app", "codex", "claude-code"])
+def test_daemon_configuration_is_native_parseable_uses_handle_and_leaves_disk_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    directory = tmp_path / "守护 directory with spaces"
+    directory.mkdir()
+    python = str(tmp_path / "tool directory" / "chiliarch")
+    monkeypatch.setattr("chiliarch.adapters.cli.shutil.which", lambda _: python)
+    command(
+        ["config", "--host", host, "--agent", "worker-one", "--daemon-directory", str(directory)],
+        monkeypatch,
+    )
+    output = capsys.readouterr()
+    configuration: JsonObject = (
+        json.loads(output.out) if host == "claude-code" else tomllib.loads(output.out)
+    )
+    entry = configuration["mcpServers" if host == "claude-code" else "mcp_servers"]["chiliarch"]
+    assert entry["command"] == python
+    parsed = cli.parser().parse_args(entry["args"])
+    assert parsed.command == "agent" and parsed.agent_command == "mcp"
+    assert parsed.mode == "daemon"
+    assert parsed.agent == "worker-one"
+    assert parsed.daemon_directory == directory.resolve()
+    assert parsed.state is None
+    assert list(directory.iterdir()) == []
+    assert not output.err
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["config", "--host", "codex", "--state", "fixture.db", "--agent", "worker"],
+        ["mcp", "--mode", "daemon", "--state", "fixture.db"],
+        ["mcp", "--mode", "standalone", "--agent", "worker"],
+        ["config", "--host", "codex", "--mode", "mailbox", "--agent", "worker"],
+    ],
+)
+def test_conflicting_bridge_targets_fail_before_starting_mcp_or_editing_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        command(arguments, monkeypatch)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_daemon_mcp_routes_to_existing_local_identity_without_an_outbound_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "daemon"
+    run = Mock()
+    server = Mock(run=run)
+    create = Mock(return_value=server)
+    logging = Mock()
+    close_logging = Mock()
+    outbound = Mock(side_effect=AssertionError("MCP bridge must not own a platform connection"))
+    monkeypatch.setattr("chiliarch.adapters.mcp.create_mcp_server", create)
+    monkeypatch.setattr("chiliarch.adapters.cli.configure_logging", logging)
+    monkeypatch.setattr("chiliarch.adapters.cli.close_logging", close_logging)
+    monkeypatch.setattr("chiliarch.adapters.cli.outbound_client", outbound)
+    command(["mcp", "--agent", "worker-one", "--daemon-directory", str(directory)], monkeypatch)
+    create.assert_called_once_with(
+        mode="daemon",
+        daemon_directory=directory.resolve(),
+        agent_handle="worker-one",
+        preferred="ws",
+        managed_task=None,
+    )
+    run.assert_called_once_with(transport="stdio")
+    logging.assert_called_once()
+    close_logging.assert_called_once()
+    outbound.assert_not_called()
+    assert not directory.exists()
+
+
+def pair_arguments(state_path: Path, directory: Path) -> list[str]:
+    return [
+        "pair",
+        "--server",
+        "http://platform.invalid",
+        "--name",
+        "Development machine",
+        "--adapter",
+        "codex-app",
+        "--state",
+        str(state_path),
+        "--agent",
+        "app-main",
+        "--daemon-directory",
+        str(directory),
+    ]
+
+
+def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_durable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path = tmp_path / "identity.db"
+    directory = tmp_path / "daemon"
+    order: list[str] = []
+
+    async def ensure(path: Path | None = None) -> JsonObject:
+        assert path == directory
+        assert not state_path.exists()
+        order.append("health")
+        return {"status": "ok"}
+
+    def prompt(_: str) -> str:
+        assert order == ["health"]
+        order.append("prompt")
+        return "private-one-time-code"
+
+    async def pair(server: str, code: str, name: str, machine: str, path: Path, **_: Any) -> None:
+        assert order == ["health", "prompt"]
+        assert code == "private-one-time-code"
+        order.append("pair")
+        store = ClientStore(path)
+        await store.open()
+        try:
+            await store.save_identity(
+                {
+                    "agent_id": "platform-agent",
+                    "credential": "private-long-term-credential",
+                    "server_url": server,
+                    "name": name,
+                    "machine": machine,
+                }
+            )
+        finally:
+            await store.close()
+
+    class LocalDaemon:
+        def __init__(self, path: Path | None) -> None:
+            assert path == directory
+
+        async def __aenter__(self) -> LocalDaemon:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            pass
+
+        async def register(self, path: Path, *, handle: str | None = None) -> JsonObject:
+            assert order == ["health", "prompt", "pair"]
+            assert path == state_path.resolve()
+            assert handle == "app-main"
+            # The connection ownership lock must be released before the daemon
+            # begins owning this identity; pairing must also have closed its DB.
+            async with connection_owner(path):
+                store = ClientStore(path)
+                await store.open()
+                try:
+                    identity = await store.identity()
+                    assert identity["credential"] == "private-long-term-credential"
+                finally:
+                    await store.close()
+            order.append("register")
+            return {"handle": handle}
+
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", ensure)
+    monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", LocalDaemon)
+    monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", prompt)
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    command(pair_arguments(state_path, directory), monkeypatch)
+    output = capsys.readouterr()
+    assert order == ["health", "prompt", "pair", "register"]
+    assert "app-main" in output.out
+    assert "private-one-time-code" not in output.out + output.err
+    assert "private-long-term-credential" not in output.out + output.err
+
+
+def test_unhealthy_daemon_blocks_pair_before_consuming_registration_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "identity.db"
+    healthy = AsyncMock(side_effect=DaemonError("Local daemon version is incompatible"))
+    pair = AsyncMock(side_effect=AssertionError("must not exchange the one-time code"))
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", healthy)
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    monkeypatch.setattr(
+        "chiliarch.adapters.cli.getpass.getpass",
+        lambda _: pytest.fail("must not ask for a code before daemon health succeeds"),
+    )
+    with pytest.raises(SystemExit, match="incompatible"):
+        command(pair_arguments(state_path, tmp_path / "daemon"), monkeypatch)
+    healthy.assert_awaited_once_with(tmp_path / "daemon")
+    pair.assert_not_called()
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_doctor_is_read_only_checks_health_and_only_the_requested_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available: bool,
+) -> None:
+    directory = tmp_path / "daemon"
+    ensure = AsyncMock(side_effect=AssertionError("doctor must never install or start services"))
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", ensure)
+    registrations = [
+        {"handle": "worker-one", "mode": "manual", "connection": "running"},
+        {"handle": "other-worker", "mode": "managed", "connection": "running"},
+    ]
+
+    class LocalDaemon:
+        def __init__(self, path: Path | None) -> None:
+            assert path == directory
+
+        async def __aenter__(self) -> LocalDaemon:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            pass
+
+        async def health(self) -> JsonObject:
+            if not available:
+                raise DaemonError("Local daemon unavailable")
+            return {"status": "ok", "agent_count": 2}
+
+        async def agents(self) -> list[JsonObject]:
+            return registrations
+
+    monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", LocalDaemon)
+    command(["doctor", "--agent", "worker-one", "--daemon-directory", str(directory)], monkeypatch)
+    report = json.loads(capsys.readouterr().out)
+    assert report["registered"] is available
+    if available:
+        assert report["daemon"] == {"status": "ok", "agent_count": 2}
+        assert report["agents"] == registrations[:1]
+    else:
+        assert report["daemon"]["status"] == "unavailable"
+    ensure.assert_not_called()
+    assert not directory.exists()

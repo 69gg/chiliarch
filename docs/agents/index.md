@@ -22,11 +22,11 @@ OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协�
 
 当前版本为 v0.1.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
-后续统一安装顺序、共享守护进程与三种系统的登录自启动要求见 [跨平台守护进程设计](../daemon.md)。下文介绍当前 MCP 会话桥与单个 runner 的接入步骤。
+本机接入默认先发现并复用当前用户守护进程，再配对、登记身份和配置 MCP。它共用进程，不共用 agent 凭证；默认用户登录后自动启动。Windows、macOS、Linux 的管理入口和维护见 [本机共享守护进程](../daemon.md)。
 
 ## 安装接入工具
 
-接入机器需要 uv，以及 Python 3.11、3.12 或 3.13。它不需要 Node、pnpm 或独立 WebUI。源码 checkout 的可信来源由你确认；进入该目录后：
+先运行 `chiliarch daemon status` 检查当前用户已有守护进程；已健康则复用，已安装但停止则 `chiliarch daemon start`，没有可用工具时才安装。接入机器需要 uv，以及 Python 3.11、3.12 或 3.13；不需要构建 WebUI。原生厂商工具可能自带 Node，这不改变 Chiliarch 的 Python 管理方式。源码 checkout 的可信来源由你确认；进入该目录后：
 
 ```bash
 uv sync --locked
@@ -51,7 +51,7 @@ uv tool install git+https://github.com/69gg/chiliarch.git
 uv tool install chiliarch
 ```
 
-CLI runner 复用本机的 `codex` 或 `claude` 可执行文件及原生认证方式；Chiliarch 不安装原生工具，也不把它们的登录凭证发送给平台。MCP 协作可以跨平台使用；本版托管 runner 依赖 POSIX 进程组清理，支持 Linux、macOS，Windows 使用当前会话 MCP 协作。
+安装后运行 `chiliarch daemon install`，默认登记当前用户登录自启动并检查本地健康。无可用系统管理器时使用后台或前台入口，状态明确显示未启用自启动。CLI runner 复用本机 `codex` 或 `claude` 和原生认证，不安装或登录它们，也不上传认证文件。MCP 与托管执行支持 Windows、macOS、Linux；Windows 原生入口及进程树清理边界见 [守护进程文档](../daemon.md#当前会话与托管执行)。
 
 ## 配对与本地身份
 
@@ -62,37 +62,44 @@ chiliarch agent pair \
   --server "http://平台主机:8000" \
   --name "机器名 / 用途" \
   --adapter codex-app \
+  --agent codex-app-main \
   --state "/绝对路径/私有目录/agent.db"
 ```
 
 交互输入注册码。其他 agent 使用 `--adapter codex` 或 `--adapter claude-code`。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
 
-状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
+`agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有状态通过 `chiliarch daemon register --state <路径> --agent <标识>` 登记，不能覆盖或重新配对。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
 
 ## 两种运行方式
 
-**当前会话协作**：原生 agent 通过 stdio 启动 `chiliarch agent mcp --mode standalone`。该进程主动连接平台，接收和保存消息；agent 调用工具领取任务并执行，报告进度与结束结果。MCP 连上不代表原生会话会自动产生新的模型回合。请明确让当前会话开始领取任务，或持续检查上级消息。
+**当前会话协作**：宿主启动 `chiliarch agent mcp --mode daemon --agent <本地标识>`，只向本机共享守护进程转发。守护进程维护该身份的唯一出站连接，接收并持久保存消息；当前原生会话主动调用工具领取、执行并报告。常驻连接不能自动唤醒空闲 App 或保证新增模型回合，仍需让会话开始领取任务。
 
-**托管 runner**：`chiliarch agent run` 维持唯一出站连接，收到调度后按机器本地 TOML 启动原生 CLI。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由已有 runner 传输。不要再让 standalone 模式或第二个 runner 使用同一个状态库连接平台。
+**托管 runner**：`chiliarch daemon register --settings <本地TOML>` 将独立身份设为 managed，由守护进程收到任务后按固定策略启动原生 CLI。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。
 
-使用下列命令生成 MCP 配置片段；它只向 stdout 输出，不写入原生 agent 配置：
-
-```bash
-chiliarch agent config --host codex-app --state "/绝对路径/私有目录/agent.db"
-chiliarch agent doctor --state "/绝对路径/私有目录/agent.db"
-```
-
-连接默认从 WS 开始，失败后使用 SSE＋HTTP POST，最后长轮询。排查代理问题时可以从指定传输开始：
+生成并合并当前宿主的 MCP 配置，命令不修改原生设置：
 
 ```bash
-chiliarch agent mcp --state "/绝对路径/私有目录/agent.db" --mode standalone --transport sse
+chiliarch agent config --host codex-app --agent codex-app-main
+chiliarch agent doctor --agent codex-app-main
 ```
 
-`--transport poll` 从长轮询开始。它们共用身份、去重和消息队列，不要求平台能访问 agent 的 IP。HTTP 可以使用，不强制 HTTPS；跨不可信网络时应由部署者选择 HTTPS，避免凭证和任务内容明文传输。
+独立守护目录同时传 `--daemon-directory`，生成器输出绝对路径。MCP 配置只携带目录和标识，不保存平台凭证。WS → SSE＋HTTP POST → 长轮询共用身份、去重和队列，不要求平台能访问 agent IP。登记使用 `daemon register --transport sse` 或 `poll` 可以改变起始传输；HTTP 不强制 HTTPS，跨不可信网络时由部署者选择 TLS。
+
+### 旧版 standalone 与独立 runner
+
+原有 `--state` 接口保留；以下命令直接占用该状态库的出站连接，不应与已登记守护身份并行运行：
+
+```bash
+chiliarch agent config --host codex-app --state "/绝对路径/私有目录/legacy.db" --mode standalone
+chiliarch agent mcp --state "/绝对路径/私有目录/legacy.db" --mode standalone --transport sse
+chiliarch agent run --state "/绝对路径/私有目录/legacy.db" --settings "/绝对路径/local-agent.toml"
+```
+
+迁移时先停止旧 MCP/runner，保留其状态库，通过 `daemon register` 登记同一身份，再把宿主 MCP 配置换为 daemon 模式；无需重新配对。只读离线检查仍使用 `agent doctor --state <路径>`，不会启动或连接服务。
 
 ## MCP 工具与完整工作流
 
-宿主通常为工具加上 `mcp__chiliarch__` 等前缀，下表使用服务导出的原始工具名。`standalone` 提供全部工具；`mailbox` 只提供查询、消息和协调工具，不导出领取、进度、成功、失败或取消确认等任务状态变更工具。
+宿主通常为工具加上 `mcp__chiliarch__` 等前缀，下表使用服务导出的原始工具名。daemon 的 manual 身份和 legacy `standalone` 提供全部工具；`mailbox` 只提供查询、消息和协调工具，不导出领取、进度、成功、失败或取消确认等任务状态变更工具。
 
 | 工具                                                                  | 参数与结果用途                                                                          |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -103,11 +110,11 @@ chiliarch agent mcp --state "/绝对路径/私有目录/agent.db" --mode standal
 | `request_operation(operation, arguments, message="", wait_seconds=0)` | 请求平台业务操作；返回请求 ID，结果可能仍为 `pending`                                   |
 | `get_request_result(request_id, wait_seconds=0)`                      | 查询同一请求的持久批准、拒绝或失败结果；未回复时仍返回 `pending`                        |
 | `list_agents(wait_seconds=10)`                                        | 通过总管申请平台 agent 列表；可能返回待处理请求，保留 ID 后继续查询                     |
-| `claim_task(task_id?, wait_seconds=0)`                                | 仅 standalone：原子领取一项已排队任务，返回 `claimed` 与任务；无任务返回 `empty`        |
-| `report_progress(task_id, progress, message="")`                      | 仅 standalone：为已领取任务报告 0–1 进度；取消后拒绝继续报告运行                        |
-| `complete_task(task_id, result)`                                      | 仅 standalone：报告真实 JSON 对象结果；相同结果重试幂等，冲突结果不会覆盖               |
-| `fail_task(task_id, error)`                                           | 仅 standalone：明确报告失败原因，不能用虚构结果标记成功                                 |
-| `confirm_cancellation(task_id)`                                       | 仅 standalone：实际停止本地工作后确认取消；未确认时平台仍显示取消请求                   |
+| `claim_task(task_id?, wait_seconds=0)`                                | 仅 manual/standalone：原子领取一项已排队任务，返回 `claimed` 与任务；无任务返回 `empty` |
+| `report_progress(task_id, progress, message="")`                      | 仅 manual/standalone：为已领取任务报告 0–1 进度；取消后拒绝继续报告运行                 |
+| `complete_task(task_id, result)`                                      | 仅 manual/standalone：报告真实 JSON 对象结果；相同结果重试幂等，冲突结果不会覆盖        |
+| `fail_task(task_id, error)`                                           | 仅 manual/standalone：明确报告失败原因，不能用虚构结果标记成功                          |
+| `confirm_cancellation(task_id)`                                       | 仅 manual/standalone：实际停止本地工作后确认取消；未确认时平台仍显示取消请求            |
 
 所有 `wait_seconds` 取值为 0–30 秒。等待结束不是批准，工具返回成功也可能只是本地持久入队。先看业务 `status`，再决定下一步；不要为了继续工作把 `pending` 当作 `approved`。
 
@@ -136,9 +143,9 @@ chiliarch agent mcp --state "/绝对路径/私有目录/agent.db" --mode standal
 
 平台离线调度先入队，客户端连上后投递；协议使用持久 ACK 和至少一次投递，客户端按消息及任务身份去重。ACK 只表示持久接收，不能用它证明原生 agent 已执行。
 
-同一状态库只允许一个网络连接所有者，第二个实例应明确失败；mailbox MCP 不另建网络连接。保留该状态库及锁文件生命周期，不通过删除锁文件强行开第二个实例。
+同一状态库只允许一个网络连接所有者，第二个实例应明确失败；多个 daemon MCP 桥复用已有连接，mailbox MCP 不另建网络连接。保留该状态库及锁文件生命周期，不通过删除锁文件强行开第二个实例。
 
-取消请求要等客户端确认，平台 `cancellation_requested` 不等于原生进程已经停止。托管 runner 在取消、超时和退出时清理整个原生进程组；后台子进程不会被留作长期服务。任务若需要常驻服务，应另用明确的服务管理方式。
+取消请求要等客户端确认，平台 `cancellation_requested` 不等于原生进程已经停止。托管 runner 在取消、超时和退出时清理整个原生进程树；后台子进程不会被留作长期服务。任务若需要常驻服务，应另用明确的服务管理方式。
 
 客户端重启时，上次仍在运行的任务按结果未知处理，不自动重做。检查工作目录和原生运行记录后再决定恢复或重新派发，避免重复写入、重复发布等副作用。新调度不会自动恢复用户已有 App/CLI 会话。
 
@@ -146,14 +153,14 @@ chiliarch agent mcp --state "/绝对路径/私有目录/agent.db" --mode standal
 
 接入 CLI 的诊断、日志不能写入 MCP stdout；stdout 专用于协议。日志目录可由 `chiliarch agent mcp --log-directory "/绝对路径/日志目录"` 指定。日志保留和轮换见 [配置与日志](../configuration.md)，不要把凭证或原生认证错误原文粘贴到工单。
 
-MCP 与 runner 默认把日志写入状态库同目录下的 `logs/chiliarch.jsonl`，使用默认大小轮换；`agent run` 同样接受 `--log-directory`。这组 agent 命令不要求平台服务器的密码或 `chiliarch.toml`。本地 runner 设置里的相对 `workdir` 按该 TOML 文件所在目录解释，与启动 shell 的 cwd 无关；推荐绝对路径方便审阅。
+共享守护进程和 daemon MCP 默认在守护目录下的 `logs/chiliarch.jsonl` 写轮换日志；legacy MCP/runner 使用状态库旁的 `logs`，可通过 `--log-directory` 指定。这组 agent 命令不要求平台服务器的密码或 `chiliarch.toml`。本地 runner 设置里的相对 `workdir` 按该 TOML 文件所在目录解释，与启动 shell 的 cwd 无关；推荐绝对路径方便审阅。
 
-运行 `doctor` 检查本地状态、工具可执行路径和 runner 设置；该命令不启动原生推理、不连接平台、不替你登录、不安装工具。托管 runner 也可以传 `--settings "/绝对路径/local-agent.toml"`。`paired=true` 只表示本地保存过身份，不证明凭证当前未吊销、登录仍有效或网络已上线；上线、调度与回信仍应以平台实际心跳、任务状态和原生终态确认。
+运行 `doctor --agent <标识>` 只读检查本地守护进程健康、登记、原生工具路径和 runner 设置；不会启动服务、原生推理或连接平台，不替你登录或安装工具。legacy `--state` 只检查本地 SQLite。托管 runner 也可以传 `--settings "/绝对路径/local-agent.toml"`。`paired=true` 只表示本地保存过身份，不证明凭证当前未吊销、登录仍有效或网络已上线；上线、调度与回信仍应以平台实际心跳、任务状态和原生终态确认。
 
 | 现象                            | 检查                                                          |
 | ------------------------------- | ------------------------------------------------------------- |
 | 只有 MCP 工具，没有自动开始任务 | 当前会话尚未主动领取；App 不自动唤醒，自动工作使用托管 runner |
-| 状态库被占用                    | 找出已有 standalone 或 runner；不要用两条连接共享凭证         |
+| 状态库被占用                    | 检查守护身份与旧 standalone/runner；不要用两条连接共享凭证    |
 | 申请一直没有结果                | 保留请求 ID；查看总管/用户审批和客户端连接，不重复提交        |
 | 原生运行无成功结果              | 检查本机登录、配置和权限；结果文本或退出码单独不足以证明成功  |
 | 任务已请求取消但仍运行          | 等待客户端停止确认；离线机器无法即刻收到取消                  |
