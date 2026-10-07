@@ -206,6 +206,7 @@ async def test_ask_approval_has_no_effect_until_decision_and_replays_once(
 
 async def test_pending_approval_survives_restart_without_reexecuting_side_effect(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
     settings = manager()
@@ -215,11 +216,27 @@ async def test_pending_approval_survives_restart_without_reexecuting_side_effect
     service = OperationService(db, settings)
     register_change(service, effects)
     original = Supervisor(db, service, settings, provider_factory=upstream.provider)
+    notification_started = asyncio.Event()
+    notification_gate = asyncio.Event()
+    notify_event = original._notify_event
+
+    async def pause_approval_notification(
+        conversation_id: str, run_id: str | None, kind: str
+    ) -> None:
+        if kind == "approval_required":
+            notification_started.set()
+            await notification_gate.wait()
+        await notify_event(conversation_id, run_id, kind)
+
+    monkeypatch.setattr(original, "_notify_event", pause_approval_notification)
     await db.initialize()
     await original.start()
     conversation = await original.create_conversation()
     run = await original.send_message(conversation["id"], "change state")
+    await asyncio.wait_for(notification_started.wait(), 5)
     suspended = await wait_status(original, run["run_id"], "awaiting_approval")
+    before = await original.get_conversation(conversation["id"])
+    assert any(event["type"] == "approval_required" for event in before["events"])
     await original.stop()
     settings.update({"model": {"request_params": {"auth": {"api_key": "new-key", "limit": 99}}}})
     service = OperationService(db, settings)
@@ -247,6 +264,88 @@ async def test_pending_approval_survives_restart_without_reexecuting_side_effect
             assert len(records) == 1 and records[0].status == "completed"
     finally:
         await restored.stop()
+        await db.close()
+
+
+async def test_same_clock_tick_and_clock_rollback_keep_messages_and_context_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import chiliarch.chat as chat_module
+
+    timestamp = 1_700_000_000.0
+
+    def frozen_default(_: Any) -> float:
+        return timestamp
+
+    monkeypatch.setattr(chat_module.time, "time", lambda: timestamp)
+    for model in (ChatMessage, ChatRun):
+        monkeypatch.setattr(model.__table__.c.created_at.default, "arg", frozen_default)
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    settings = manager("yolo")
+    upstream = Upstream()
+    effects: list[int] = []
+    service = OperationService(db, settings)
+    register_change(service, effects)
+    supervisor = Supervisor(db, service, settings, provider_factory=upstream.provider)
+    await db.initialize()
+    await supervisor.start()
+    try:
+        conversation = await supervisor.create_conversation(title="Manual title")
+        first = await supervisor.send_message(conversation["id"], "first question")
+        await wait_status(supervisor, first["run_id"], "completed")
+        await supervisor.stop()
+        service = OperationService(db, settings)
+        register_change(service, effects)
+        supervisor = Supervisor(db, service, settings, provider_factory=upstream.provider)
+        await supervisor.start()
+        second = await supervisor.send_message(conversation["id"], "second question")
+        await wait_status(supervisor, second["run_id"], "completed")
+        timestamp -= 10
+        third = await supervisor.send_message(conversation["id"], "third question")
+        await wait_status(supervisor, third["run_id"], "completed")
+        snapshot = await supervisor.get_conversation(conversation["id"])
+        assert [message["role"] for message in snapshot["messages"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert [message["content"] for message in snapshot["messages"]] == [
+            "first question",
+            "Working Done",
+            "second question",
+            "Done",
+            "third question",
+            "Done",
+        ]
+        times = [message["created_at"] for message in snapshot["messages"]]
+        assert all(earlier < later for earlier, later in zip(times, times[1:], strict=False))
+        assert [run["id"] for run in snapshot["runs"]] == [
+            first["run_id"],
+            second["run_id"],
+            third["run_id"],
+        ]
+        history = upstream.requests[-1]["messages"]
+        assert [message["content"] for message in history if message["role"] == "user"] == [
+            "first question",
+            "second question",
+            "third question",
+        ]
+        assert [message["role"] for message in history] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "user",
+            "assistant",
+            "user",
+        ]
+        assert effects == [7]
+    finally:
+        await supervisor.stop()
         await db.close()
 
 
@@ -815,11 +914,17 @@ async def test_shutdown_persists_terminal_state_after_execution_cleanup_is_cance
     cleanup_gate = asyncio.Event()
     original_terminal = supervisor._terminal
 
-    async def interrupted_cleanup(run_id: str, status: str, error: str | None = None) -> None:
+    async def interrupted_cleanup(
+        run_id: str,
+        status: str,
+        error: str | None = None,
+        *,
+        preserve_approval: bool = False,
+    ) -> None:
         if asyncio.current_task() is supervisor.tasks.get(run_id):
             cleanup_entered.set()
             await cleanup_gate.wait()
-        await original_terminal(run_id, status, error)
+        await original_terminal(run_id, status, error, preserve_approval=preserve_approval)
 
     monkeypatch.setattr(supervisor, "_terminal", interrupted_cleanup)
     await db.initialize()

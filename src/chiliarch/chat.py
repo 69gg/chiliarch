@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
@@ -496,6 +497,14 @@ class Supervisor:
                         .order_by(ChatMessage.created_at, ChatMessage.id)
                     )
                 ).all()
+                # A coarse clock (notably on Windows) can assign both messages
+                # the same timestamp, and UUIDs cannot break a chronological tie.
+                # Advance from the durable tail so restarts and clock rollback
+                # preserve message and completed-checkpoint order as well.
+                created_at = time.time()
+                if previous:
+                    created_at = max(created_at, math.nextafter(previous[-1].created_at, math.inf))
+                assistant_created_at = math.nextafter(created_at, math.inf)
                 checkpoint = await session.scalar(
                     select(ChatRun)
                     .where(
@@ -538,6 +547,7 @@ class Supervisor:
                         source=source,
                         transcript=user_transcript,
                         run_id=run_id,
+                        created_at=created_at,
                     )
                 )
                 session.add(
@@ -547,6 +557,7 @@ class Supervisor:
                         role="assistant",
                         source="supervisor",
                         run_id=run_id,
+                        created_at=assistant_created_at,
                     )
                 )
                 snapshot = settings.model.model_dump(mode="json", exclude={"api_key", "headers"})
@@ -560,6 +571,7 @@ class Supervisor:
                     model_snapshot=snapshot,
                     config_revision=self.settings_manager.revision,
                     source=source,
+                    created_at=created_at,
                 )
                 session.add(run)
                 session.add(
@@ -756,7 +768,11 @@ class Supervisor:
                         return
         except asyncio.CancelledError:
             with CancelScope(shield=True):
-                await self._terminal(run_id, "interrupted" if self.closed else "cancelled")
+                await self._terminal(
+                    run_id,
+                    "interrupted" if self.closed else "cancelled",
+                    preserve_approval=self.closed,
+                )
             raise
         except Exception as exc:
             logger.exception("Supervisor run failed", extra={"run_id": run_id})
@@ -879,12 +895,17 @@ class Supervisor:
                     stored.status = "awaiting_approval"
                     stored.pending_approval_id = result["approval_id"]
                     stored.updated_at = time.time()
-                await self._event(
-                    run.conversation_id,
-                    run.id,
-                    "approval_required",
-                    {**call, "approval_id": result["approval_id"]},
-                )
+                    # Status and its UI event are one durable change. A reader
+                    # observing awaiting_approval must also see the approval.
+                    session.add(
+                        ChatEvent(
+                            conversation_id=run.conversation_id,
+                            run_id=run.id,
+                            type="approval_required",
+                            data=redact({**call, "approval_id": result["approval_id"]}),
+                        )
+                    )
+                await self._notify_event(run.conversation_id, run.id, "approval_required")
                 return False
             await self._event(
                 run.conversation_id,
@@ -1085,11 +1106,23 @@ class Supervisor:
                     .values(status=status, updated_at=time.time())
                 )
 
-    async def _terminal(self, run_id: str, status: str, error: str | None = None) -> None:
+    async def _terminal(
+        self,
+        run_id: str,
+        status: str,
+        error: str | None = None,
+        *,
+        preserve_approval: bool = False,
+    ) -> None:
         async with self.db.write_lock:
             async with self.db.sessions.begin() as session:
                 run = await session.get(ChatRun, run_id)
                 if run is None or run.status not in ACTIVE:
+                    return
+                if preserve_approval and run.status == "awaiting_approval":
+                    # Shutdown may cancel a task after suspension committed but
+                    # before its notification returned. Keep that approval ready
+                    # for restart; explicit user cancellation still withdraws it.
                     return
                 assistant = await session.get(ChatMessage, run.assistant_message_id)
                 keys = [call["key"] for call in run.pending_calls]
