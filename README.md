@@ -14,7 +14,7 @@
 
 接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。CLI runner 每次调度创建新的原生会话，托管执行支持 Linux/macOS。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
-仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。目前尚未推送及发布到 PyPI；文档中的远程安装命令待发布后使用，也可先使用可信本地 checkout。
+仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 ## 快速开始
 
@@ -32,7 +32,7 @@ uv run chiliarch serve
 
 `init` 交互设置单用户登录密码，创建权限为 0600 的 `chiliarch.toml`。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
 
-前端构建产物随 Python wheel 和 sdist 发布，安装发布包后无需 Node。正式发布 PyPI 后：
+前端构建产物随 Python wheel 和 sdist 发布，安装发布包后无需 Node。从 PyPI 安装：
 
 ```bash
 uv tool install chiliarch

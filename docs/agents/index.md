@@ -2,7 +2,7 @@
 
 ## 让 agent 接入自己
 
-将下面整段发给要接入的 agent，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。仓库尚未推送时，可让它读取可信本地 checkout 中的同一文档。
+将下面整段发给要接入的 agent，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。
 
 ```text
 你负责把你自己接入 Chiliarch。
@@ -20,7 +20,7 @@
 
 OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协议](../protocol.md) 实现适配，本版不把它们标为已完成的厂商适配器。
 
-版本仍为 v0.1.0。官方仓库地址确认为 [69gg/chiliarch](https://github.com/69gg/chiliarch)，当前尚未推送及发布到 PyPI；下面远程安装命令要等对应发布完成后使用。
+当前版本为 v0.1.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 ## 安装接入工具
 
@@ -37,13 +37,13 @@ uv run chiliarch agent --help
 uv tool install /绝对路径/chiliarch
 ```
 
-仓库推送后可直接从 GitHub 安装：
+从 GitHub 安装：
 
 ```bash
 uv tool install git+https://github.com/69gg/chiliarch.git
 ```
 
-PyPI 正式发布后：
+从 PyPI 安装：
 
 ```bash
 uv tool install chiliarch

@@ -1,6 +1,6 @@
 # Codex App 与 Codex CLI
 
-将下面整段发给当前 Codex，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。仓库尚未推送时，可让它读取可信本地 checkout 中的同一文档。
+将下面整段发给当前 Codex，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。
 
 ```text
 你负责把你自己接入 Chiliarch。
@@ -16,7 +16,7 @@ Codex App 与交互式 Codex CLI 使用同一个 Chiliarch stdio MCP 服务。�
 
 ## 安装与配对
 
-按 [通用安装说明](index.md#安装接入工具) 安装 Chiliarch。仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)，当前尚未推送到 GitHub、尚未发布 PyPI；远程安装示例要等发布完成，现阶段使用可信源码 checkout。
+按 [通用安装说明](index.md#安装接入工具) 安装 Chiliarch。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 进入已存在且可信的项目目录，配对 App：
 

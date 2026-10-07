@@ -12,8 +12,6 @@
 - Codex App / Codex CLI：<https://raw.githubusercontent.com/69gg/chiliarch/main/docs/agents/codex.md>
 - Claude Code：<https://raw.githubusercontent.com/69gg/chiliarch/main/docs/agents/claude-code.md>
 
-仓库 `69gg/chiliarch` 和 PyPI 当前可能尚未发布。已有可信本地 checkout 时，可以读取其中的同路径文档；远程文档不可用且没有本地源码时，询问用户是否有可信本地源码路径。仍不可用则说明阻塞，不使用其他同名项目代替。
-
 ## 2. 主动询问缺少的配置
 
 结合当前对话与检查结果，只询问尚未明确的信息，相关问题可以一起提出：
@@ -29,7 +27,7 @@
 
 ## 3. 安装、配对与配置 MCP
 
-仅安装 Chiliarch 接入工具，使用 uv 管理 Python，按通用技术文档选择可信来源。源码安装优先使用用户确认的本地 checkout；不要因为尚未发布就安装其他来源的同名包。
+仅安装 Chiliarch 接入工具，使用 uv 管理 Python，按通用技术文档从 PyPI 或官方 GitHub 仓库安装。
 
 使用已确认的信息执行 `chiliarch agent pair` 完成配对。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
 

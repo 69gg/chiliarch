@@ -1,6 +1,6 @@
 # Claude Code
 
-将下面整段发给当前 Claude Code，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。仓库尚未推送时，可让它读取可信本地 checkout 中的同一文档。
+将下面整段发给当前 Claude Code，无需预填配置。它会读取 [Agent 自助接入指南](onboarding.md)，向你询问缺少的信息并完成接入。
 
 ```text
 你负责把你自己接入 Chiliarch。
@@ -10,7 +10,7 @@
 
 ## 安装与身份
 
-按 [通用安装说明](index.md#安装接入工具) 安装 Chiliarch。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)，当前尚未推送、尚未发布 PyPI；现阶段使用可信 checkout，远程安装示例等正式发布后再运行。
+按 [通用安装说明](index.md#安装接入工具) 安装 Chiliarch。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 Chiliarch 复用本机 `claude` 与其原生认证配置，不读取或上传认证文件，不负责订阅、模型服务或原生安装。交互式 Claude Code 使用当前会话 MCP；无人值守使用独立状态库与托管 runner。两者不要同时占用一个客户端状态库。
 
