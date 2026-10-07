@@ -23,7 +23,8 @@ def project_copy(path: Path) -> None:
 def test_real_uv_bump_updates_lock_and_recovers_same_version(tmp_path: Path) -> None:
     project_copy(tmp_path)
     previous = (tmp_path / "pyproject.toml").read_bytes()
-    bump_version("0.2.0", tmp_path, dry_run=True)
+    preview = bump_version("0.2.0", tmp_path, dry_run=True)
+    assert preview["managed"] == ["pyproject.toml", "uv.lock", "web/package.json"]
     assert (tmp_path / "pyproject.toml").read_bytes() == previous
     result = bump_version("0.2.0", tmp_path)
     with (tmp_path / "pyproject.toml").open("rb") as stream:
@@ -34,7 +35,9 @@ def test_real_uv_bump_updates_lock_and_recovers_same_version(tmp_path: Path) -> 
         next(package["version"] for package in packages if package["name"] == "chiliarch")
         == "0.2.0"
     )
-    assert set(result["changed"]) == {"pyproject.toml", "uv.lock", "web/package.json"}
+    changed = result["changed"]
+    assert isinstance(changed, list)
+    assert set(changed) == {"pyproject.toml", "uv.lock", "web/package.json"}
     manifest = json.loads((tmp_path / "web/package.json").read_text())
     manifest["version"] = "0.1.9"
     (tmp_path / "web/package.json").write_text(json.dumps(manifest))

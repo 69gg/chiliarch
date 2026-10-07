@@ -2,7 +2,7 @@
 
 ## 本地验证
 
-Python 默认 3.13，CI 必须覆盖 3.11、3.12、3.13；3.14 可另行验证，不因 requires-python 无上限就声明所有未来版本支持。
+Python 默认 3.13，CI 使用 Linux、macOS、Windows 与 Python 3.11、3.12、3.13 的完整矩阵；所有组合和前端验证通过后才构建并检查 wheel、sdist。3.14 可另行验证，不因 requires-python 无上限就声明所有未来版本支持。
 
 ```bash
 uv sync --locked --group dev
@@ -27,7 +27,7 @@ uv run python scripts/bump_version.py 0.2.0 --dry-run
 uv run python scripts/bump_version.py 0.2.0
 ```
 
-脚本使用 uv version 同步 pyproject 与 uv.lock，再同步 web/package.json。包 `__version__` 来自安装元数据，不再维护第二个源码版本字符串。同版本重跑可以修复前端版本不一致；失败时恢复受管理文件。脚本不自动提交、打 tag 或推送。
+脚本使用 uv version 同步 pyproject 与 uv.lock，再同步 web/package.json；JSON 报告中的仓库相对路径在各系统统一使用 `/`。包 `__version__` 来自安装元数据，不再维护第二个源码版本字符串。同版本重跑可以修复前端版本不一致；失败时恢复受管理文件。脚本不自动提交、打 tag 或推送。
 
 支持公开三段 PEP 440 版本，例如 0.2.0、0.2.0rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
 

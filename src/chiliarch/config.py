@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
@@ -210,11 +211,14 @@ def atomic_write(path: Path, settings: Settings) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # Windows _commit supports file descriptors, but ordinary os.open
+        # cannot open a directory. The file is already flushed before replace.
+        if sys.platform != "win32":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary)

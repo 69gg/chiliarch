@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import stat
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
+from chiliarch import config
 from chiliarch.config import MASK, LogSettings, Settings, SettingsManager, atomic_write
 from chiliarch.logging import close_logging, configure_logging, tail_logs
 
@@ -47,7 +52,85 @@ def test_restart_fields_are_saved_but_not_live(tmp_path: Path) -> None:
     assert set(manager.pending_restart) == {"server.port", "database.url"}
     restarted = SettingsManager(manager.path)
     assert restarted.current.server.port == 12345
-    assert restarted.current.database.url.endswith("/next.db")
+    assert (
+        Path(restarted.current.database.url.removeprefix("sqlite+aiosqlite:///")).name == "next.db"
+    )
+
+
+def test_windows_atomic_update_flushes_file_without_opening_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    manager = SettingsManager(path)
+    original_open = os.open
+    original_fsync = os.fsync
+    synchronized: list[int] = []
+
+    def open_descriptor(
+        filename: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(os.fsdecode(filename)).is_dir():
+            raise PermissionError("Windows cannot open a directory as an ordinary file")
+        return original_open(filename, flags, mode, dir_fd=dir_fd)
+
+    def sync_descriptor(descriptor: int) -> None:
+        synchronized.append(os.fstat(descriptor).st_mode)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(config, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(os, "open", open_descriptor)
+    monkeypatch.setattr(os, "fsync", sync_descriptor)
+    manager.update({"supervisor": {"mode": "auto"}})
+
+    assert manager.current.supervisor.mode == "auto"
+    assert manager.revision == 2
+    assert SettingsManager(path).current.supervisor.mode == "auto"
+    assert len(synchronized) == 1 and stat.S_ISREG(synchronized[0])
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["config.toml"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not support directory fsync")
+def test_atomic_update_flushes_parent_directory_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_fsync = os.fsync
+    synchronized: list[int] = []
+
+    def sync_descriptor(descriptor: int) -> None:
+        synchronized.append(os.fstat(descriptor).st_mode)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", sync_descriptor)
+    manager = SettingsManager(tmp_path / "config.toml")
+    manager.update({"supervisor": {"mode": "auto"}})
+    assert len(synchronized) == 2
+    assert stat.S_ISREG(synchronized[0])
+    assert stat.S_ISDIR(synchronized[1])
+
+
+def test_atomic_update_fsync_failure_preserves_file_and_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    manager = SettingsManager(path)
+    manager.update({"supervisor": {"mode": "ask"}})
+    previous = path.read_bytes()
+    revision = manager.revision
+
+    def fail_sync(descriptor: int) -> None:
+        raise OSError("File flush failed")
+
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="File flush failed"):
+        manager.update({"supervisor": {"mode": "auto"}})
+    assert path.read_bytes() == previous
+    assert manager.current.supervisor.mode == "ask"
+    assert manager.revision == revision
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["config.toml"]
 
 
 def test_old_execution_limits_are_retired_and_context_window_hot_reloads(tmp_path: Path) -> None:

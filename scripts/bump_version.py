@@ -35,7 +35,7 @@ def bump_version(value: str, root: Path = ROOT, *, dry_run: bool = False) -> dic
             "old_version": old,
             "new_version": target,
             "dry_run": True,
-            "managed": [str(path.relative_to(root)) for path in paths],
+            "managed": [path.relative_to(root).as_posix() for path in paths],
         }
     try:
         # uv updates its own lock format, including recovery of same-version reruns.
@@ -47,7 +47,7 @@ def bump_version(value: str, root: Path = ROOT, *, dry_run: bool = False) -> dic
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         changed = [
-            str(path.relative_to(root))
+            path.relative_to(root).as_posix()
             for path, content in before.items()
             if path.read_bytes() != content
         ]
