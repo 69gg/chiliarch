@@ -416,7 +416,13 @@ async def test_first_install_without_native_manager_starts_real_detached_daemon_
         second = await ensure_daemon(directory, autostart=False)
         assert first["status"] == second["status"] == "ok"
         assert first["reused"] is False and second["reused"] is True
-        assert first["pid"] == second["pid"] == children[0].pid
+        assert first["pid"] == second["pid"]
+        # Windows venv python.exe can delegate to a child interpreter; health
+        # identifies the actual daemon rather than the launcher process.
+        if sys.platform != "win32":
+            assert first["pid"] == children[0].pid
+        assert first["pid"] > 0
+        assert children[0].poll() is None
         assert first["autostart"]["enabled"] is False
         assert len(children) == 1
     finally:
@@ -455,3 +461,25 @@ async def test_local_client_cannot_follow_a_nonlocal_runtime_endpoint(
     async with DaemonClient(tmp_path) as client:
         with pytest.raises(DaemonError, match="loopback"):
             await client.health()
+
+
+@pytest.mark.parametrize("status_code", [200, 500])
+async def test_local_client_reports_non_json_response_without_exposing_body(
+    tmp_path: Path, status_code: int
+) -> None:
+    private_write(
+        tmp_path / "runtime.json",
+        {"version": __version__, "url": "http://127.0.0.1:42", "token": "private"},
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, text="Internal error with private runtime data")
+
+    async with DaemonClient(tmp_path) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        with pytest.raises(
+            DaemonError, match=f"invalid response \\(HTTP {status_code}\\)"
+        ) as failure:
+            await client.agents()
+        assert "private runtime data" not in str(failure.value)

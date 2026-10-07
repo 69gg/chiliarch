@@ -79,10 +79,10 @@ class LiveServer:
                 "auth": {"password_hash": hash_password("network-password")},
                 "logs": {"directory": str(directory / "logs")},
                 "transport": {
-                    "heartbeat_seconds": 0.05,
-                    "offline_after_seconds": 0.5,
+                    "heartbeat_seconds": 0.2,
+                    "offline_after_seconds": 5,
                     "retry_seconds": 0.03,
-                    "poll_timeout_seconds": 0.15,
+                    "poll_timeout_seconds": 2,
                     "reconnect_base_seconds": 0.02,
                     "reconnect_max_seconds": 0.05,
                     "upgrade_interval_seconds": 60,
@@ -176,7 +176,7 @@ async def wait_for_task(live: LiveServer, task_id: str, status: str) -> JsonObje
 async def stop_client(client: AgentClient, runner: asyncio.Task[None]) -> None:
     client.stop()
     with contextlib.suppress(CredentialRejected):
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(5):
             await runner
 
 

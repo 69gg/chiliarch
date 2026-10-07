@@ -9,7 +9,8 @@ import logging
 import os
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -73,37 +74,62 @@ class ClientStore:
             raise RuntimeError("Client store is not open")
         return self.connection
 
+    @staticmethod
+    async def _settle(operation: Coroutine[Any, Any, None]) -> None:
+        """SQLite's worker keeps executing even when its awaiting task is cancelled."""
+        cleanup = asyncio.create_task(operation)
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        cleanup.result()
+        if interrupted:
+            raise asyncio.CancelledError
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        """Finish commit/rollback before releasing the connection to another owner."""
+        async with self.lock:
+            try:
+                await self.db().execute("BEGIN IMMEDIATE")
+                yield
+                await self._settle(self.db().commit())
+            except BaseException:
+                await self._settle(self.db().rollback())
+                raise
+
     async def identity(self) -> dict[str, str]:
-        async with self.db().execute("SELECT key,value FROM identity") as cursor:
-            return {str(row[0]): str(row[1]) for row in await cursor.fetchall()}
+        async with self.lock:
+            async with self.db().execute("SELECT key,value FROM identity") as cursor:
+                return {str(row[0]): str(row[1]) for row in await cursor.fetchall()}
 
     async def save_identity(self, identity: dict[str, str]) -> None:
-        async with self.lock:
+        async with self._transaction():
             await self.db().executemany(
                 "INSERT OR REPLACE INTO identity VALUES (?,?)", list(identity.items())
             )
-            await self.db().commit()
 
     async def enqueue(self, envelope: Envelope) -> None:
-        async with self.lock:
+        async with self._transaction():
             await self.db().execute(
                 "INSERT OR IGNORE INTO outbox VALUES (?,?)", (envelope.id, envelope.canonical())
             )
-            await self.db().commit()
 
     async def pending(self) -> list[Envelope]:
-        async with self.db().execute("SELECT body FROM outbox ORDER BY rowid") as cursor:
-            return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
+        async with self.lock:
+            async with self.db().execute("SELECT body FROM outbox ORDER BY rowid") as cursor:
+                return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
 
     async def acknowledge(self, message_id: str) -> None:
-        async with self.lock:
+        async with self._transaction():
             await self.db().execute("DELETE FROM outbox WHERE id=?", (message_id,))
-            await self.db().commit()
 
     async def accept(self, envelope: Envelope) -> bool:
         body = envelope.canonical()
         digest = hashlib.sha256(body.encode()).hexdigest()
-        async with self.lock:
+        async with self._transaction():
             async with self.db().execute(
                 "SELECT fingerprint FROM inbox WHERE id=?", (envelope.id,)
             ) as cursor:
@@ -156,12 +182,12 @@ class ClientStore:
                         (report.id, report.canonical()),
                     )
             await self.db().execute("INSERT INTO inbox VALUES (?,?,?)", (envelope.id, digest, body))
-            await self.db().commit()
         return True
 
     async def work(self, state: str) -> list[Envelope]:
-        async with self.db().execute("SELECT body FROM work WHERE state=?", (state,)) as cursor:
-            return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
+        async with self.lock:
+            async with self.db().execute("SELECT body FROM work WHERE state=?", (state,)) as cursor:
+                return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
 
     async def tasks(self, task_id: str | None = None) -> list[tuple[str, Envelope]]:
         async with self.lock:
@@ -215,49 +241,39 @@ class ClientStore:
         outcome: str | None = None,
     ) -> bool:
         """Atomically reserve/finish manual work across multiple MCP processes."""
-        async with self.lock:
-            await self.db().execute("BEGIN IMMEDIATE")
-            try:
-                async with self.db().execute(
-                    "SELECT state FROM work WHERE task_id=?", (task_id,)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                if row is None:
-                    raise ValueError("Task not found")
-                if row[0] not in expected:
-                    if outcome is not None:
-                        async with self.db().execute(
-                            "SELECT body FROM work_results WHERE task_id=?", (task_id,)
-                        ) as cursor:
-                            saved = await cursor.fetchone()
-                        if saved and saved[0] == outcome:
-                            await self.db().rollback()
-                            return False
-                    raise ValueError(f"Task cannot transition from {row[0]} to {state}")
-                await self.db().execute("UPDATE work SET state=? WHERE task_id=?", (state, task_id))
+        async with self._transaction():
+            async with self.db().execute(
+                "SELECT state FROM work WHERE task_id=?", (task_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                raise ValueError("Task not found")
+            if row[0] not in expected:
                 if outcome is not None:
-                    await self.db().execute(
-                        "INSERT INTO work_results VALUES (?,?)", (task_id, outcome)
-                    )
-                for report in reports:
-                    await self.db().execute(
-                        "INSERT OR IGNORE INTO outbox VALUES (?,?)",
-                        (report.id, report.canonical()),
-                    )
-                await self.db().commit()
-                return True
-            except BaseException:
-                await self.db().rollback()
-                raise
+                    async with self.db().execute(
+                        "SELECT body FROM work_results WHERE task_id=?", (task_id,)
+                    ) as cursor:
+                        saved = await cursor.fetchone()
+                    if saved and saved[0] == outcome:
+                        return False
+                raise ValueError(f"Task cannot transition from {row[0]} to {state}")
+            await self.db().execute("UPDATE work SET state=? WHERE task_id=?", (state, task_id))
+            if outcome is not None:
+                await self.db().execute("INSERT INTO work_results VALUES (?,?)", (task_id, outcome))
+            for report in reports:
+                await self.db().execute(
+                    "INSERT OR IGNORE INTO outbox VALUES (?,?)",
+                    (report.id, report.canonical()),
+                )
+            return True
 
     async def state(self, task_id: str, state: str, report: Envelope | None = None) -> None:
-        async with self.lock:
+        async with self._transaction():
             await self.db().execute("UPDATE work SET state=? WHERE task_id=?", (state, task_id))
             if report:
                 await self.db().execute(
                     "INSERT OR IGNORE INTO outbox VALUES (?,?)", (report.id, report.canonical())
                 )
-            await self.db().commit()
 
     async def close(self) -> None:
         if self.connection:
@@ -597,6 +613,7 @@ class AgentClient:
             url,
             additional_headers={"Authorization": f"Bearer {self.credential}"},
             open_timeout=self.options.poll_timeout_seconds,
+            close_timeout=self.options.heartbeat_seconds,
             max_size=self.options.max_message_bytes,
             ping_interval=self.options.heartbeat_seconds,
         ) as websocket:

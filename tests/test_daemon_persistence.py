@@ -237,10 +237,11 @@ async def test_unreachable_daemon_with_owned_lease_cannot_be_reported_stopped(
     owner = FileLock(str(tmp_path / "daemon.lock"), timeout=0, thread_local=False)
     await asyncio.to_thread(owner.acquire)
     try:
-        # Reserve a loopback port without listening; no real service can take it
-        # between choosing the port and the actual HTTP health request.
+        # A listening endpoint that never answers HTTP behaves the same on all
+        # systems; macOS can otherwise stall connecting to a merely bound socket.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as closed_endpoint:
             closed_endpoint.bind(("127.0.0.1", 0))
+            closed_endpoint.listen()
             private_write(
                 tmp_path / "runtime.json",
                 {

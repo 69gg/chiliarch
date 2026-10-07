@@ -39,10 +39,12 @@ class DaemonClient:
         *,
         token: str | None = None,
         allow_version_mismatch: bool = False,
+        health_timeout: float = 1,
     ) -> None:
         self.directory = (directory or default_daemon_directory()).expanduser().resolve()
         self.token = token
         self.allow_version_mismatch = allow_version_mismatch
+        self.health_timeout = health_timeout
         self.http = httpx.AsyncClient(trust_env=False, timeout=35)
 
     async def __aenter__(self) -> Self:
@@ -51,7 +53,14 @@ class DaemonClient:
     async def __aexit__(self, *arguments: object) -> None:
         await self.http.aclose()
 
-    async def request(self, method: str, path: str, body: JsonObject | None = None) -> Any:
+    async def request(
+        self,
+        method: str,
+        path: str,
+        body: JsonObject | None = None,
+        *,
+        request_timeout: float | None = None,
+    ) -> Any:
         try:
             runtime = json.loads((self.directory / "runtime.json").read_text(encoding="utf-8"))
             parsed = urlsplit(runtime["url"])
@@ -75,18 +84,31 @@ class DaemonClient:
                 runtime["url"] + path,
                 json=body,
                 headers={"Authorization": "Bearer " + (self.token or runtime["token"])},
+                timeout=request_timeout if request_timeout is not None else self.http.timeout,
             )
         except (OSError, KeyError, TypeError, json.JSONDecodeError, httpx.HTTPError) as error:
             raise DaemonUnavailable(
                 "Local daemon is unavailable; run chiliarch daemon status/start"
             ) from error
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as error:
+            raise DaemonError(
+                f"Local daemon returned an invalid response (HTTP {response.status_code})"
+            ) from error
         if response.is_error:
-            detail = response.json().get("detail", "Local daemon rejected the operation")
+            detail = (
+                payload.get("detail", "Local daemon rejected the operation")
+                if isinstance(payload, dict)
+                else "Local daemon rejected the operation"
+            )
             raise DaemonError(str(detail))
-        return response.json()
+        return payload
 
     async def health(self) -> JsonObject:
-        result: JsonObject = await self.request("GET", "/health")
+        result: JsonObject = await self.request(
+            "GET", "/health", request_timeout=self.health_timeout
+        )
         if result.get("directory") != str(self.directory) or (
             result.get("version") != __version__ and not self.allow_version_mismatch
         ):
