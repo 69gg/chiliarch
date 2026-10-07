@@ -59,6 +59,8 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 这些客户端字段只有使用对应配置启动参考客户端时才影响其行为。跨语言插件应使用自己的配置或协商默认值；本版不自动向任意插件推送所有服务端设置。
 
+真实 agent 的 `chiliarch agent` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后重启对应 runner，不受服务器配置热重载影响。具体示例见 [接入文档](agents/index.md)。
+
 ### supervisor / model
 
 `supervisor.mode` 为 ask/auto/yolo；`max_tool_rounds` 限制模型与工具循环，`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`max_context_messages` 限制上下文消息数，`max_active_runs` 限制并行运行，`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
@@ -76,3 +78,5 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 SQLite 审计事件、会话消息、任务和操作记录是业务历史，不随应用日志文件轮换删除；数据库应单独备份并监控磁盘。v0.1.0 不提供自动清理所有业务历史的保留策略。WebUI“读取日志”和 `get_logs` 工具读取当前日志末尾，最多 1000 行。
 
 日志包含操作信息，聊天数据库包含用户发送给模型的内容；保护目录权限与备份。秘密参数掩码依据敏感字段名，扩展开发者必须对自定义秘密字段自行脱敏。
+
+agent MCP/runner 默认在状态库旁的 `logs` 目录写同样的结构化轮换日志，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。状态库为 0600；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。

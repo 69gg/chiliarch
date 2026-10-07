@@ -2,7 +2,19 @@
 
 连接、管理与统一调度 agents 的平台。内置 chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.1.0 完成平台框架、独立协议和参考客户端，尚未包含 Codex、Claude Code、OpenCode 或 Undefined 的实际适配器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.1.0 提供平台框架、独立协议、MCP 会话桥和本地 CLI 执行器。
+
+## 支持的 agents
+
+| Agent       | 当前会话接收调度、汇报与协调    | 无人值守执行                  | 接入文档                                  |
+| ----------- | ------------------------------- | ----------------------------- | ----------------------------------------- |
+| Codex App   | stdio MCP，当前会话主动领取任务 | 使用同机独立 Codex CLI runner | [Codex App / CLI](docs/agents/codex.md)   |
+| Codex CLI   | stdio MCP                       | `codex exec --json`           | [Codex App / CLI](docs/agents/codex.md)   |
+| Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
+
+接入文档开头有可直接复制给 agent 的安装提示词。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。CLI runner 每次调度创建新的原生会话，托管执行支持 Linux/macOS。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+
+仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。目前尚未推送及发布到 PyPI；文档中的远程安装命令待发布后使用，也可先使用可信本地 checkout。
 
 ## 快速开始
 
@@ -40,7 +52,17 @@ chiliarch serve
 
 ## 连接 agent
 
-在 Agents 管理页面点击右上角“添加 agent”，创建一次性注册码，然后在 agent 所在机器执行：
+在 Agents 管理页面点击右上角“添加 agent”，创建一次性注册码，然后在 agent 所在机器执行（替换占位符）：
+
+```bash
+chiliarch agent pair --server <平台HTTP或HTTPS地址> --name <agent名称> --adapter codex-app --state /绝对路径/私有目录/agent.db
+chiliarch agent config --host codex-app --state /绝对路径/私有目录/agent.db
+chiliarch agent doctor --state /绝对路径/私有目录/agent.db
+```
+
+将生成的 MCP 配置合并到原生 agent 配置中；Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。当前会话通过 MCP 主动领取任务，自动执行则按接入文档配置本地 runner。客户端复用原生 agent 的安装与登录，不上传原生认证文件；注册码交互输入，长期凭证保存在本地状态库。默认不覆盖已配对状态。
+
+只想验证协议、不运行真实厂商 agent 时，可使用原有模拟客户端：
 
 ```bash
 chiliarch pair --server <平台HTTP或HTTPS地址> --name <agent名称> --state ./agent.db
@@ -82,6 +104,8 @@ uv build
 - [配置、热重载与日志](docs/configuration.md)
 - [架构与保证边界](docs/architecture.md)
 - [agent 协议与 JSON Schema](docs/protocol.md)
+- [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)
+- [Codex App / Codex CLI](docs/agents/codex.md) · [Claude Code](docs/agents/claude-code.md)
 - [扩展操作与参考客户端](docs/extensions.md)
 - [模型兼容与总管行为](docs/models.md)
 - [开发、测试与发版](docs/releasing.md)

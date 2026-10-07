@@ -159,6 +159,79 @@ async def test_lower_agent_request_cannot_bypass_high_risk_gate(service: Operati
     ]
 
 
+@pytest.mark.parametrize("mode", ["ask", "auto", "yolo"])
+async def test_lower_agent_read_query_uses_query_policy_and_returns_correlated_result(
+    service: OperationService, mode: str
+) -> None:
+    service.settings_manager.update({"supervisor": {"mode": mode}})
+    agent = await add_agent(service)
+    await service.receive(
+        agent["agent_id"],
+        Envelope(
+            type="agent.request",
+            payload={"request_id": "discover-peers", "operation": "list_agents", "arguments": {}},
+        ),
+    )
+    request = (await service.execute("list_agent_requests", {}))["requests"][0]
+    result = await service.execute(
+        "resolve_agent_request", {"request_id": request["id"], "decision": "approve"}, "supervisor"
+    )
+    assert result["request"]["status"] == "approved"
+    assert result["request"]["result"]["agents"][0]["id"] == agent["agent_id"]
+    assert (await service.execute("list_approvals", {}))["approvals"] == []
+    reply = (await service.pending(agent["agent_id"]))[0]
+    assert reply.type == "request.resolved"
+    assert reply.correlation_id == reply.payload["request_id"] == "discover-peers"
+    assert reply.payload["result"] == result["request"]["result"]
+
+
+async def test_lower_agent_mutation_still_waits_for_user_in_ask(service: OperationService) -> None:
+    agent = await add_agent(service)
+    await service.receive(
+        agent["agent_id"],
+        Envelope(
+            type="agent.request",
+            payload={
+                "request_id": "rename-peer",
+                "operation": "rename_agent",
+                "arguments": {"agent_id": agent["agent_id"], "name": "renamed"},
+            },
+        ),
+    )
+    request = (await service.execute("list_agent_requests", {}))["requests"][0]
+    waiting = await service.execute(
+        "resolve_agent_request", {"request_id": request["id"], "decision": "approve"}, "supervisor"
+    )
+    assert waiting["status"] == "awaiting_approval"
+    assert (await service.execute("get_agent", {"agent_id": agent["agent_id"]}))["agent"][
+        "name"
+    ] == "demo"
+    assert await service.pending(agent["agent_id"]) == []
+    await service.execute("approve_operation", {"approval_id": waiting["approval_id"]})
+    assert (await service.execute("get_agent", {"agent_id": agent["agent_id"]}))["agent"][
+        "name"
+    ] == "renamed"
+    assert (await service.pending(agent["agent_id"]))[0].payload["status"] == "approved"
+
+
+async def test_supervisor_reply_keeps_agent_contact_correlation(service: OperationService) -> None:
+    agent = await add_agent(service)
+    contact = Envelope(type="agent.contact", payload={"message": "Which peer can help?"})
+    await service.receive(agent["agent_id"], contact)
+    queued = await service.execute(
+        "send_agent_message",
+        {
+            "agent_id": agent["agent_id"],
+            "message": "Use peer alpha",
+            "correlation_id": contact.id,
+        },
+    )
+    reply = (await service.pending(agent["agent_id"]))[0]
+    assert reply.id == queued["message_id"]
+    assert reply.correlation_id == contact.id
+    assert reply.payload["message"] == "Use peer alpha"
+
+
 async def test_queue_ack_and_execution_are_distinct_and_durable(service: OperationService) -> None:
     agent = await add_agent(service)
     task = (

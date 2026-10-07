@@ -50,6 +50,8 @@ chiliarch schema --output protocol.schema.json
 
 任务上报状态为 `accepted/running/completed/failed/cancelled/interrupted`；progress 在 0–1。`interrupted` 表示执行停止而外部结果可能未知。agent 只能上报分配给自己的任务；终态不能改成另一终态。服务端专用类型不能由 agent 上传。
 
+联系与协作通过上级转交：agent 用 `agent.contact` 汇报、提问或描述协调需求，metadata 可带本机任务 ID；平台 `send_agent_message` 回复时将原联系消息的 `id` 放进 `correlation_id`。操作申请使用稳定 `request_id`，`request.resolved` 的 payload 与 correlation_id 都关联它。没有收到结果就是待处理，超时不代表许可；查询结果不能通过重发新申请代替，避免副作用重复。双方不直接拨号连接其他 agent。
+
 扩展消息使用非保留命名空间，如 `example.telemetry`。`task`、`agent`、`request` 保留给协议。扩展消息不会自动变成管理员动作；可通过服务事件监听处理，并为生产扩展增加 payload 校验。扩展操作使用注册工具的 JSON Schema，见扩展文档。
 
 ## 传输降级
@@ -69,5 +71,7 @@ heartbeat 与 ACK 是瞬时控制帧，不进入持久业务 inbox；心跳更�
 接收命令 → 持久 inbox 与任务去重记录 → ACK → 报 accepted/running → 执行 → 在同一本地事务保存终态和待上传结果 → 重传结果直至平台 ACK。
 
 必须同时按消息 ID 和任务 ID 去重。收到相同 task ID 的不同指令是冲突，不允许覆盖。客户端执行器必须支持协作取消，并区别用户取消与进程停机。参考实现停止时保留 running ledger，重新启动报告 interrupted；不会自动再次产生外部副作用。
+
+取消的持久处理与 ACK 必须一致：先将取消 tombstone 与取消意图在同一事务中提交，再 ACK；未开始的任务可同时保存取消终态，运行中的任务先保留本地 `cancelling`。托管 worker 清理完进程组或当前会话调用 `confirm_cancellation` 后，才向平台报告 `cancelled`。即使取消先于 dispatch 到达，后续相同任务也不能执行；晚到的取消不能覆盖已经完成的结果。MCP 当前会话通过原子领取开始工作，相同结果重试幂等，取消、失败和中断后的任务不能再报完成。网络 ACK 后，上级回复仍保存在本地业务 inbox，可用 cursor 读取。
 
 队列受 `queue_limit/message_ttl_seconds/max_message_bytes` 约束，过期和取消显式可见。在线状态由 agent 主动请求和心跳更新；服务端仅发送 SSE keepalive 不证明 agent 活性。

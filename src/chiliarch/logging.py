@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import traceback
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
+
+from filelock import FileLock
 
 from chiliarch.config import LogSettings
 
@@ -56,18 +60,77 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(settings: LogSettings) -> logging.Logger:
+class _SharedRotatingFileHandler(RotatingFileHandler):
+    """Serialize rotation/writes and follow files rotated by another process."""
+
+    def __init__(self, filename: Path, *, max_bytes: int, backup_count: int) -> None:
+        super().__init__(
+            filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+            delay=True,
+        )
+        self._process_lock = FileLock(self.baseFilename + ".lock")
+
+    def _reopen_if_needed(self) -> None:
+        if self.stream is None:
+            return
+        descriptor = os.fstat(self.stream.fileno())
+        try:
+            current = os.stat(self.baseFilename)
+            replaced = (descriptor.st_dev, descriptor.st_ino) != (
+                current.st_dev,
+                current.st_ino,
+            )
+        except FileNotFoundError:
+            replaced = True
+        if replaced:
+            self.stream.flush()
+            self.stream.close()
+            self.stream = None
+            self.stream = self._open()
+        # Another writer may have appended without rotating. Refresh our own
+        # descriptor position before the standard handler checks the size.
+        self.stream.seek(0, os.SEEK_END)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            with self._process_lock:
+                self._reopen_if_needed()
+                try:
+                    # Both the rollover decision and the complete JSONL write
+                    # are inside the same inter-process critical section.
+                    super().emit(record)
+                finally:
+                    if os.name == "nt" and self.stream is not None:
+                        # Windows cannot rename files another process holds open.
+                        # Keep shared streams open only while holding the lock.
+                        self.stream.close()
+                        self.stream = None
+        except Exception:
+            self.handleError(record)
+
+
+def configure_logging(settings: LogSettings, *, shared: bool = False) -> logging.Logger:
     settings.directory.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("chiliarch")
     logger.setLevel(settings.level)
     logger.propagate = False
     close_logging()
-    handler = RotatingFileHandler(
-        settings.directory / "chiliarch.jsonl",
-        maxBytes=settings.max_bytes,
-        backupCount=settings.backup_count,
-        encoding="utf-8",
-    )
+    if shared:
+        handler: RotatingFileHandler = _SharedRotatingFileHandler(
+            settings.directory / "chiliarch.jsonl",
+            max_bytes=settings.max_bytes,
+            backup_count=settings.backup_count,
+        )
+    else:
+        handler = RotatingFileHandler(
+            settings.directory / "chiliarch.jsonl",
+            maxBytes=settings.max_bytes,
+            backupCount=settings.backup_count,
+            encoding="utf-8",
+        )
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
     console = logging.StreamHandler()

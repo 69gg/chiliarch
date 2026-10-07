@@ -42,6 +42,9 @@ def parser() -> argparse.ArgumentParser:
     )
     demo.add_argument("--state", type=Path, default=Path("data/agent.db"))
     demo.add_argument("--transport", choices=("ws", "sse", "poll"), default="ws")
+    from chiliarch.adapters.cli import add_parser
+
+    add_parser(commands)
     for command in (initialize, serve, schema, pair, demo):
         command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     return root
@@ -66,7 +69,7 @@ async def _agent_command(arguments: argparse.Namespace) -> None:
     from chiliarch.logging import close_logging, configure_logging
 
     manager = SettingsManager(arguments.config)
-    configure_logging(manager.current.logs)
+    configure_logging(manager.current.logs, shared=True)
     try:
         if arguments.command == "pair":
             code = arguments.code or getpass.getpass("一次性注册码: ")
@@ -92,7 +95,11 @@ async def _agent_command(arguments: argparse.Namespace) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        if arguments.command == "init":
+        if arguments.command == "agent":
+            from chiliarch.adapters.cli import main as agent_main
+
+            agent_main(arguments)
+        elif arguments.command == "init":
             initialize(arguments.config, force=arguments.force)
         elif arguments.command == "schema":
             from chiliarch.protocol import export_schema, protocol_schema

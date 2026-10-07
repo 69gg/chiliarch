@@ -87,10 +87,10 @@ def create_app(config_path: Path | None = None, *, config: Settings | None = Non
             raise RuntimeError(
                 "No login password configured. Run `chiliarch init` before starting the server."
             )
-        configure_logging(manager.current.logs)
+        configure_logging(manager.current.logs, shared=True)
 
         def reconfigure_logs(settings: Settings) -> None:
-            configure_logging(settings.logs)
+            configure_logging(settings.logs, shared=True)
 
         manager.subscribe(reconfigure_logs)
         try:

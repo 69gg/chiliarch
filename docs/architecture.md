@@ -19,7 +19,9 @@ flowchart LR
 
 图中返回 agent 的消息始终使用它建立的连接或请求。平台没有 agent 地址拨号器、SSH 入口或反向回调。
 
-核心模块：`protocol` 定义可移植协议；`database` 管理存储；`service` 提供操作与授权；`transport` 仅转换传输；`auth` 管理单用户会话和凭证摘要；`chat` 管理总管执行；`ai.providers` 转换模型 API；`client` 是出站参考实现；`config` 与 `logging` 管理运行配置和日志。
+核心模块：`protocol` 定义可移植协议；`database` 管理存储；`service` 提供操作与授权；`transport` 仅转换传输；`auth` 管理单用户会话和凭证摘要；`chat` 管理总管执行；`ai.providers` 转换模型 API；`client` 提供出站传输与持久队列；`adapters` 复用客户端实现 MCP 会话桥与原生 CLI runner；`config` 与 `logging` 管理运行配置和日志。
+
+MCP 的 standalone 模式由原生宿主启动 stdio 子进程，该进程主动连接平台；宿主会话通过工具领取工作。托管 runner 在相同机器上主动连接平台，并按固定本地配置启动 Codex CLI/Claude Code；子任务的 MCP mailbox 只读写本地队列，由父连接传输。跨进程文件锁保证同一个状态库只有一个连接所有者。平台不会远程启动或唤醒 Codex App 会话。
 
 ## 总管是一级参与者
 
@@ -41,7 +43,7 @@ flowchart LR
 - 取消或过期的排队命令不会在数日后重新上线时继续交付。
 - 心跳是连接活性信号，不能堆积为离线业务队列。
 
-保证范围是“持久消息的至少一次交付与幂等受理”，不是任意外部副作用恰好一次。参考客户端具有持久 inbox/outbox 和 task ledger；进程执行中停机后，下次启动将未完成任务报告为 `interrupted`，不会盲目重新执行。普通网络断连不停止正在执行的工作。未来适配器必须自行提供同等保证，并说明外部工作的恢复能力。
+保证范围是“持久消息的至少一次交付与幂等受理”，不是任意外部副作用恰好一次。客户端具有持久 inbox/outbox 和 task ledger；取消 tombstone 与取消意图在同一事务中保存，避免 ACK 后崩溃导致取消丢失；运行中任务停止并确认后才报告取消终态，取消确认前重启则报告中断与结果未知；领取任务和提交结果使用原子状态转换。进程执行中停机后，下次启动将未完成任务报告为 `interrupted`，不会盲目重新执行。普通网络断连不停止正在执行的工作。适配器必须提供同等保证，并说明外部工作的恢复能力。托管 runner 仅在原生成功终态和退出码共同确认后报告完成，超时、取消或输出超限会清理整个原生进程组。
 
 ## 事务与故障边界
 
@@ -56,5 +58,7 @@ SQLite 使用 WAL、外键和 busy timeout；写事务保持短小。单服务�
 平台业务状态保存在配置指定的数据库，应用日志保存在配置指定的本地目录。参考客户端的凭证及收发状态保存在客户端自己的 SQLite 文件。
 
 运行时对外模型请求由 `model.api_mode/base_url/headers/request_params` 决定。默认地址来自对应 SDK；设置 `base_url` 可覆盖。模型请求包含当前对话和必要工具结果，API Key 仅作为认证使用，公共配置读取和日志会脱敏。WebUI 静态资源、字体回退和 Markdown 渲染不依赖外部 CDN。
+
+agent 机器上的 CLI runner 复用 Codex/Claude Code 的原生认证、模型提供方和本地设置，原生模型流量由它们自身配置决定。Chiliarch 不读取原生认证文件或远程扫描历史会话；本地原生进程仍可能访问自身配置的工具与提供方。MCP mailbox 只通过已有父连接交换平台消息，不安装 agent 或建立服务端反向连接。
 
 开发安装与流水线会访问 Python/npm 包仓库，发布会访问 PyPI 与 GitHub。服务端不会联系 agent 所在机器的 IP。

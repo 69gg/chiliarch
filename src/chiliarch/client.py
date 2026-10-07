@@ -37,6 +37,10 @@ class ProtocolRejected(ValueError):
     """Permanent protocol failures require correcting the request or adapter."""
 
 
+class TaskExecutionError(RuntimeError):
+    """Trusted adapters may expose a bounded diagnostic without native secrets."""
+
+
 class UpgradeTransport(Exception):
     pass
 
@@ -59,6 +63,8 @@ class ClientStore:
             CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS work (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS work_results (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cancellations (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
         """)
         await self.connection.commit()
 
@@ -114,9 +120,41 @@ class ClientStore:
                     work = await cursor.fetchone()
                 if work and Envelope.model_validate_json(work[0]).payload != envelope.payload:
                     raise ValueError("The same task ID has conflicting instructions")
+                async with self.db().execute(
+                    "SELECT task_id FROM cancellations WHERE task_id=?", (task_id,)
+                ) as cursor:
+                    cancelled = await cursor.fetchone()
                 await self.db().execute(
-                    "INSERT OR IGNORE INTO work VALUES (?,?,?)", (task_id, "queued", body)
+                    "INSERT OR IGNORE INTO work VALUES (?,?,?)",
+                    (task_id, "cancelled" if cancelled else "queued", body),
                 )
+            elif envelope.type == "task.cancel":
+                task_id = envelope.payload["task_id"]
+                await self.db().execute(
+                    "INSERT OR IGNORE INTO cancellations VALUES (?,?)", (task_id, body)
+                )
+                async with self.db().execute(
+                    "SELECT state FROM work WHERE task_id=?", (task_id,)
+                ) as cursor:
+                    work_state = await cursor.fetchone()
+                if work_state is not None and work_state[0] == "running":
+                    # ACK confirms durable cancellation intent, not process termination.
+                    await self.db().execute(
+                        "UPDATE work SET state='cancelling' WHERE task_id=?", (task_id,)
+                    )
+                elif work_state is None or work_state[0] == "queued":
+                    await self.db().execute(
+                        "UPDATE work SET state='cancelled' WHERE task_id=?", (task_id,)
+                    )
+                    report = Envelope(
+                        type="task.status",
+                        correlation_id=envelope.correlation_id or task_id,
+                        payload={"task_id": task_id, "status": "cancelled"},
+                    )
+                    await self.db().execute(
+                        "INSERT OR IGNORE INTO outbox VALUES (?,?)",
+                        (report.id, report.canonical()),
+                    )
             await self.db().execute("INSERT INTO inbox VALUES (?,?,?)", (envelope.id, digest, body))
             await self.db().commit()
         return True
@@ -124,6 +162,93 @@ class ClientStore:
     async def work(self, state: str) -> list[Envelope]:
         async with self.db().execute("SELECT body FROM work WHERE state=?", (state,)) as cursor:
             return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
+
+    async def tasks(self, task_id: str | None = None) -> list[tuple[str, Envelope]]:
+        async with self.lock:
+            query = "SELECT state,body FROM work"
+            parameters: tuple[str, ...] = ()
+            if task_id is not None:
+                query += " WHERE task_id=?"
+                parameters = (task_id,)
+            query += " ORDER BY rowid"
+            async with self.db().execute(query, parameters) as cursor:
+                return [
+                    (str(row[0]), Envelope.model_validate_json(row[1]))
+                    for row in await cursor.fetchall()
+                ]
+
+    async def messages(self, after: int = 0, limit: int = 100) -> list[tuple[int, Envelope]]:
+        """Expose durable business replies with a local cursor, never transport ACKs."""
+        if after < 0 or not 1 <= limit <= 1000:
+            raise ValueError("Invalid message cursor or limit")
+        async with self.lock:
+            async with self.db().execute(
+                "SELECT rowid,body FROM inbox WHERE rowid>? ORDER BY rowid", (after,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+        result: list[tuple[int, Envelope]] = []
+        for sequence, body in rows:
+            envelope = Envelope.model_validate_json(body)
+            if envelope.type in {"agent.message", "request.resolved", "task.cancel"}:
+                result.append((int(sequence), envelope))
+                if len(result) >= limit:
+                    break
+        return result
+
+    async def request_result(self, request_id: str) -> Envelope | None:
+        async with self.lock:
+            async with self.db().execute("SELECT body FROM inbox ORDER BY rowid DESC") as cursor:
+                rows = await cursor.fetchall()
+        for (body,) in rows:
+            envelope = Envelope.model_validate_json(body)
+            if envelope.type == "request.resolved" and envelope.payload["request_id"] == request_id:
+                return envelope
+        return None
+
+    async def transition(
+        self,
+        task_id: str,
+        expected: set[str],
+        state: str,
+        reports: list[Envelope],
+        *,
+        outcome: str | None = None,
+    ) -> bool:
+        """Atomically reserve/finish manual work across multiple MCP processes."""
+        async with self.lock:
+            await self.db().execute("BEGIN IMMEDIATE")
+            try:
+                async with self.db().execute(
+                    "SELECT state FROM work WHERE task_id=?", (task_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    raise ValueError("Task not found")
+                if row[0] not in expected:
+                    if outcome is not None:
+                        async with self.db().execute(
+                            "SELECT body FROM work_results WHERE task_id=?", (task_id,)
+                        ) as cursor:
+                            saved = await cursor.fetchone()
+                        if saved and saved[0] == outcome:
+                            await self.db().rollback()
+                            return False
+                    raise ValueError(f"Task cannot transition from {row[0]} to {state}")
+                await self.db().execute("UPDATE work SET state=? WHERE task_id=?", (state, task_id))
+                if outcome is not None:
+                    await self.db().execute(
+                        "INSERT INTO work_results VALUES (?,?)", (task_id, outcome)
+                    )
+                for report in reports:
+                    await self.db().execute(
+                        "INSERT OR IGNORE INTO outbox VALUES (?,?)",
+                        (report.id, report.canonical()),
+                    )
+                await self.db().commit()
+                return True
+            except BaseException:
+                await self.db().rollback()
+                raise
 
     async def state(self, task_id: str, state: str, report: Envelope | None = None) -> None:
         async with self.lock:
@@ -150,6 +275,7 @@ class AgentClient:
         *,
         options: TransportSettings | None = None,
         max_concurrent_tasks: int = 1,
+        manual_tasks: bool = False,
     ) -> None:
         parsed = urlsplit(server_url)
         if (
@@ -169,6 +295,7 @@ class AgentClient:
         self.credential = credential
         self.store = ClientStore(state_path)
         self.handler = handler
+        self.manual_tasks = manual_tasks
         self.options = options or TransportSettings()
         self.transport: str | None = None
         self.transport_history: list[str] = []
@@ -226,6 +353,8 @@ class AgentClient:
         handler: TaskHandler | None = None,
         *,
         options: TransportSettings | None = None,
+        max_concurrent_tasks: int = 1,
+        manual_tasks: bool = False,
     ) -> AgentClient:
         if not await asyncio.to_thread(state_path.exists):
             raise ValueError("Pair the client before running it")
@@ -238,7 +367,13 @@ class AgentClient:
         if "credential" not in identity or "server_url" not in identity:
             raise ValueError("Client state does not contain a paired identity")
         return cls(
-            identity["server_url"], identity["credential"], state_path, handler, options=options
+            identity["server_url"],
+            identity["credential"],
+            state_path,
+            handler,
+            options=options,
+            max_concurrent_tasks=max_concurrent_tasks,
+            manual_tasks=manual_tasks,
         )
 
     def _status(self, command: Envelope, status: str, **fields: Any) -> Envelope:
@@ -248,9 +383,17 @@ class AgentClient:
             payload={"task_id": command.payload["task_id"], "status": status, **fields},
         )
 
-    async def contact(self, message: str, metadata: JsonObject | None = None) -> str:
+    async def contact(
+        self,
+        message: str,
+        metadata: JsonObject | None = None,
+        *,
+        correlation_id: str | None = None,
+    ) -> str:
         envelope = Envelope(
-            type="agent.contact", payload={"message": message, "metadata": metadata or {}}
+            type="agent.contact",
+            correlation_id=correlation_id,
+            payload={"message": message, "metadata": metadata or {}},
         )
         await self.store.enqueue(envelope)
         return envelope.id
@@ -286,12 +429,10 @@ class AgentClient:
             return
         if envelope.type == "task.cancel":
             task_id = str(envelope.payload["task_id"])
-            self._cancelled_tasks.add(task_id)
             worker = self._workers.get(task_id)
             if worker:
+                self._cancelled_tasks.add(task_id)
                 worker.cancel()
-            else:
-                await self.store.state(task_id, "cancelled", self._status(envelope, "cancelled"))
         else:
             logger.info(
                 "Agent received a message",
@@ -299,6 +440,8 @@ class AgentClient:
             )
 
     async def _schedule(self) -> None:
+        if self.manual_tasks:
+            return
         for command in await self.store.work("queued"):
             task_id = str(command.payload["task_id"])
             if task_id not in self._workers:
@@ -311,43 +454,79 @@ class AgentClient:
         try:
             async with self._semaphore:
                 if command.expires_at and command.expires_at <= datetime.now(UTC):
-                    await self.store.state(
-                        task_id,
-                        "failed",
-                        self._status(command, "failed", error="Command expired before execution"),
-                    )
+                    with contextlib.suppress(ValueError):
+                        await self.store.transition(
+                            task_id,
+                            {"queued"},
+                            "failed",
+                            [
+                                self._status(
+                                    command, "failed", error="Command expired before execution"
+                                )
+                            ],
+                        )
                     return
-                await self.store.state(task_id, "running", self._status(command, "accepted"))
-                await self.store.enqueue(self._status(command, "running", progress=0))
+                try:
+                    await self.store.transition(
+                        task_id,
+                        {"queued"},
+                        "running",
+                        [
+                            self._status(command, "accepted"),
+                            self._status(command, "running", progress=0),
+                        ],
+                    )
+                except ValueError:
+                    # Cancellation or another owner won the reservation; never execute.
+                    return
 
                 async def progress(value: float, message: str = "") -> None:
-                    await self.store.enqueue(
-                        self._status(command, "running", progress=value, message=message)
+                    await self.store.transition(
+                        task_id,
+                        {"running"},
+                        "running",
+                        [self._status(command, "running", progress=value, message=message)],
                     )
 
                 if self.handler is None:
                     raise RuntimeError("This reference client has no task handler installed")
                 result = await self.handler(command.payload, progress)
-                await self.store.state(
+                await self.store.transition(
                     task_id,
+                    {"running"},
                     "completed",
-                    self._status(command, "completed", progress=1, result=result),
+                    [self._status(command, "completed", progress=1, result=result)],
                 )
         except asyncio.CancelledError:
             if task_id in self._cancelled_tasks:
-                await self.store.state(task_id, "cancelled", self._status(command, "cancelled"))
+                with contextlib.suppress(ValueError):
+                    await self.store.transition(
+                        task_id,
+                        {"cancelling"},
+                        "cancelled",
+                        [self._status(command, "cancelled")],
+                    )
             raise
         except Exception as error:
-            await self.store.state(
-                task_id,
-                "failed",
-                self._status(
-                    command, "failed", error=f"Task handler failed: {type(error).__name__}"
-                ),
-            )
+            with contextlib.suppress(ValueError):
+                await self.store.transition(
+                    task_id,
+                    {"running"},
+                    "failed",
+                    [
+                        self._status(
+                            command,
+                            "failed",
+                            error=str(error)
+                            if isinstance(error, TaskExecutionError)
+                            else f"Task handler failed: {type(error).__name__}",
+                        )
+                    ],
+                )
             logger.exception("Agent task failed", extra={"task_id": task_id})
         finally:
             self._workers.pop(task_id, None)
+            self._cancelled_tasks.discard(task_id)
 
     def http(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -491,12 +670,12 @@ class AgentClient:
     async def run(self, *, preferred: Literal["ws", "sse", "poll"] = "ws") -> None:
         """Prefer WS, fall back on transport failure, stop on identity/protocol errors."""
         await self.store.open()
-        self.ready.set()
         transports = ("ws", "sse", "poll")
         index = transports.index(preferred)
         failures = 0
         try:
-            for abandoned in await self.store.work("running"):
+            abandoned_work = await self.store.work("running") + await self.store.work("cancelling")
+            for abandoned in abandoned_work:
                 await self.store.state(
                     str(abandoned.payload["task_id"]),
                     "interrupted",
@@ -506,6 +685,7 @@ class AgentClient:
                         error="Client stopped during execution; external effects are unknown",
                     ),
                 )
+            self.ready.set()
             async with httpx.AsyncClient(
                 base_url=self.server_url,
                 headers={"Authorization": f"Bearer {self.credential}"},

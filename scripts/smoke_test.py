@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.resources
 import json
 import tempfile
@@ -10,6 +11,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from chiliarch import __version__
+from chiliarch.adapters.mcp import create_mcp_server
 from chiliarch.api import create_app
 from chiliarch.auth import hash_password
 from chiliarch.config import Settings
@@ -22,6 +24,25 @@ def main() -> None:
     assert json.loads(resources.joinpath("protocol/schema.json").read_text()) == protocol_schema()
     assert Envelope(type="heartbeat").protocol_version == "1.0"
     with tempfile.TemporaryDirectory() as directory:
+        state_path = Path(directory) / "agent.db"
+        standalone_tools = asyncio.run(create_mcp_server(state_path).list_tools())
+        mailbox_tools = asyncio.run(create_mcp_server(state_path, mode="mailbox").list_tools())
+        assert {tool.name for tool in standalone_tools} - {tool.name for tool in mailbox_tools} == {
+            "claim_task",
+            "report_progress",
+            "complete_task",
+            "fail_task",
+            "confirm_cancellation",
+        }
+        assert {tool.name for tool in mailbox_tools} == {
+            "status",
+            "list_tasks",
+            "read_messages",
+            "send_message",
+            "request_operation",
+            "get_request_result",
+            "list_agents",
+        }
         settings = Settings.model_validate(
             {
                 "database": {"url": f"sqlite+aiosqlite:///{Path(directory) / 'smoke.db'}"},
@@ -34,7 +55,9 @@ def main() -> None:
             response = client.post("/api/auth/login", json={"password": "smoke-test-password"})
             assert response.status_code == 200
             assert client.get("/api/state").status_code == 200
-    print(f"chiliarch {__version__}: installed package, UI, schema and authenticated API verified")
+    print(
+        f"chiliarch {__version__}: installed package, UI, schema, MCP tools and authenticated API verified"
+    )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # 扩展操作与出站客户端
 
-v0.1.0 不设计真实厂商插件，但保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
+v0.1.0 提供 Codex App/CLI、Claude Code 的 MCP 会话接入及 CLI 执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
 
 ## 注册平台工具
 
@@ -78,4 +78,8 @@ TypeScript/OpenCode 插件可从公开 JSON Schema 生成类型或使用 Ajv 等
 
 SSE 使用可附带 Authorization header 的流式 HTTP 客户端；不能依赖浏览器 EventSource 携带任意 header。所有插件网络连接必须主动出站；禁止让平台通过机器 IP 回调插件。见 [协议](protocol.md)。
 
-后续能力发现、插件配置和真实厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。
+Python 接入可复用 `chiliarch.adapters.mailbox.AgentMailbox`：`AgentClient(..., manual_tasks=True)` 仅保存任务，原生会话显式领取、汇报与完成。通过 `ClientStore` 的原子状态转换防止重复领取，取消与任务队列在同一事务内持久化。已有 handler 模式自动领取任务，并用 `TaskExecutionError` 提供可安全展示的固定诊断；其他异常只公开类型，不直接上传第三方错误文本。
+
+已有 `agent.message`、`request.resolved` 在持久 inbox 中保留，业务读取不影响网络 ACK。`AgentMailbox.read_messages` 使用本地 cursor，`get_request_result` 按请求身份查结果；离线时联系/请求仍可持久排队，但不能当成已送达或批准。联系的回复使用原消息 ID 作为 `send_agent_message.correlation_id`。MCP mailbox 模式仅共享队列，不建立第二条网络连接，也不暴露任务领取与完成工具。
+
+后续能力发现、插件配置、OpenCode/Undefined 等厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。

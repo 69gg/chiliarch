@@ -86,6 +86,7 @@ class CancelArguments(TaskArguments):
 class SendMessageArguments(AgentArguments):
     message: str = Field(min_length=1, max_length=100000)
     metadata: JsonObject = Field(default_factory=dict)
+    correlation_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ResolveRequestArguments(Arguments):
@@ -418,14 +419,14 @@ class OperationService:
                     if request is None:
                         raise OperationError("Agent request not found", 404)
                     requested_operation = self.operations.get(request.operation)
-                    if requested_operation and requested_operation.risk == "high":
+                    if requested_operation is not None:
                         effective_operation = Operation(
                             operation.name,
                             operation.description,
                             operation.parameters,
                             operation.handler,
-                            "high",
-                            True,
+                            requested_operation.risk,
+                            requested_operation.mutating,
                         )
                 reason = self._approval_reason(effective_operation, actor, risk_assessment)
                 if not reason:
@@ -933,6 +934,7 @@ class OperationService:
             await self._agent(session, args["agent_id"])
             envelope = Envelope(
                 type="agent.message",
+                correlation_id=args["correlation_id"],
                 payload={"message": args["message"], "metadata": args["metadata"]},
             )
             await self._enqueue(session, args["agent_id"], envelope)
