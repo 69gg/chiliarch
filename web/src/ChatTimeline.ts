@@ -22,6 +22,13 @@ export interface ChatState {
   tools: ToolCall[];
   parts?: ChatPart[];
   lastEventSeq?: number;
+  context?: {
+    run_id: string;
+    tokens: number;
+    contextWindow: number;
+    estimated: boolean;
+    compacting: boolean;
+  };
 }
 
 const RUN_EVENT_STATUS: Record<string, string> = {
@@ -40,6 +47,48 @@ export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
   const runId = event.run_id ?? "";
   let { messages, runs, tools } = state;
   let parts = state.parts ?? [];
+  let context = state.context;
+  if (
+    event.type === "context_usage" &&
+    runId &&
+    typeof data.tokens === "number" &&
+    typeof data.context_window === "number"
+  ) {
+    context = {
+      run_id: runId,
+      tokens: data.tokens,
+      contextWindow: data.context_window,
+      estimated: Boolean(data.estimated),
+      compacting: false,
+    };
+  }
+  if (event.type === "context_compacting" && context?.run_id === runId)
+    context = { ...context, compacting: true };
+  if (
+    event.type === "usage" &&
+    context?.run_id === runId &&
+    typeof data.input_tokens === "number" &&
+    data.input_tokens > 0 &&
+    typeof data.output_tokens === "number"
+  )
+    context = {
+      ...context,
+      tokens: data.input_tokens + data.output_tokens,
+      estimated: false,
+    };
+  if (
+    event.type === "context_compacted" &&
+    context?.run_id === runId &&
+    typeof data.tokens_after === "number"
+  )
+    context = {
+      ...context,
+      tokens: data.tokens_after,
+      estimated: true,
+      compacting: false,
+    };
+  if (event.type === "context_compaction_failed" && context?.run_id === runId)
+    context = { ...context, compacting: false };
   if (
     ["run_started", "text_delta", "reasoning_delta"].includes(event.type) &&
     runId
@@ -146,6 +195,11 @@ export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
         : "failed"
       : RUN_EVENT_STATUS[event.type];
   if (status && runId) {
+    if (
+      ["completed", "cancelled", "interrupted", "failed"].includes(status) &&
+      context?.run_id === runId
+    )
+      context = { ...context, compacting: false };
     const previous = runs.find((run) => run.id === runId);
     const run: Run = {
       ...(previous ?? {
@@ -206,7 +260,7 @@ export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
       },
     ];
   }
-  return { messages, runs, tools, parts, lastEventSeq: event.seq };
+  return { messages, runs, tools, parts, context, lastEventSeq: event.seq };
 }
 
 /** Snapshot messages are already aggregated; replay only reconstructs display parts. */

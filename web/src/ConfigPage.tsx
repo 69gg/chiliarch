@@ -24,7 +24,7 @@ const LABELS: Record<string, string> = {
   request_params: "额外请求参数（JSON）",
   timeout: "请求超时（秒）",
   retries: "请求重试次数",
-  max_tokens: "最大输出 tokens",
+  context_window: "模型上下文窗口（tokens）",
   temperature: "Temperature",
   reasoning_effort: "推理强度",
   reasoning_enabled: "启用 reasoning",
@@ -35,11 +35,8 @@ const LABELS: Record<string, string> = {
   system_prompt_as_user: "系统提示词使用 user 角色",
   tool_choice: "Tool choice",
   mode: "运行模式",
-  max_tool_rounds: "最大工具轮次",
   run_timeout: "运行超时（秒）",
-  max_context_messages: "上下文消息上限",
   event_poll_seconds: "事件刷新间隔（秒）",
-  max_active_runs: "并行运行上限",
   inbox_poll_seconds: "下级请求检查间隔（秒）",
   system_prompt: "总管系统提示词",
   heartbeat_seconds: "心跳间隔（秒）",
@@ -282,7 +279,7 @@ export default function ConfigPage({
                 <h2>{SECTION_LABELS[section]}</h2>
                 {section === "model" && (
                   <p className="muted">
-                    使用兼容 API 的模型，地址与请求参数由你配置。
+                    输出长度使用服务端默认值，上下文达到窗口的 90% 时自动压缩。
                   </p>
                 )}
                 {section === "server" && (
@@ -474,9 +471,12 @@ function ConfigField({
       <input
         id={id}
         aria-label={label}
-        aria-describedby={secret ? `${id}-help` : undefined}
+        aria-describedby={
+          secret || field === "context_window" ? `${id}-help` : undefined
+        }
         type={secret ? "password" : numeric ? "number" : "text"}
-        step={numeric ? "any" : undefined}
+        step={field === "context_window" ? "1" : numeric ? "any" : undefined}
+        min={field === "context_window" ? 1 : undefined}
         value={value}
         autoComplete={secret ? "new-password" : "off"}
         onChange={(event) => onChange(event.target.value)}
@@ -493,6 +493,11 @@ function ConfigField({
       {secret && (
         <small id={`${id}-help`} className="muted">
           只写入新凭证，现有凭证不回传。
+        </small>
+      )}
+      {field === "context_window" && (
+        <small id={`${id}-help`} className="muted">
+          默认 200,000；请填写模型实际支持的窗口。压缩后保留完整聊天记录。
         </small>
       )}
     </label>

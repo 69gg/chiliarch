@@ -19,7 +19,7 @@ flowchart LR
 
 图中返回 agent 的消息始终使用它建立的连接或请求。平台没有 agent 地址拨号器、SSH 入口或反向回调。
 
-核心模块：`protocol` 定义可移植协议；`database` 管理存储；`service` 提供操作与授权；`transport` 仅转换传输；`auth` 管理单用户会话和凭证摘要；`chat` 管理总管执行；`ai.providers` 转换模型 API；`client` 提供出站传输与持久队列；`adapters` 复用客户端实现 MCP 会话桥与原生 CLI runner；`daemon` 管理本机独立 agent 的共享后台进程，`daemon_client` 和系统服务适配负责本地发现、健康与用户登录自启动；`config` 与 `logging` 管理运行配置和日志。
+核心模块：`protocol` 定义可移植协议；`database` 管理存储；`service` 提供操作与授权；`transport` 仅转换传输；`auth` 管理单用户会话和凭证摘要；`chat` 管理总管执行；`ai.providers` 转换模型 API，`ai.context` 管理 token 用量与跨 API 摘要压缩；`client` 提供出站传输与持久队列；`adapters` 复用客户端实现 MCP 会话桥与原生 CLI runner；`daemon` 管理本机独立 agent 的共享后台进程，`daemon_client` 和系统服务适配负责本地发现、健康与用户登录自启动；`config` 与 `logging` 管理运行配置和日志。
 
 本机共享守护进程按当前系统用户登记多个 agent，每个身份保留独立状态库、凭证和平台出站连接。原生宿主启动轻量 stdio MCP 桥，通过受认证的回环接口向已有守护进程转发；常驻连接不意味着平台能唤醒空闲宿主会话。托管身份按机器本地 TOML 启动 Codex CLI/Claude Code，任务内 mailbox 只读写父连接的本地队列。平台不会反向联系 agent IP。
 
@@ -32,6 +32,8 @@ flowchart LR
 总管可以批准或拒绝下级请求，但状态变更受当前 ask/auto/yolo 模式约束。agent 消息只是一项请求或联系，不是管理员指令、系统提示词或用户批准。批准自己的待审批操作始终由登录用户完成。
 
 未配置模型时，下级来信持久保留待处理，用户仍可手动处理；配置模型后后台继续处理。浏览器断开不取消总管运行，重连按事件序列恢复显示。
+
+总管将完整消息/工具事件与活跃模型窗口分开持久保存：`chat_messages/chat_events` 保留用户可见历史及原始回放，`chat_runs.history` 保存当前可接续窗口，新增 `chat_contexts` 保存每轮输入加输出的 token 测量基线。默认 200k 的窗口在 90% 时压缩；摘要请求不提供操作工具，等待审批的调用及其结果完整收集后才压缩。成功摘要与完成事件在同一个短事务提交，失败保留原窗口。下一次问答沿用最近完成运行的窗口，随后补入新消息；不会因为压缩而删除审计记录或重复执行工具。SQLite 启动时新增基线表，已有会话与审批不需要手动迁移。详细流程见 [模型行为](models.md#上下文窗口与自动压缩)。
 
 ## 持久投递与任务执行
 

@@ -28,6 +28,86 @@ TOOLS: list[JSONObject] = [
 ]
 
 
+@pytest.mark.parametrize(
+    ("mode", "override"),
+    [
+        ("chat_completions", "max_tokens"),
+        ("chat_completions", "max_completion_tokens"),
+        ("responses", "max_output_tokens"),
+        ("anthropic", "max_tokens"),
+    ],
+)
+async def test_output_length_uses_server_defaults_or_explicit_provider_parameters(
+    mode: str, override: str
+) -> None:
+    bodies: list[JSONObject] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=SSE(text_response(mode))
+        )
+
+    for params in ({}, {override: 32768}):
+        provider = Provider(
+            ModelSettings.model_validate(
+                {"api_mode": mode, "model": "test", "request_params": params}
+            ),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+        )
+        try:
+            turn = ModelTurn()
+            async for _ in provider.stream(
+                [{"role": "user", "content": "hello"}], [], "system", turn
+            ):
+                pass
+            assert turn.content == "Done"
+        finally:
+            await provider.close()
+    limits = {"max_tokens", "max_completion_tokens", "max_output_tokens"}
+    assert not limits.intersection(bodies[0])
+    assert limits.intersection(bodies[1]) == {override}
+    assert bodies[1][override] == 32768
+
+
+@pytest.mark.parametrize("mode", ["chat_completions", "responses", "anthropic"])
+async def test_context_usage_includes_cached_input_without_double_counting(mode: str) -> None:
+    events = {
+        "chat_completions": chat_tool,
+        "responses": responses_tool,
+        "anthropic": anthropic_tool,
+    }[mode]()
+    if mode == "anthropic":
+        events[0]["message"]["usage"].update(
+            {"cache_creation_input_tokens": 120, "cache_read_input_tokens": 300}
+        )
+    elif mode == "responses":
+        events[-1]["response"]["usage"]["input_tokens_details"] = {"cached_tokens": 7}
+    else:
+        events[-1]["usage"]["prompt_tokens_details"] = {"cached_tokens": 7}
+
+    async def handle(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=SSE(events)
+        )
+
+    provider = Provider(
+        ModelSettings.model_validate({"api_mode": mode, "model": "test"}),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    try:
+        turn = ModelTurn()
+        async for _ in provider.stream(
+            [{"role": "user", "content": "inspect"}], TOOLS, "system", turn
+        ):
+            pass
+        assert turn.usage["input_tokens"] == (430 if mode == "anthropic" else 10)
+        assert turn.usage["output_tokens"] == 3
+        assert turn.usage["total_tokens"] == (433 if mode == "anthropic" else 13)
+    finally:
+        await provider.close()
+
+
 class SSE(httpx.AsyncByteStream):
     def __init__(
         self, events: list[JSONObject], gate: asyncio.Event | None = None, pause_before: int = 1

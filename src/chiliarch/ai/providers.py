@@ -6,6 +6,7 @@ inside the persisted native transcript and are never turned into display text.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from copy import deepcopy
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from anthropic import AsyncAnthropic
+from anthropic import NOT_GIVEN, AsyncAnthropic
 from openai import AsyncOpenAI
 
 from chiliarch.config import ModelSettings
@@ -91,6 +92,11 @@ def _tool(call_id: Any, name: Any, raw: Any) -> ToolCall:
 
 def _usage(value: JSON) -> JSON:
     input_tokens = value.get("input_tokens", value.get("prompt_tokens", 0)) or 0
+    # Anthropic's input_tokens excludes cache hits and cache creation. OpenAI's
+    # cached_tokens is a subset of input_tokens and must not be added again.
+    input_tokens += (value.get("cache_creation_input_tokens") or 0) + (
+        value.get("cache_read_input_tokens") or 0
+    )
     output_tokens = value.get("output_tokens", value.get("completion_tokens", 0)) or 0
     return {
         "input_tokens": input_tokens,
@@ -198,6 +204,46 @@ class Provider:
                 )
         return params
 
+    def context_payload(self, messages: list[JSON], tools: list[JSON], system: str) -> JSON:
+        """Model-visible replay for estimation; never include authentication."""
+        if self.api_mode == "chat_completions":
+            history = self._chat_history(messages, system)
+            schemas = [{"type": "function", "function": _function(tool)} for tool in tools]
+        elif self.api_mode == "responses":
+            history = self._responses_history(messages)
+            schemas = [{"type": "function", **_function(tool)} for tool in tools]
+        else:
+            history = self._anthropic_history(messages)
+            schemas = [
+                {
+                    "name": function["name"],
+                    "description": function.get("description", ""),
+                    "input_schema": function.get("parameters", {}),
+                }
+                for function in map(_function, tools)
+            ]
+        return {
+            "system": system if self.api_mode != "chat_completions" else "",
+            "history": history,
+            "tools": schemas,
+        }
+
+    def estimate_tokens(self, messages: list[JSON], tools: list[JSON], system: str) -> int:
+        """UTF-8 byte estimate, used only until the provider reports usage."""
+        rendered = json.dumps(self.context_payload(messages, tools, system), ensure_ascii=False)
+        return (len(rendered.encode("utf-8")) + 3) // 4
+
+    def context_key(self, tools: list[JSON], system: str) -> str:
+        prefix = {
+            "model": self.config.model,
+            "base_url": self.config.base_url,
+            "api_mode": self.api_mode,
+            "reasoning_replay": self.config.reasoning_replay,
+            "system_prompt_as_user": self.config.system_prompt_as_user,
+            **self.context_payload([], tools, system),
+        }
+        return hashlib.sha256(json.dumps(prefix, sort_keys=True).encode()).hexdigest()
+
     async def stream(
         self,
         messages: list[JSON],
@@ -274,8 +320,6 @@ class Provider:
             "stream": True,
             "extra_body": self._params(),
         }
-        if self.config.max_tokens and "max_tokens" not in kwargs["extra_body"]:
-            kwargs["extra_body"].setdefault("max_completion_tokens", self.config.max_tokens)
         if tools:
             kwargs["tools"] = [{"type": "function", "function": _function(tool)} for tool in tools]
         if self.config.tool_choice and tools:
@@ -392,8 +436,6 @@ class Provider:
         }
         if not self.config.system_prompt_as_user:
             kwargs["instructions"] = system
-        if self.config.max_tokens:
-            kwargs["extra_body"].setdefault("max_output_tokens", self.config.max_tokens)
         if self.config.reasoning_replay:
             kwargs["include"] = ["reasoning.encrypted_content"]
         if tools:
@@ -525,7 +567,10 @@ class Provider:
             "model": self.config.model,
             "messages": history,
             "stream": True,
-            "max_tokens": self.config.max_tokens,
+            # The SDK requires this keyword, but NOT_GIVEN omits it on the wire.
+            # Native Anthropic requires an explicit request_params.max_tokens;
+            # gateways that supply a server default can accept omission.
+            "max_tokens": NOT_GIVEN,
             "extra_body": self._params(),
         }
         if not self.config.system_prompt_as_user:

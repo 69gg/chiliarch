@@ -740,7 +740,12 @@ export default function ChatPage({
                                 aria-hidden="true"
                               />
                             )}
-                            <Status value={running.status} />
+                            {chat.context?.run_id === running.id &&
+                            chat.context.compacting ? (
+                              "正在压缩上下文…"
+                            ) : (
+                              <Status value={running.status} />
+                            )}
                           </div>
                         )}
                         {message.role === "assistant" &&
@@ -764,6 +769,18 @@ export default function ChatPage({
             waitingForConversation={Boolean(selected && !detail)}
             active={Boolean(activeRun)}
             model={typeof model?.model === "string" ? model.model : ""}
+            contextInfo={
+              chat.context && (
+                <span
+                  className="composer-context"
+                  title={`${chat.context.estimated ? "估算" : "服务商用量"}：${chat.context.tokens.toLocaleString()} / ${chat.context.contextWindow.toLocaleString()} tokens；90% 时自动压缩`}
+                >
+                  {chat.context.compacting
+                    ? "压缩中…"
+                    : `上下文 ${chat.context.estimated ? "约 " : ""}${((chat.context.tokens / chat.context.contextWindow) * 100).toFixed(1)}%`}
+                </span>
+              )
+            }
             accessory={
               showJump && (
                 <button

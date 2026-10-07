@@ -63,6 +63,7 @@ export function ChatComposer({
   waitingForConversation,
   active,
   model,
+  contextInfo,
   accessory,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -75,6 +76,7 @@ export function ChatComposer({
   waitingForConversation: boolean;
   active: boolean;
   model: string;
+  contextInfo?: ReactNode;
   accessory?: ReactNode;
 }): ReactNode {
   useLayoutEffect(() => {
@@ -128,6 +130,7 @@ export function ChatComposer({
             <ChatGlyph type="spark" />
             <span>{model || "未配置模型"}</span>
           </span>
+          {contextInfo}
           {active ? (
             <button
               type="button"

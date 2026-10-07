@@ -39,6 +39,7 @@ class NamingUpstream:
         self.title_requests: list[JSONObject] = []
         self.chat_requests: list[JSONObject] = []
         self.title_started = asyncio.Event()
+        self.all_titles_started = asyncio.Event()
         self.title_gate: asyncio.Event | None = None
         self.title_error = False
         self.title_tool = False
@@ -58,6 +59,8 @@ class NamingUpstream:
         else:
             self.title_requests.append(body)
             self.title_started.set()
+            if len(self.title_requests) == 10:
+                self.all_titles_started.set()
             if self.title_gate is not None:
                 await self.title_gate.wait()
             if self.title_error:
@@ -355,10 +358,11 @@ async def test_shutdown_or_crash_does_not_repeat_pending_naming_request(tmp_path
         await db.close()
 
 
-async def test_title_requests_use_the_configured_concurrency_limit(tmp_path: Path) -> None:
+async def test_title_requests_can_overlap_without_a_platform_concurrency_cap(
+    tmp_path: Path,
+) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
     settings = manager()
-    settings.update({"supervisor": {"max_active_runs": 1}})
     upstream = NamingUpstream()
     upstream.title_gate = asyncio.Event()
     supervisor = Supervisor(
@@ -368,7 +372,7 @@ async def test_title_requests_use_the_configured_concurrency_limit(tmp_path: Pat
     await supervisor.start()
     try:
         ids: list[str] = []
-        for index in range(3):
+        for index in range(10):
             conversation = await supervisor.create_conversation()
             ids.append(conversation["id"])
             sent = await supervisor.send_message(conversation["id"], f"检查 {index}")
@@ -376,14 +380,13 @@ async def test_title_requests_use_the_configured_concurrency_limit(tmp_path: Pat
             task = supervisor.tasks.get(sent["run_id"])
             if task is not None:
                 await task
-        await asyncio.wait_for(upstream.title_started.wait(), 5)
-        assert len(supervisor.title_tasks) == 3
-        assert supervisor.active_title_requests == 1
-        assert len(upstream.title_requests) == 1
+        await asyncio.wait_for(upstream.all_titles_started.wait(), 5)
+        assert len(upstream.title_requests) == 10
+        assert not upstream.title_gate.is_set()
         upstream.title_gate.set()
         for conversation_id in ids:
             await wait_naming(supervisor, conversation_id, "generated")
-        assert len(upstream.title_requests) == 3
+        assert len(upstream.title_requests) == 10
     finally:
         await supervisor.stop()
         await db.close()

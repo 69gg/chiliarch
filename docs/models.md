@@ -13,7 +13,7 @@
 | headers | 自定义请求头，支持网关认证或版本标记 |
 | request_params | 模型特有请求参数；不能替换平台 transcript、tools、model、stream 等控制字段 |
 | timeout / retries | SDK 请求超时与有限重试 |
-| max_tokens | 输出上限，Anthropic 必須是正整数 |
+| context_window | 模型上下文窗口，默认 200000 tokens，达到 90% 自动压缩 |
 | temperature | 可省略，不接受的模型保持空值 |
 | reasoning_enabled / reasoning_effort | 请求模型推理及强度；按 API 映射 |
 | thinking_enabled / thinking_budget_tokens | thinking 参数与预算；服务商不支持时关闭 |
@@ -24,15 +24,33 @@
 
 不要把业务消息、工具 Schema 或流式控制字段塞进 request_params；它们由平台生成。保留字段冲突会报错，而非静默覆盖。兼容开关按网关能力配置，不按某几个模型名硬编码。
 
+默认不发送 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`，由服务端决定输出长度。明确需要覆盖时，可以在 `request_params` 中写对应 API 的参数；平台不会额外加入另一个输出上限。
+
+原生 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create) 要求 `max_tokens`，没有可依赖的服务端默认值。选择该 API 时，在“额外请求参数（JSON）”填写它，例如 `{"max_tokens":32768}`，值需符合实际模型能力。提供默认值的兼容网关可保持空对象；请求仍被网关拒绝时按其文档设置参数。
+
 ## 三种 API
 
 **Chat Completions** 使用 OpenAI SDK，流式收集文本、公开 reasoning 字段、分片 tool_calls 和 usage。函数参数直到完整 turn 结束且 JSON Schema 校验通过后才执行。reasoning 原字段可用于下一轮兼容回放。
 
-**Responses** 使用 Responses 事件；保持 message、function_call、function_call_output 与 reasoning items 的原始顺序。初版采用完整历史 stateless replay；不用 previous_response_id 把本地生命周期与远端持久状态绑死。加密 reasoning 作为回放元数据保留，不作为可读思考显示。
+**Responses** 使用 Responses 事件；保持 message、function_call、function_call_output 与 reasoning items 的原始顺序。采用本地活跃窗口的 stateless replay：压缩前完整回放，压缩后回放接续摘要与保留片段；不用 previous_response_id 把本地生命周期与远端持久状态绑死。加密 reasoning 作为回放元数据保留，不作为可读思考显示。
 
 **Anthropic Messages** 转换为 text、tool_use 和 tool_result blocks，保留 thinking/redacted_thinking 与签名结构。工具结果与调用匹配，不能把显示文本重新拼成服务商签名块。
 
 可读思考内容或摘要与原生签名/密文分开保存。WebUI 只显示服务商明确公开返回的内容；没有 reasoning 的模型不会生成装饰性“思维链”。关闭 reasoning_replay 过滤推理载体，但保留合法工具调用结构。
+
+## 上下文窗口与自动压缩
+
+`model.context_window` 默认 **200000**。每次模型请求前，以及回答结束时检查当前窗口；使用量达到 **90%**（默认 180000 tokens）自动 compact，之后继续当前工具循环或保存给下一次问答使用。工具轮次、消息条数和全局并行运行不再设置固定上限；同一会话的运行互斥、审批与运行超时仍然有效。
+
+上下文包括系统提示、工具定义、消息、工具调用与结果及兼容回放。服务商 usage 优先：当前轮次的输入加输出代表当前窗口，并非把历史所有请求的计费用量累加；之后新增的工具结果、用户消息以估算增量补入。Anthropic 缓存创建与缓存读取同样占用输入窗口；OpenAI 的 cached_tokens 是输入的一部分，不重复相加。未返回 usage 时按实际待发送结构的 UTF-8 字节数约算 tokens，方法参考 Codex 的本地估算；不同模型分词器存在差异，界面会标注“约”，因此配置值应匹配真实模型窗口。系统提示、工具定义或模型配置变化后，旧测量基线失效，重新估算。
+
+压缩使用**当前配置的同一模型**做额外的摘要请求，不依赖服务商私有 compact endpoint，因此三种 API 和兼容网关共用一套逻辑。摘要保留目标、用户修正、限制、agents/任务/请求/操作 ID、已确认结果、待办和未知状态。当前用户问题保留原文，最近的调用及全部匹配结果按完整组保留；过大的旧结果整体进入摘要资料，不截断出孤立的工具结果。超过窗口的既有历史或单条巨大结果会拆分为有序片段，分批生成接续摘要，不直接丢弃前面的资料。
+
+摘要请求不提供业务工具，不执行返回的工具调用，也不把摘要文本当成许可。等待审批的调用先完成允许或拒绝及结果收集，再检查压缩；原生签名、密文和推理回放不拼进可读摘要。压缩期间 UI 显示“正在压缩上下文”，摘要本身不作为总管答案插入时间线。
+
+完整消息、可见思考、工具时间线及原生回放仍在数据库中保留；运行单独保存活跃模型窗口和 token 基线。压缩成功后原子保存摘要窗口，后续问答与服务重启沿用它。服务在活跃执行中重启仍会中断该运行，不自动重复外部副作用；等待审批的运行按原规则恢复。空摘要、工具调用、模型错误、无有效缩减或取消不会提交半成品，原上下文保留并停止当前运行，页面给出错误或取消状态，避免盲目重复已执行的操作。若系统提示/工具定义或必须保留的当前问题本身已占满窗口，需调整窗口或缩短输入，不能靠摘要隐藏这部分内容。
+
+压缩会产生额外模型请求、token 费用和等待时间；多次摘要可能损失细节，可通过完整聊天记录核对。设计参考 [Codex 的本地压缩实现](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) 与 [OpenAI 上下文压缩说明](https://developers.openai.com/api/docs/guides/compaction)，这里采用可跨 API 使用的文字摘要。
 
 ## 对话页面与键盘
 

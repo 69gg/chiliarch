@@ -437,6 +437,33 @@ describe("持久会话和事件流", () => {
 });
 
 describe("模型配置", () => {
+  it("保存可设置的模型上下文窗口，不提交已移除的运行限制", async () => {
+    const state = platformState();
+    const operate = vi
+      .spyOn(api, "operate")
+      .mockResolvedValue({ config: state.config, revision: 2 });
+    render(<ConfigPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByLabelText("模型上下文窗口（tokens）")).toHaveValue(
+      200000,
+    );
+    for (const label of [
+      "最大输出 tokens",
+      "最大工具轮次",
+      "上下文消息上限",
+      "并行运行上限",
+    ])
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("模型上下文窗口（tokens）"), {
+      target: { value: "128000" },
+    });
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "保存配置" }));
+    expect(operate).toHaveBeenCalledExactlyOnceWith("update_config", {
+      patch: { model: { context_window: 128000 } },
+    });
+  });
+
   it("保存监听端口后提示重启，表单保持当前生效端口", async () => {
     const state = platformState();
     state.config.server = { port: 8000 };

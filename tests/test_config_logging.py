@@ -50,6 +50,33 @@ def test_restart_fields_are_saved_but_not_live(tmp_path: Path) -> None:
     assert restarted.current.database.url.endswith("/next.db")
 
 
+def test_old_execution_limits_are_retired_and_context_window_hot_reloads(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[model]\nmax_tokens = 4096\n"
+        "[supervisor]\nmax_tool_rounds = 20\nmax_context_messages = 200\nmax_active_runs = 8\n",
+        encoding="utf-8",
+    )
+    manager = SettingsManager(path)
+    snapshot = manager.snapshot()
+    assert manager.current.model.context_window == 200000
+    assert "max_tokens" not in manager.public()["model"]
+    assert not {"max_tool_rounds", "max_context_messages", "max_active_runs"}.intersection(
+        manager.public()["supervisor"]
+    )
+    manager.update({"model": {"context_window": 128000}})
+    assert manager.current.model.context_window == 128000
+    assert snapshot.model.context_window == 200000
+    assert manager.pending_restart == []
+    assert SettingsManager(path).current.model.context_window == 128000
+    saved = path.read_bytes()
+    with pytest.raises(ValidationError):
+        manager.update({"model": {"context_window": 0}})
+    assert path.read_bytes() == saved
+    with pytest.raises(ValidationError):
+        manager.update({"supervisor": {"typo_limit": 10}})
+
+
 def test_environment_secret_overrides_are_not_persisted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

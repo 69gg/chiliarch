@@ -71,9 +71,15 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 ### supervisor / model
 
-`supervisor.mode` 为 ask/auto/yolo；`max_tool_rounds` 限制模型与工具循环，`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`max_context_messages` 限制上下文消息数，`max_active_runs` 限制并行运行，`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
+`supervisor.mode` 为 ask/auto/yolo；`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
 
-模式跳过审批不等于跳过运行上限。达到上下文上限会要求新对话，不会粗暴截断工具调用及其结果配对。模型字段的 API 映射与兼容开关见 [模型文档](models.md)。
+`model.context_window` 为正整数，默认 **200000 tokens**；填写服务商模型实际支持的上下文窗口。达到 **90%** 时，总管自动将历史压缩成接续摘要，保留最近的完整调用与结果，并继续当前工作。页面展示上下文占用，估算值标注“约”；压缩不会删除完整聊天记录。优先使用服务商当前轮次的输入和输出用量，缓存输入同样计入窗口；没有 usage 时采用本地估算。修改窗口热重载，后续新运行使用新值，已运行或等待审批的执行仍使用自己的模型配置快照。
+
+平台不再设置最大工具轮次、上下文消息条数或全局并行运行上限；同一会话仍只能有一个活跃运行，运行超时与审批规则继续生效。并行能力受机器资源及模型服务的限流约束。
+
+不再自动发送最大输出 token 参数，使用服务端默认输出长度。需要服务商特有上限时，在 `model.request_params` 显式配置；**原生 Anthropic Messages 要求 `max_tokens`，须在该参数表中填写对应模型支持的值**。兼容网关若支持省略，可保持参数表为空。初始化产生的旧 `model.max_tokens`、`supervisor.max_tool_rounds/max_context_messages/max_active_runs` 会被忽略，不阻止启动；下一次保存配置会移除这些键。旧输出上限不会自动迁移成显式请求参数。
+
+模型字段的 API 映射、压缩过程与失败处理见 [模型文档](models.md#上下文窗口与自动压缩)。
 
 ## 日志存储与轮换
 

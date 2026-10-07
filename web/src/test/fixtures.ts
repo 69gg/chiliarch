@@ -16,8 +16,9 @@ export function platformState(): PlatformState {
         request_params: {},
         temperature: null,
         reasoning_enabled: false,
+        context_window: 200000,
       },
-      supervisor: { mode: "ask", max_tool_rounds: 20 },
+      supervisor: { mode: "ask" },
       logs: {
         level: "INFO",
         directory: "/tmp/logs",

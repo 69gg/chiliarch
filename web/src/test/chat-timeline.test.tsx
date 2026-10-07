@@ -143,6 +143,65 @@ function expectBefore(first: Element, second: Element): void {
 }
 
 describe("聊天事件时间线", () => {
+  it("流式与快照恢复上下文占用和压缩状态，不把摘要作为答案显示", async () => {
+    const snapshot = detail();
+    snapshot.runs[0].status = "running";
+    const receive = await openChat(snapshot);
+    act(() =>
+      receive(
+        event(11, "context_usage", {
+          tokens: 160000,
+          context_window: 200000,
+          estimated: true,
+        }),
+      ),
+    );
+    expect(screen.getByText("上下文 约 80.0%")).toBeVisible();
+    act(() =>
+      receive(event(12, "usage", { input_tokens: 179950, output_tokens: 50 })),
+    );
+    expect(screen.getByText("上下文 90.0%")).toBeVisible();
+    act(() =>
+      receive(
+        event(13, "context_compacting", {
+          tokens_before: 180000,
+          context_window: 200000,
+        }),
+      ),
+    );
+    expect(screen.getByText("正在压缩上下文…")).toBeVisible();
+    const compressing = restoreChatState({
+      ...snapshot,
+      last_event_seq: 13,
+      events: [
+        ...(snapshot.events ?? []),
+        event(11, "context_usage", {
+          tokens: 160000,
+          context_window: 200000,
+          estimated: true,
+        }),
+        event(12, "usage", { input_tokens: 179950, output_tokens: 50 }),
+        event(13, "context_compacting", {}),
+      ],
+    });
+    expect(compressing.context?.compacting).toBe(true);
+    expect(compressing.context?.tokens).toBe(180000);
+    act(() =>
+      receive(
+        event(14, "context_compacted", {
+          tokens_after: 24000,
+          context_window: 200000,
+        }),
+      ),
+    );
+    expect(screen.queryByText("正在压缩上下文…")).not.toBeInTheDocument();
+    expect(screen.getByText("上下文 约 12.0%")).toBeVisible();
+    expect(
+      screen.getByRole("group", { name: "工具调用 dispatch_task" }),
+    ).toBeVisible();
+    expect(screen.getByText("我会检查在线机器。")).toBeVisible();
+  });
+
   it("刷新重建正文、分段思考和多轮工具的真实顺序，快照正文不会重复", async () => {
     await openChat(detail());
     const thoughts = screen.getAllByRole("button", { name: "思考过程" });
