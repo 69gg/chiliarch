@@ -1,8 +1,30 @@
 # 部署、初始化与维护
 
-## 源码运行
+## 从 PyPI 安装并运行
 
-准备 uv、Node.js 24 LTS 和项目指定的 pnpm 版本。进入检出的仓库目录后：
+默认使用持久的 uv 工具环境，从 PyPI 安装 Chiliarch。发布包已经包含 WebUI，无需 Node、pnpm 或前端开发服务器：
+
+```bash
+uv tool install chiliarch
+chiliarch --config ./chiliarch.toml init
+chiliarch --config ./chiliarch.toml serve
+```
+
+需要固定版本时，使用 `uv tool install chiliarch==<版本>`。
+
+`init` 交互输入并确认至少 8 字符的密码，服务端保存 scrypt 哈希，不保存明文。没有默认密码。已有配置不会被覆盖，除非显式指定 `init --force`。不要对正在使用的配置随意重新初始化；日常修改使用 WebUI 或编辑 TOML。
+
+服务默认监听 `127.0.0.1:8000`。需要 agent 所在机器访问时，配置适当的监听地址与端口，并确保客户端能主动访问平台；agent 不需要开放端口。服务器不需要访问 agent IP。
+
+```bash
+chiliarch --config ./chiliarch.toml serve --host <监听地址> --port <端口>
+```
+
+CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加多 workers 或并行启动两个实例共同使用同一业务数据库。
+
+## 源码开发运行
+
+修改或开发 Chiliarch 源码时，准备 uv、Node.js 24 LTS 和项目指定的 pnpm 版本。进入检出的仓库目录后：
 
 ```bash
 uv sync --locked --group dev
@@ -12,23 +34,11 @@ uv run chiliarch --config ./chiliarch.toml init
 uv run chiliarch --config ./chiliarch.toml serve
 ```
 
-`init` 交互输入并确认至少 8 字符的密码，服务端保存 scrypt 哈希，不保存明文。没有默认密码。已有配置不会被覆盖，除非显式指定 `init --force`。不要对正在使用的配置随意重新初始化；日常修改使用 WebUI 或编辑 TOML。
-
-服务默认监听 `127.0.0.1:8000`。需要 agent 所在机器访问时，配置适当的监听地址与端口，并确保客户端能主动访问平台；agent 不需要开放端口。服务器不需要访问 agent IP。
-
-```bash
-uv run chiliarch --config ./chiliarch.toml serve --host <监听地址> --port <端口>
-```
-
-CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加多 workers 或并行启动两个实例共同使用同一业务数据库。
-
-## 已发布包运行
-
-可以用 `uv tool install chiliarch` 或 `uv tool install chiliarch==<版本>` 安装。发布包已包含 WebUI，不需要 Node、pnpm 或前端开发服务器。源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
+源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
 
 ## Agent 机器：共享守护进程
 
-Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时使用 uv 从可信来源安装，再 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
+Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时默认执行 `uv tool install chiliarch` 从 PyPI 安装，再执行 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
 
 Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、旧 standalone 迁移和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
 

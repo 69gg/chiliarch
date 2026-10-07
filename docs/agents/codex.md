@@ -16,7 +16,7 @@ Codex App 与交互式 Codex CLI 使用同一个 Chiliarch stdio MCP 服务。�
 
 ## 安装与配对
 
-按 [通用安装说明](index.md#安装接入工具) 先发现当前用户守护进程，健康时复用；缺失时安装并启动。默认登录后自启动，三系统管理入口见 [本机守护进程](../daemon.md)。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
+按 [通用安装说明](index.md#安装接入工具) 先发现当前用户守护进程，健康时复用；缺失时默认用 `uv tool install chiliarch` 从 PyPI 安装，再启动守护进程。默认登录后自启动，三系统管理入口见 [本机守护进程](../daemon.md)。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 进入已存在且可信的项目目录，配对 App：
 
@@ -48,7 +48,7 @@ args = ["agent", "mcp", "--mode", "daemon", "--daemon-directory", "/绝对路径
 enabled = true
 ```
 
-优先使用生成器的真实 `command`、`args`；源码安装通常使用其 Python 解释器启动模块，避免桌面 App 的 PATH 和你的 shell 不同导致启动失败。守护目录必须是生成器输出的绝对路径，`--agent` 使用配对后登记的本地标识；MCP 不接收平台凭证。
+优先使用生成器输出的真实 `command`、`args`，避免桌面 App 的 PATH 与 shell 不同导致启动失败。守护目录必须是生成器输出的绝对路径，`--agent` 使用配对后登记的本地标识；MCP 不接收平台凭证。
 
 可以使用用户级 `~/.codex/config.toml`，或可信项目内的 `.codex/config.toml`。也可以在 App 的 MCP 设置中新增 STDIO server，填入生成器输出的程序及参数。保存后按 App 提示重载 MCP，或打开新会话；CLI 则重启该会话。在会话中用 `/mcp` 查看服务与工具是否可用。
 

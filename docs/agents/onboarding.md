@@ -27,7 +27,7 @@
 
 ## 3. 先发现并复用共享守护进程
 
-本机接入使用同一个当前用户守护进程，由它管理各 agent 独立的身份、状态库和出站连接。先运行 `chiliarch daemon status`；不要仅凭 PID、端口或启动项存在判断健康。已安装且健康时复用；存在但未运行时用 `chiliarch daemon start`；尚未安装时再用 uv 从 PyPI 或官方 GitHub 仓库安装 Chiliarch，并执行 `chiliarch daemon install`。
+本机接入使用同一个当前用户守护进程，由它管理各 agent 独立的身份、状态库和出站连接。先运行 `chiliarch daemon status`；不要仅凭 PID、端口或启动项存在判断健康。已安装且健康时复用；存在但未运行时用 `chiliarch daemon start`；尚未安装时默认执行 `uv tool install chiliarch` 从 PyPI 安装，然后执行 `chiliarch daemon install`。
 
 安装默认登记当前用户登录后自启动，并启动、检查本地服务；它不是开机时以系统账户运行的服务，不需要管理员权限。Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务。系统管理器不可用时明确告知用户，用 `chiliarch daemon run` 前台运行或接入用户已有管理器，不能宣称已登记自启动。
 

@@ -26,26 +26,7 @@ OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协�
 
 ## 安装接入工具
 
-先运行 `chiliarch daemon status` 检查当前用户已有守护进程；已健康则复用，已安装但停止则 `chiliarch daemon start`，没有可用工具时才安装。接入机器需要 uv，以及 Python 3.11、3.12 或 3.13；不需要构建 WebUI。原生厂商工具可能自带 Node，这不改变 Chiliarch 的 Python 管理方式。源码 checkout 的可信来源由你确认；进入该目录后：
-
-```bash
-uv sync --locked
-uv run chiliarch agent --help
-```
-
-这时下文的 `chiliarch ...` 命令应替换为 `uv run chiliarch ...`，并在 checkout 中运行。也可以把已确认的本地 checkout 安装为独立工具：
-
-```bash
-uv tool install /绝对路径/chiliarch
-```
-
-从 GitHub 安装：
-
-```bash
-uv tool install git+https://github.com/69gg/chiliarch.git
-```
-
-从 PyPI 安装：
+先运行 `chiliarch daemon status` 检查当前用户已有守护进程；已健康则复用，已安装但停止则 `chiliarch daemon start`，没有可用工具时才安装。接入机器需要 uv，以及 Python 3.11、3.12 或 3.13；不需要构建 WebUI。原生厂商工具可能自带 Node，这不改变 Chiliarch 的 Python 管理方式。默认使用 PyPI 发布包及持久的 uv 工具环境：
 
 ```bash
 uv tool install chiliarch

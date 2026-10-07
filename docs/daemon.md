@@ -10,12 +10,10 @@ Chiliarch 的 agent 接入默认使用当前系统用户的共享守护进程。
 chiliarch daemon status
 ```
 
-已安装且健康时直接复用；已安装但停止时运行 `chiliarch daemon start`。尚未安装 Chiliarch 时，使用持久的 uv 工具环境，选择一种可信来源：
+已安装且健康时直接复用；已安装但停止时运行 `chiliarch daemon start`。尚未安装 Chiliarch 时，默认从 PyPI 安装到持久的 uv 工具环境：
 
 ```bash
 uv tool install chiliarch
-# 或：uv tool install git+https://github.com/69gg/chiliarch.git
-# 或：uv tool install /绝对路径/可信本地checkout
 chiliarch daemon install
 chiliarch daemon status
 ```

@@ -10,7 +10,7 @@
 
 ## 安装与身份
 
-按 [通用安装说明](index.md#安装接入工具) 先发现当前用户守护进程，健康时复用；缺失时安装并启动。默认登录后自启动，三系统管理入口见 [本机守护进程](../daemon.md)。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
+按 [通用安装说明](index.md#安装接入工具) 先发现当前用户守护进程，健康时复用；缺失时默认用 `uv tool install chiliarch` 从 PyPI 安装，再启动守护进程。默认登录后自启动，三系统管理入口见 [本机守护进程](../daemon.md)。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 Chiliarch 复用本机 `claude` 与其原生认证配置，不读取或上传认证文件，不负责订阅、模型服务或原生安装。交互式 Claude Code 使用当前会话 MCP；无人值守使用独立状态库与托管 runner。两者不要同时占用一个客户端状态库。
 
@@ -33,7 +33,7 @@ chiliarch agent pair \
 chiliarch agent config --host claude-code --agent claude-main
 ```
 
-标准 MCP JSON 结构如下。使用生成器给出的真实 `command` 和 `args`，尤其源码环境下的解释器路径：
+标准 MCP JSON 结构如下。使用生成器给出的真实 `command` 和 `args`，避免桌面宿主的程序搜索路径与 shell 不同：
 
 ```json
 {

@@ -20,25 +20,17 @@
 
 支持 Python 3.11、3.12、3.13；开发默认使用 3.13。Python 由 [uv](https://docs.astral.sh/uv/) 管理，前端由 pnpm 管理。
 
-在项目目录中：
-
-```bash
-uv sync --locked --group dev
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web build
-uv run chiliarch init
-uv run chiliarch serve
-```
-
-`init` 交互设置单用户登录密码，创建权限为 0600 的 `chiliarch.toml`。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
-
-前端构建产物随 Python wheel 和 sdist 发布，安装发布包后无需 Node。从 PyPI 安装：
+默认从 PyPI 安装，前端构建产物随 Python wheel 和 sdist 发布，无需 Node 或 pnpm：
 
 ```bash
 uv tool install chiliarch
 chiliarch init
 chiliarch serve
 ```
+
+`init` 交互设置单用户登录密码，创建权限为 0600 的 `chiliarch.toml`。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
+
+源码开发与本地构建见 [开发、测试与发版](docs/releasing.md)；用户部署见 [部署文档](docs/deployment.md)。
 
 首次登录后，在“配置”页面设置模型 API、模型名称、地址和 API Key；也可通过环境变量提供密钥，例如 `CHILIARCH_MODEL__API_KEY`。未配置模型时，手动管理仍然可用，总管不会生成假回复。
 

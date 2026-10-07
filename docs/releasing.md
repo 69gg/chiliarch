@@ -50,19 +50,21 @@ uv run python scripts/release_notes.py extract --tag v0.1.0
 
 ## 首次配置 PyPI Trusted Publishing
 
-先把仓库放到 GitHub，确认 owner/repository。当前流水线文件为 `.github/workflows/release.yml`，发布 job 使用 GitHub environment `pypi`。
+仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。现有 `.github/workflows/release.yml` 已声明发布所需的 `id-token: write`，使用 GitHub environment `pypi`；不需要改成 API Token 发布。
 
-| 位置 | 必须设置 |
-|---|---|
-| GitHub Settings → Environments | 创建名为 `pypi` 的 environment，可按需要添加保护规则 |
-| PyPI 帐号 → Publishing | 对尚未存在的项目添加 pending publisher |
-| PyPI project name | `chiliarch` |
-| GitHub owner | 实际仓库所属用户或组织 |
-| Repository name | 实际仓库名称 |
-| Workflow filename | `release.yml`，只填写文件名 |
-| Environment name | `pypi`，与 workflow 完全一致 |
+1. 在 GitHub 仓库的 **Settings → Environments** 创建名为 `pypi` 的环境。如果限制部署来源，添加 **Tag** 类型的 `v*` 规则，让发布标签能够使用该环境。需要每次发版人工批准时再配置 required reviewers。
+2. 在 **Settings → Actions → General** 确认 GitHub Actions 已启用，并允许 workflow 使用的 `actions/*` 和 `astral-sh/*`。各 job 已声明所需权限，无需将整个仓库的默认 workflow 权限改成读写。
+3. 登录 [PyPI 帐号 Publishing](https://pypi.org/manage/account/publishing/)，在 GitHub 的 **Add a new pending publisher** 表单填写下列值并添加。
 
-不需要设置 PYPI_API_TOKEN。已有 PyPI 项目时，在该项目 Publishing 设置添加 publisher；新项目 pending publisher 首次使用时创建项目，但设置 pending publisher 不预留名称。[PyPI 创建项目文档](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
+| PyPI 字段                | 填写值                                                   |
+| ------------------------ | -------------------------------------------------------- |
+| PyPI project name        | `chiliarch`                                              |
+| Owner                    | `69gg`                                                   |
+| Repository name          | `chiliarch`                                              |
+| Workflow name / filename | `release.yml`，只填写文件名，不填写 `.github/workflows/` |
+| Environment name         | `pypi`，与 workflow 完全一致                             |
+
+不需要创建或配置 `PYPI_API_TOKEN`，也不需要先手动上传一个版本。首次发布会创建 PyPI 项目，并将 pending publisher 转为正式 publisher。已有 `chiliarch` 项目时，在该项目的 **Manage → Publishing** 添加同样的 GitHub publisher。设置 pending publisher 不预留项目名称。[PyPI 创建项目文档](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
 
 ## tag 发布流程
 
@@ -76,3 +78,14 @@ uv run python scripts/release_notes.py extract --tag v0.1.0
 build 不拥有 PyPI OIDC 凭证；只有 publish job 有 id-token:write，GitHub Release job 单独拥有 contents:write。Actions 固定到核实过的 commit SHA，升级时核查官方来源。
 
 确认版本、CHANGELOG、测试和签名提交后，项目维护者才执行 tag 和 push。代码完成或本地构建成功不等于已经上传 PyPI；未设置 publisher 或未推送 tag 时不会发布。
+
+首次发布 v0.1.0，先将代码推送到上述 GitHub 仓库，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
+
+```bash
+git remote add origin https://github.com/69gg/chiliarch.git
+git push -u origin main
+git tag -s v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+在 GitHub **Actions → Release** 查看运行结果；若设置了环境审核，批准 `pypi` 部署后继续发布。成功后用户及 agent 均默认使用 `uv tool install chiliarch` 从 PyPI 安装。
