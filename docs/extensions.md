@@ -1,0 +1,81 @@
+# 扩展操作与出站客户端
+
+v0.1.0 不设计真实厂商插件，但保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
+
+## 注册平台工具
+
+应用创建后、启动前，可以访问 `app.state.service` 注册操作。handler 为带类型的异步函数，参数由 JSON Schema 校验；risk 和 mutating 为服务端元数据，不能由调用者降低。
+
+```python
+from typing import Any
+
+from chiliarch.api import create_app
+from chiliarch.config import Settings
+
+
+async def inspect_project(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {"project": arguments["project"], "status": "example"}
+
+
+def application(settings: Settings) -> Any:
+    app = create_app(config=settings)
+    app.state.service.register(
+        "example_inspect_project",
+        "Read a project status",
+        {
+            "type": "object",
+            "properties": {"project": {"type": "string", "minLength": 1}},
+            "required": ["project"],
+            "additionalProperties": False,
+        },
+        inspect_project,
+        risk="low",
+        mutating=False,
+    )
+    return app
+```
+
+这是入口示例，不代表项目已有真实工作目录检查器。应用设置仍需有效登录密码。用自己的 ASGI factory 或 Python 启动入口加载扩展；本版不自动扫描磁盘或安装插件。
+
+注册后，工具出现在 `GET /api/operations` 和总管工具 Schema。登录用户可通过 `POST /api/operations/<name>` 调用，body 为 `{arguments,idempotency_key}`；agent 通过 agent.request 申请调用，由总管或用户按模式处理。
+
+自定义 handler 在数据库写锁外执行，可使用自己的事务。平台先保存幂等 reservation 再执行；如果进程恰在外部副作用期间中断，结果可能未知，同 key 重试不会自动再次执行。handler 自己应按业务身份去重，并提供查询/协调恢复方法。平台不能替外部系统保证恰好一次。
+
+只读工具准确设置 mutating=false；任何外部状态变更必须标 true。访问认证、凭证或安全配置的工具应标 high。自定义秘密字段在日志、工具结果、公开事件中需要显式脱敏；不要直接返回密码或第三方原始异常。
+
+## 编写 Python agent handler
+
+参考客户端将通信、持久化和 task ledger 与实际执行分开。handler 接收 task.dispatch payload 和 progress 回调；取消通过 asyncio.CancelledError 传播，不能吞掉取消并假称成功。
+
+```python
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+from chiliarch.client import AgentClient
+
+
+async def handle_task(
+    payload: dict[str, Any],
+    progress: Callable[[float, str], Awaitable[None]],
+) -> dict[str, Any]:
+    await progress(0.5, "示例任务已受理")
+    return {"example": True, "instruction": payload["instruction"]}
+
+
+async def run() -> None:
+    client = await AgentClient.from_state(Path("agent.db"), handle_task)
+    await client.run()
+```
+
+先用 pair CLI 生成 state。真正厂商适配器在 handler 中调用自己的 API/SDK，并把运行身份与 task_id 持久绑定。若厂商自身执行失败或结果未知，明确上报，不用重复创建任务掩盖问题。
+
+已有并行应用可在客户端就绪后调用 `await client.contact("需要总管帮助的内容")` 或 `await client.request(operation, arguments)`。`client.ready` 表示本地持久存储可用，不承诺网络已经上线；消息可以先排队。如果同时等待 `client.ready` 和 `client.run()`，应同时观察运行任务的退出；凭证吊销等错误不能被无限等待就绪掩盖。
+
+## 跨语言插件
+
+TypeScript/OpenCode 插件可从公开 JSON Schema 生成类型或使用 Ajv 等验证器，实现相同信封、持久 inbox/outbox、业务 ACK 与降级链。先校验 Schema，再校验当前身份和业务状态；Schema 不是权限证明。
+
+SSE 使用可附带 Authorization header 的流式 HTTP 客户端；不能依赖浏览器 EventSource 携带任意 header。所有插件网络连接必须主动出站；禁止让平台通过机器 IP 回调插件。见 [协议](protocol.md)。
+
+后续能力发现、插件配置和真实厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。

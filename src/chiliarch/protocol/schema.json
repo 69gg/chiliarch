@@ -1,0 +1,494 @@
+{
+  "additionalProperties": false,
+  "description": "One durable message identity, preserved across retries and transports.",
+  "properties": {
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "type": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Type",
+      "type": "string"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Correlation Id"
+    },
+    "protocol_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Protocol Version",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Envelope",
+  "type": "object",
+  "$defs": {
+    "HeartbeatPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "ready",
+          "title": "Status",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "title": "HeartbeatPayload",
+      "type": "object"
+    },
+    "AckPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id"
+      ],
+      "title": "AckPayload",
+      "type": "object"
+    },
+    "DispatchPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "instruction": {
+          "minLength": 1,
+          "title": "Instruction",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "task_id",
+        "instruction"
+      ],
+      "title": "DispatchPayload",
+      "type": "object"
+    },
+    "CancelPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "reason": {
+          "default": "User requested cancellation",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "CancelPayload",
+      "type": "object"
+    },
+    "TaskStatusPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Progress"
+        },
+        "result": {
+          "default": null,
+          "title": "Result"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "required": [
+        "task_id",
+        "status"
+      ],
+      "title": "TaskStatusPayload",
+      "type": "object"
+    },
+    "AgentRequestPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "operation": {
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "required": [
+        "request_id",
+        "operation"
+      ],
+      "title": "AgentRequestPayload",
+      "type": "object"
+    },
+    "AgentContactPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "AgentContactPayload",
+      "type": "object"
+    },
+    "AgentMessagePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "AgentMessagePayload",
+      "type": "object"
+    },
+    "RequestResolvedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "approved",
+            "rejected",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "result": {
+          "default": null,
+          "title": "Result"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "request_id",
+        "status"
+      ],
+      "title": "RequestResolvedPayload",
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "heartbeat"
+        },
+        "payload": {
+          "$ref": "#/$defs/HeartbeatPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "ack"
+        },
+        "payload": {
+          "$ref": "#/$defs/AckPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "task.dispatch"
+        },
+        "payload": {
+          "$ref": "#/$defs/DispatchPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "task.cancel"
+        },
+        "payload": {
+          "$ref": "#/$defs/CancelPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "task.status"
+        },
+        "payload": {
+          "$ref": "#/$defs/TaskStatusPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "agent.request"
+        },
+        "payload": {
+          "$ref": "#/$defs/AgentRequestPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "agent.contact"
+        },
+        "payload": {
+          "$ref": "#/$defs/AgentContactPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "agent.message"
+        },
+        "payload": {
+          "$ref": "#/$defs/AgentMessagePayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "request.resolved"
+        },
+        "payload": {
+          "$ref": "#/$defs/RequestResolvedPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "pattern": "^(?!task\\.|agent\\.|request\\.)[^.]+\\..+$",
+          "not": {
+            "enum": [
+              "heartbeat",
+              "ack",
+              "task.dispatch",
+              "task.cancel",
+              "task.status",
+              "agent.request",
+              "agent.contact",
+              "agent.message",
+              "request.resolved"
+            ]
+          }
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:chiliarch:protocol:1.0"
+}
