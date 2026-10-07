@@ -7,11 +7,8 @@ uses the worker's local mailbox; the AgentClient remains the only network peer.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import math
-import os
-import signal
 import sys
 import tempfile
 import time
@@ -22,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.client import TaskExecutionError, TaskHandler
 from chiliarch.config import mask_sensitive
 
@@ -218,8 +216,8 @@ class _Output:
 class RunnerHandler:
     """Execute a task in a fixed workspace and bound its entire process lifetime.
 
-    POSIX process groups cover descendants, including the temporary MCP server.
-    Windows is rejected before spawning rather than claiming incomplete cleanup.
+    POSIX process groups and Windows Job Objects cover descendants, including
+    the temporary MCP server. Launch policy never contains task instructions.
     Background processes are not kept alive after a task's native CLI exits.
     """
 
@@ -329,8 +327,6 @@ class RunnerHandler:
         return command
 
     async def __call__(self, payload: JsonObject, progress: Progress) -> JsonObject:
-        if os.name != "posix":
-            raise RunnerError("Native CLI workers currently require a POSIX process-group platform")
         prompt = self._prompt(payload)
         # Verify again: a configured directory can disappear between dispatches.
         if not self.settings.workdir.is_dir():
@@ -338,17 +334,12 @@ class RunnerHandler:
         with tempfile.TemporaryDirectory(prefix="chiliarch-runner-") as directory:
             command = self._command(Path(directory), payload["task_id"])
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *command,
-                    cwd=self.settings.workdir,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                    limit=self.settings.max_line_bytes + 1,
+                tree = await start_process_tree(
+                    command, self.settings.workdir, self.settings.max_line_bytes + 1
                 )
             except OSError:
                 raise RunnerError("Could not start the configured native CLI executable") from None
+            process = tree.process
             readers: list[asyncio.Task[None]] = []
             try:
                 async with asyncio.timeout(self.settings.timeout_seconds):
@@ -423,7 +414,7 @@ class RunnerHandler:
             finally:
                 # Cancellation is not completion. Kill descendants before releasing
                 # the client's task slot, including when the parent has exited.
-                cleanup = asyncio.create_task(self._cleanup(process, readers))
+                cleanup = asyncio.create_task(self._cleanup(tree, readers))
                 interrupted = False
                 while not cleanup.done():
                     try:
@@ -435,43 +426,11 @@ class RunnerHandler:
                 if interrupted:
                     raise asyncio.CancelledError
 
-    async def _cleanup(
-        self, process: asyncio.subprocess.Process, readers: list[asyncio.Task[None]]
-    ) -> None:
+    async def _cleanup(self, tree: ProcessTree, readers: list[asyncio.Task[None]]) -> None:
         for task in readers:
             task.cancel()
         await asyncio.gather(*readers, return_exceptions=True)
-        await self._terminate(process)
-
-    async def _terminate(self, process: asyncio.subprocess.Process) -> None:
-        def send_group(sig: signal.Signals | int) -> bool:
-            try:
-                os.killpg(process.pid, sig)
-                return True
-            except ProcessLookupError:
-                return False
-
-        alive = send_group(signal.SIGTERM)
-        if alive:
-            # Wait for the group, not just its leader: the CLI may already have
-            # exited while a tool/MCP descendant remains alive holding a pipe.
-            until = time.monotonic() + self.settings.terminate_grace_seconds
-            while time.monotonic() < until:
-                if not send_group(0):
-                    break
-                await asyncio.sleep(min(0.05, self.settings.terminate_grace_seconds))
-            else:
-                send_group(signal.SIGKILL)
-
-        async def drain(stream: asyncio.StreamReader | None) -> None:
-            if stream:
-                while await stream.read(65536):
-                    pass
-
-        # A parser/limit failure can leave a paused StreamReader. Drain buffered
-        # bytes after killing the group so Process.wait cannot deadlock on PIPE.
-        with contextlib.suppress(ProcessLookupError):
-            await asyncio.gather(process.wait(), drain(process.stdout), drain(process.stderr))
+        await tree.terminate(self.settings.terminate_grace_seconds)
 
 
 def create_handler(settings: RunnerSettings, state_path: Path) -> TaskHandler:

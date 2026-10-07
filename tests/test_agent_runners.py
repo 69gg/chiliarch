@@ -20,7 +20,6 @@ from chiliarch.adapters.runners import RunnerError, RunnerHandler, RunnerSetting
 from chiliarch.client import AgentClient
 from chiliarch.protocol import Envelope
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="Native workers require POSIX groups")
 JsonObject = dict[str, Any]
 
 
@@ -33,9 +32,10 @@ def fake_cli(
     raw: bytes | None = None,
     hang: bool = False,
     child: bool = False,
+    child_has_private_output: bool = False,
 ) -> Path:
     """Create a fake CLI, not a wrapper invoking a user's installed agent."""
-    path = directory / "fake-cli"
+    path = directory / ("fake cli 中文.py" if os.name == "nt" else "fake-cli")
     script = textwrap.dedent(
         f"""\
         import json
@@ -47,17 +47,22 @@ def fake_cli(
         from pathlib import Path
         from typing import Any
 
+        sys.stdin.reconfigure(encoding="utf-8")
         arguments: list[str] = sys.argv[1:]
         prompt: str = sys.stdin.read()
         observed: dict[str, Any] = {{"argv": arguments, "stdin": prompt, "cwd": os.getcwd(), "pid": os.getpid()}}
         if "--mcp-config" in arguments:
             config_path = Path(arguments[arguments.index("--mcp-config") + 1])
             observed["mcp_path"] = str(config_path)
-            observed["mcp_config"] = json.loads(config_path.read_text())
+            observed["mcp_config"] = json.loads(config_path.read_text(encoding="utf-8"))
             observed["mcp_mode"] = config_path.stat().st_mode & 0o777
-        Path("observed.json").write_text(json.dumps(observed))
+        Path("observed.json").write_text(json.dumps(observed), encoding="utf-8")
         if {child!r}:
-            child_process = subprocess.Popen([sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"])
+            child_process = subprocess.Popen(
+                [sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"],
+                stdout=subprocess.DEVNULL if {child_has_private_output!r} else None,
+                stderr=subprocess.DEVNULL if {child_has_private_output!r} else None,
+            )
             Path("child.pid").write_text(str(child_process.pid))
         if {stderr_bytes!r}:
             sys.stderr.write("x" * {stderr_bytes!r})
@@ -74,7 +79,7 @@ def fake_cli(
         sys.exit({exitcode!r})
         """
     )
-    path.write_text(f"#!{sys.executable}\n" + script)
+    path.write_text(f"#!{sys.executable}\n" + script, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -214,7 +219,8 @@ async def test_native_success_receives_fixed_policy_and_stdin_only_task(
         assert "--include-partial-messages" in args
         assert "--allowedTools=mcp__chiliarch__*" in args
         assert "--bare" not in args
-        assert observed["mcp_mode"] == 0o600
+        if os.name == "posix":
+            assert observed["mcp_mode"] == 0o600
         mcp = observed["mcp_config"]["mcpServers"]["chiliarch"]
         assert mcp["command"] == sys.executable
         assert mcp["args"] == expected_mcp_args
@@ -342,6 +348,24 @@ async def test_stderr_is_drained_and_counted_against_output_limit(tmp_path: Path
 
 def process_running(pid: int) -> bool:
     """Linux orphan zombies are stopped even before PID 1 reaps them."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        windows_ctypes: Any = ctypes
+        kernel: Any = windows_ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            return bool(kernel.WaitForSingleObject(handle, 0))
+        finally:
+            kernel.CloseHandle(handle)
     status = Path(f"/proc/{pid}/stat")
     if status.exists() and status.read_text().rsplit(")", 1)[1].strip().split()[0] == "Z":
         return False
@@ -363,7 +387,7 @@ async def test_timeout_and_cancellation_stop_worker_and_term_ignoring_descendant
         kind="codex",
         workdir=tmp_path,
         executable=str(binary),
-        timeout_seconds=3 if cancel else 0.3,
+        timeout_seconds=5 if cancel else (1 if os.name == "nt" else 0.3),
         terminate_grace_seconds=0.05,
     )
 
@@ -377,8 +401,8 @@ async def test_timeout_and_cancellation_stop_worker_and_term_ignoring_descendant
     )
     child_pid = 0
     try:
-        async with asyncio.timeout(2):
-            for _ in range(200):
+        async with asyncio.timeout(4):
+            for _ in range(400):
                 if (tmp_path / "child.pid").exists():
                     break
                 await asyncio.sleep(0.01)
@@ -405,9 +429,9 @@ async def test_timeout_and_cancellation_stop_worker_and_term_ignoring_descendant
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        if child_pid:
+        if child_pid and process_running(child_pid):
             with contextlib.suppress(ProcessLookupError):
-                os.kill(child_pid, signal.SIGKILL)
+                os.kill(child_pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
 
 
 async def test_parent_exit_does_not_leave_background_descendant(tmp_path: Path) -> None:
@@ -416,7 +440,7 @@ async def test_parent_exit_does_not_leave_background_descendant(tmp_path: Path) 
         kind="codex",
         workdir=tmp_path,
         executable=str(binary),
-        timeout_seconds=0.4,
+        timeout_seconds=1 if os.name == "nt" else 0.4,
         terminate_grace_seconds=0.05,
     )
 
@@ -429,6 +453,26 @@ async def test_parent_exit_does_not_leave_background_descendant(tmp_path: Path) 
         await create_handler(settings, tmp_path / "state.db")(
             {"task_id": "task", "instruction": "inspect"}, progress
         )
+    child_pid = int((tmp_path / "child.pid").read_text())
+    assert not process_running(child_pid)
+
+
+async def test_success_cleanup_stops_descendant_without_inherited_output(tmp_path: Path) -> None:
+    binary = fake_cli(tmp_path, codex_success(), child=True, child_has_private_output=True)
+    settings = RunnerSettings(
+        kind="codex",
+        workdir=tmp_path,
+        executable=str(binary),
+        terminate_grace_seconds=0.05,
+    )
+
+    async def progress(_: float, __: str) -> None:
+        pass
+
+    result = await create_handler(settings, tmp_path / "state.db")(
+        {"task_id": "task", "instruction": "inspect"}, progress
+    )
+    assert result["answer"] == "检查完成，两个任务正在运行。"
     child_pid = int((tmp_path / "child.pid").read_text())
     assert not process_running(child_pid)
 
