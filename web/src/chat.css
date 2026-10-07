@@ -1,0 +1,146 @@
+.chat-page .chat-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.chat-page .chat-sidebar-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+  flex-shrink: 0;
+}
+
+.chat-sidebar-toggle svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.5;
+}
+
+.chat-page .chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+}
+
+.chat-page .chat-layout.sidebar-open {
+  grid-template-columns: 230px minmax(0, 1fr);
+}
+
+.chat-page .conversation-drawer {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.chat-page .conversation-drawer:not([open]) {
+  display: none;
+}
+
+.chat-page .conversation-list {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 18px 14px;
+  overflow-y: auto;
+  border: 0;
+}
+
+.chat-page .conversation-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.chat-page .conversation-list h2 {
+  display: block;
+  margin: 0;
+  padding-left: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.conversation-list-heading button {
+  font-size: 20px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+.chat-page .new-conversation {
+  margin-bottom: 16px;
+}
+
+.chat-page .conversation-entry {
+  display: grid;
+  width: 100%;
+  white-space: normal;
+}
+
+.chat-page .conversation-entry small,
+.chat-page .conversation-list > p {
+  display: block;
+}
+
+.chat-page .tool-block {
+  margin: 10px 0;
+}
+
+.chat-page .tool-block .tool-call {
+  margin: 0;
+}
+
+.chat-page .tool-approval {
+  padding: 10px 14px 14px;
+  border-bottom: 0;
+}
+
+.chat-page .tool-approval p {
+  margin: 0 0 10px;
+}
+
+@media (max-width: 700px) {
+  .chat-page .page-header {
+    gap: 12px;
+  }
+
+  .chat-page .chat-title {
+    gap: 8px;
+  }
+
+  .chat-page .chat-title h1 {
+    font-size: 18px;
+    white-space: nowrap;
+  }
+
+  .chat-page .conversation-drawer.mobile-drawer {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(300px, calc(100vw - 48px));
+    height: 100dvh;
+    max-width: none;
+    border-right: 1px solid var(--rule);
+    box-shadow: 8px 0 32px rgb(0 0 0 / 10%);
+  }
+
+  .conversation-drawer::backdrop {
+    background: rgb(20 30 44 / 30%);
+  }
+
+  .chat-page .conversation-list {
+    padding: 18px 16px;
+  }
+}

@@ -2,10 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
 import {
-  ApprovalItem,
   EmptyState,
   ErrorNotice,
-  JsonView,
   MarkdownContent,
   Status,
   time,
@@ -83,6 +81,10 @@ export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
       name: String(data.name),
       arguments: data.arguments ?? previous?.arguments ?? {},
       run_id: runId,
+      approval_id:
+        typeof data.approval_id === "string"
+          ? data.approval_id
+          : previous?.approval_id,
       status: event.type === "approval_required" ? "approval" : "running",
     };
     tools = previous
@@ -102,6 +104,7 @@ export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
       arguments: previous?.arguments ?? {},
       result: data.result,
       run_id: runId,
+      approval_id: previous?.approval_id,
       status: "completed",
     };
     tools = previous
@@ -183,20 +186,20 @@ export default function ChatPage({
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileSidebar, setMobileSidebar] = useState(
+    () => window.matchMedia("(max-width: 700px)").matches,
+  );
+  const sidebar = useRef<HTMLDialogElement>(null);
+  const sidebarButton = useRef<HTMLButtonElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const scrollPinned = useRef(true);
+  const localMessageSequence = useRef(0);
   const model = state.config.model as Record<string, Json> | undefined;
   const configured = Boolean(model?.model);
   const supervisor = state.config.supervisor as
     Record<string, Json> | undefined;
   const mode = String(supervisor?.mode ?? "ask");
-  const pending = state.approvals.filter((approval) =>
-    ["pending", "awaiting_approval"].includes(approval.status),
-  );
-  const requests = state.requests.filter((request) =>
-    ["pending", "awaiting_approval"].includes(request.status),
-  );
   const activeRun = [...chat.runs]
     .reverse()
     .find((run) => ACTIVE_RUN_STATUSES.includes(run.status));
@@ -217,6 +220,30 @@ export default function ChatPage({
   useEffect(() => {
     void loadConversations();
   }, [loadConversations, state]);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 700px)");
+    const resize = (): void => setMobileSidebar(query.matches);
+    query.addEventListener("change", resize);
+    return () => query.removeEventListener("change", resize);
+  }, []);
+  useEffect(() => {
+    if (!sidebarOpen || !sidebar.current) return;
+    const dialog = sidebar.current;
+    if (mobileSidebar) dialog.showModal();
+    else dialog.show();
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSidebarOpen(false);
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("keydown", escape);
+      dialog.close();
+      sidebarButton.current?.focus();
+    };
+  }, [sidebarOpen, mobileSidebar]);
   useEffect(() => {
     if (!selected) {
       setDetail(null);
@@ -239,10 +266,12 @@ export default function ChatPage({
           (message) => message.role === "agent",
         );
         const restored = (result.events ?? [])
-          .filter((event) =>
-            ["tool_start", "tool_end", "approval_required"].includes(
-              event.type,
-            ) || (!hasAgentMessage && event.type === "agent_contact"),
+          .filter(
+            (event) =>
+              ["tool_start", "tool_end", "approval_required"].includes(
+                event.type,
+              ) ||
+              (!hasAgentMessage && event.type === "agent_contact"),
           )
           .reduce(applyChatEvent, {
             messages: result.messages,
@@ -302,6 +331,7 @@ export default function ChatPage({
     const conversation = await api.createConversation();
     setConversations((previous) => [conversation, ...previous]);
     setSelected(conversation.id);
+    setSidebarOpen(false);
     return conversation.id;
   }
   async function send(event: FormEvent): Promise<void> {
@@ -311,6 +341,24 @@ export default function ChatPage({
     setBusy(true);
     setError(null);
     const text = content.trim();
+    const localMessageId = selected
+      ? `local-user:${selected}:${++localMessageSequence.current}`
+      : null;
+    if (localMessageId) {
+      setChat((previous) => ({
+        ...previous,
+        messages: [
+          ...previous.messages,
+          {
+            id: localMessageId,
+            role: "user",
+            content: text,
+            reasoning: "",
+            created_at: Date.now() / 1000,
+          },
+        ],
+      }));
+    }
     try {
       let id = selected;
       const isNew = !id;
@@ -322,32 +370,43 @@ export default function ChatPage({
       const result = await api.sendMessage(id, text);
       if (isNew) setSelected(id);
       else
-        setChat((previous) => ({
-          ...previous,
-          messages: [
-            ...previous.messages,
-            {
-              id: `local:${result.run_id}`,
-              role: "user",
-              content: text,
-              reasoning: "",
-              created_at: Date.now() / 1000,
-            },
-          ],
-          runs: [
-            ...previous.runs,
-            {
-              id: result.run_id,
-              conversation_id: id,
-              status: "running",
-              created_at: Date.now() / 1000,
-              updated_at: Date.now() / 1000,
-            },
-          ],
-        }));
+        setChat((previous) => {
+          if (
+            !previous.messages.some((message) => message.id === localMessageId)
+          )
+            return previous;
+          return {
+            ...previous,
+            messages: previous.messages.map((message) =>
+              message.id === localMessageId
+                ? { ...message, run_id: result.run_id }
+                : message,
+            ),
+            runs: previous.runs.some((run) => run.id === result.run_id)
+              ? previous.runs
+              : [
+                  ...previous.runs,
+                  {
+                    id: result.run_id,
+                    conversation_id: id,
+                    status: "running",
+                    created_at: Date.now() / 1000,
+                    updated_at: Date.now() / 1000,
+                  },
+                ],
+          };
+        });
       setContent("");
       void loadConversations();
     } catch (error) {
+      if (localMessageId) {
+        setChat((previous) => ({
+          ...previous,
+          messages: previous.messages.filter(
+            (message) => message.id !== localMessageId,
+          ),
+        }));
+      }
       setError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
@@ -407,9 +466,27 @@ export default function ChatPage({
   return (
     <div className="chat-page">
       <header className="page-header">
-        <div>
-          <p className="eyebrow">总管</p>
-          <h1>chiliarch AI</h1>
+        <div className="chat-title">
+          <button
+            ref={sidebarButton}
+            className="chat-sidebar-toggle"
+            type="button"
+            aria-label={sidebarOpen ? "收起会话列表" : "展开会话列表"}
+            aria-expanded={sidebarOpen}
+            aria-controls="chat-conversations"
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16M5.5 8h1M5.5 12h1M5.5 16h1" />
+            </svg>
+          </button>
+          <h1>Chiliarch AI</h1>
         </div>
         <div className="header-actions">
           <label className="mode-label">
@@ -425,55 +502,88 @@ export default function ChatPage({
               <option value="yolo">yolo · 自主运行</option>
             </select>
           </label>
-          <button
-            className="inspector-toggle"
-            onClick={() => setInspectorOpen(!inspectorOpen)}
-          >
-            请求与审批 {pending.length + requests.length || ""}
-          </button>
         </div>
       </header>
-      <div className="chat-layout">
-        <aside className="conversation-list" aria-label="会话">
-          <button
-            className="new-conversation"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void createConversation()
-                .catch((error: unknown) =>
-                  setError(
-                    error instanceof Error ? error.message : String(error),
-                  ),
-                )
-                .finally(() => setBusy(false));
-            }}
-          >
-            ＋ 新会话
-          </button>
-          <h2>最近会话</h2>
-          {conversations.length === 0 && (
-            <p className="muted small">尚无会话</p>
-          )}
-          {conversations.map((conversation) => (
+      <div
+        className={`chat-layout${sidebarOpen && !mobileSidebar ? " sidebar-open" : ""}`}
+      >
+        <dialog
+          ref={sidebar}
+          id="chat-conversations"
+          className={`conversation-drawer${mobileSidebar ? " mobile-drawer" : ""}`}
+          aria-label="会话列表"
+          aria-modal={mobileSidebar ? true : undefined}
+          onCancel={(event) => {
+            event.preventDefault();
+            setSidebarOpen(false);
+          }}
+          onClick={(event) => {
+            if (!mobileSidebar || event.target !== event.currentTarget) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (
+              event.clientX < bounds.left ||
+              event.clientX > bounds.right ||
+              event.clientY < bounds.top ||
+              event.clientY > bounds.bottom
+            )
+              setSidebarOpen(false);
+          }}
+        >
+          <div className="conversation-list">
+            <div className="conversation-list-heading">
+              <h2>会话</h2>
+              <button
+                className="plain"
+                type="button"
+                aria-label="关闭会话列表"
+                onClick={() => setSidebarOpen(false)}
+                autoFocus
+              >
+                ×
+              </button>
+            </div>
             <button
-              key={conversation.id}
-              className={`conversation-entry ${selected === conversation.id ? "selected" : ""}`}
-              onClick={() => setSelected(conversation.id)}
-              aria-pressed={selected === conversation.id}
+              className="new-conversation"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void createConversation()
+                  .catch((error: unknown) =>
+                    setError(
+                      error instanceof Error ? error.message : String(error),
+                    ),
+                  )
+                  .finally(() => setBusy(false));
+              }}
             >
-              <span>{conversation.title || "新会话"}</span>
-              <small>
-                {conversation.source === "agent"
-                  ? "来自 agent"
-                  : time(conversation.updated_at)}
-              </small>
+              ＋ 新会话
             </button>
-          ))}
-        </aside>
+            {conversations.length === 0 && (
+              <p className="muted small">尚无会话</p>
+            )}
+            {conversations.map((conversation) => (
+              <button
+                key={conversation.id}
+                className={`conversation-entry ${selected === conversation.id ? "selected" : ""}`}
+                onClick={() => {
+                  setSelected(conversation.id);
+                  setSidebarOpen(false);
+                }}
+                aria-pressed={selected === conversation.id}
+              >
+                <span>{conversation.title || "新会话"}</span>
+                <small>
+                  {conversation.source === "agent"
+                    ? "来自 agent"
+                    : time(conversation.updated_at)}
+                </small>
+              </button>
+            ))}
+          </div>
+        </dialog>
         <section
           className="conversation-workspace"
-          aria-label="与 chiliarch AI 对话"
+          aria-label="与 Chiliarch AI 对话"
         >
           <div className="conversation-topline">
             <span>
@@ -558,7 +668,7 @@ export default function ChatPage({
                   <div className="message-heading">
                     <strong>
                       {message.role === "assistant"
-                        ? "chiliarch AI"
+                        ? "Chiliarch AI"
                         : message.role === "agent"
                           ? "agent 来信"
                           : "你"}
@@ -575,10 +685,20 @@ export default function ChatPage({
                     </details>
                   )}
                   <MarkdownContent content={message.content} />
-                  {message.run_id &&
+                  {message.role === "assistant" &&
+                    message.run_id &&
                     chat.tools
                       .filter((tool) => tool.run_id === message.run_id)
-                      .map((tool) => <ToolView key={tool.id} tool={tool} />)}
+                      .map((tool) => (
+                        <ToolView
+                          key={`${tool.run_id}:${tool.id}`}
+                          tool={tool}
+                          approval={state.approvals.find(
+                            (approval) => approval.id === tool.approval_id,
+                          )}
+                          onResolved={refresh}
+                        />
+                      ))}
                   {message.role === "assistant" &&
                     activeRun &&
                     activeRun.id === message.run_id && (
@@ -603,7 +723,7 @@ export default function ChatPage({
               value={content}
               onChange={(event) => setContent(event.target.value)}
               placeholder={
-                configured ? "向 chiliarch AI 发送消息…" : "请先配置总管模型"
+                configured ? "向 Chiliarch AI 发送消息…" : "请先配置总管模型"
               }
               disabled={!configured}
               rows={3}
@@ -643,63 +763,6 @@ export default function ChatPage({
             </div>
           </form>
         </section>
-        <aside
-          className={`context-inspector ${inspectorOpen ? "inspector-visible" : ""}`}
-          aria-label="请求与审批"
-        >
-          <div className="row-between">
-            <h2>请求与审批</h2>
-            <button
-              className="plain inspector-close"
-              onClick={() => setInspectorOpen(false)}
-              aria-label="关闭请求与审批"
-            >
-              ×
-            </button>
-          </div>
-          <p className="muted small">{pending.length} 个操作等待许可</p>
-          {pending.map((approval) => (
-            <ApprovalItem
-              key={approval.id}
-              approval={approval}
-              onResolved={refresh}
-            />
-          ))}
-          {pending.length === 0 && (
-            <p className="empty-line">当前没有待审批操作</p>
-          )}
-          <h3>agent 来信</h3>
-          {requests.length === 0 && (
-            <p className="empty-line">当前没有待处理请求</p>
-          )}
-          {requests.map((request) => (
-            <div className="request-entry" key={request.id}>
-              <div className="row-between">
-                <strong>
-                  {state.agents.find((agent) => agent.id === request.agent_id)
-                    ?.name ?? request.agent_id}
-                </strong>
-                <Status value={request.status} />
-              </div>
-              <p>{request.message || request.operation}</p>
-              <details>
-                <summary>查看请求</summary>
-                <JsonView value={request.arguments} />
-              </details>
-            </div>
-          ))}
-          <h3>最近任务</h3>
-          {state.tasks.length === 0 ? (
-            <p className="empty-line">尚无任务</p>
-          ) : (
-            state.tasks.slice(0, 5).map((task) => (
-              <div className="task-preview" key={task.id}>
-                <p>{task.instruction}</p>
-                <Status value={task.status} />
-              </div>
-            ))
-          )}
-        </aside>
       </div>
     </div>
   );

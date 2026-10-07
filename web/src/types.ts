@@ -129,6 +129,7 @@ export interface ToolCall {
   arguments: Json;
   result?: Json;
   run_id: string;
+  approval_id?: string;
   status: "running" | "completed" | "approval";
 }
 

@@ -92,10 +92,12 @@ describe("持久会话和事件流", () => {
     expect(composer).toBeEnabled();
     await user.type(composer, "查看所有机器的工作进度");
     await user.click(screen.getByRole("button", { name: "发送 ↑" }));
-    await waitFor(() => expect(send).toHaveBeenCalledWith(
-      "default-url",
-      "查看所有机器的工作进度",
-    ));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "default-url",
+        "查看所有机器的工作进度",
+      ),
+    );
   });
 
   it.each([false, true])(
@@ -111,38 +113,57 @@ describe("持久会话和事件流", () => {
         created_at: 0,
         updated_at: 0,
         last_event_seq: 7,
-        messages: persisted ? [{
-          id: "stored-agent-message",
-          role: "agent",
-          content: "离线工作进度已保存",
-          reasoning: "",
-          created_at: 0,
-          source: "agent",
-        }] : [],
+        messages: persisted
+          ? [
+              {
+                id: "stored-agent-message",
+                role: "agent",
+                content: "离线工作进度已保存",
+                reasoning: "",
+                created_at: 0,
+                source: "agent",
+              },
+            ]
+          : [],
         runs: [],
-        events: [{
-          seq: 7,
-          type: "agent_contact",
-          run_id: null,
-          data: {
-            message_id: "envelope-one",
-            agent_id: "agent-one",
-            content: { message: "离线工作进度已保存", progress: 0.5 },
+        events: [
+          {
+            seq: 7,
+            type: "agent_contact",
+            run_id: null,
+            data: {
+              message_id: "envelope-one",
+              agent_id: "agent-one",
+              content: { message: "离线工作进度已保存", progress: 0.5 },
+            },
           },
-        }],
+        ],
       };
       vi.spyOn(api, "conversations").mockResolvedValue([detail]);
       vi.spyOn(api, "conversation").mockResolvedValue(detail);
-      const stream = vi.spyOn(api, "streamConversation").mockReturnValue(vi.fn());
-      render(<ChatPage state={state} refresh={vi.fn()} onConfigure={vi.fn()} />);
-      await userEvent.setup().click(
-        await screen.findByRole("button", { name: /机器 A 来信/ }),
+      const stream = vi
+        .spyOn(api, "streamConversation")
+        .mockReturnValue(vi.fn());
+      render(
+        <ChatPage state={state} refresh={vi.fn()} onConfigure={vi.fn()} />,
       );
-      const workspace = screen.getByRole("region", { name: "与 chiliarch AI 对话" });
-      await waitFor(() => expect(workspace).toHaveTextContent("离线工作进度已保存"));
+      await userEvent
+        .setup()
+        .click(screen.getByRole("button", { name: "展开会话列表" }));
+      await userEvent
+        .setup()
+        .click(await screen.findByRole("button", { name: /机器 A 来信/ }));
+      const workspace = screen.getByRole("region", {
+        name: "与 Chiliarch AI 对话",
+      });
+      await waitFor(() =>
+        expect(workspace).toHaveTextContent("离线工作进度已保存"),
+      );
       expect(within(workspace).getAllByText("agent 来信")).toHaveLength(1);
       expect(screen.getByLabelText("发送消息")).toBeDisabled();
-      expect(within(workspace).queryByText("chiliarch AI")).not.toBeInTheDocument();
+      expect(
+        within(workspace).queryByText("Chiliarch AI"),
+      ).not.toBeInTheDocument();
       expect(stream.mock.calls[0][1]).toBe(7);
     },
   );
@@ -229,11 +250,13 @@ describe("持久会话和事件流", () => {
         onConfigure={vi.fn()}
       />,
     );
+    await user.click(screen.getByRole("button", { name: "展开会话列表" }));
     await user.click(await screen.findByRole("button", { name: /第一个会话/ }));
     expect(await screen.findByText("第一段正文")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "停止运行" }),
     ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开会话列表" }));
     await user.click(screen.getByRole("button", { name: /第二个会话/ }));
     expect(await screen.findByText("第二段正文")).toBeVisible();
     act(() =>
@@ -293,6 +316,9 @@ describe("持久会话和事件流", () => {
         onConfigure={vi.fn()}
       />,
     );
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "展开会话列表" }));
     await userEvent
       .setup()
       .click(await screen.findByRole("button", { name: /工作进度/ }));
@@ -409,19 +435,27 @@ describe("持久会话和事件流", () => {
 });
 
 describe("模型配置", () => {
-  it("将已保存但等待重启的端口与当前有效端口分开显示", () => {
+  it("保存监听端口后提示重启，表单保持当前生效端口", async () => {
     const state = platformState();
     state.config.server = { port: 8000 };
-    state.runtime.pending_restart = ["server.port"];
-    state.runtime.pending_restart_values = { "server.port": 9000 };
+    const operate = vi.spyOn(api, "operate").mockResolvedValue({
+      config: state.config,
+      revision: 2,
+      pending_restart: ["server.port"],
+    });
     render(<ConfigPage state={state} refresh={vi.fn()} />);
-    const table = screen.getByRole("table", { name: "等待重启的配置" });
-    const row = within(table).getByRole("row", { name: "监听端口 9000 8000" });
-    expect(
-      within(row)
-        .getAllByRole("cell")
-        .map((cell) => cell.textContent),
-    ).toEqual(["9000", "8000"]);
+    fireEvent.change(screen.getByLabelText("监听端口"), {
+      target: { value: "9000" },
+    });
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "保存配置" }));
+    expect(operate).toHaveBeenCalledWith("update_config", {
+      patch: { server: { port: 9000 } },
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "监听端口需重启后生效",
+    );
     expect(screen.getByLabelText("监听端口")).toHaveValue(8000);
   });
 
@@ -495,6 +529,19 @@ describe("模型配置", () => {
 describe("agent 调度", () => {
   it("展示已上报的执行进度，取消只针对当前任务", async () => {
     const state = platformState();
+    state.agents = [
+      {
+        id: "agent-one",
+        name: "验收机",
+        machine: "workstation",
+        online: true,
+        revoked: false,
+        capabilities: [],
+        created_at: 0,
+        last_seen: 0,
+        metadata: {},
+      },
+    ];
     state.tasks = [
       {
         id: "task-one",
@@ -515,11 +562,13 @@ describe("agent 调度", () => {
       .mockResolvedValue({ status: "cancel_requested" });
     const user = userEvent.setup();
     render(<AgentsPage state={state} refresh={vi.fn()} />);
-    await user.click(screen.getByText("测试进度"));
+    await user.click(screen.getByRole("button", { name: /查看 验收机/ }));
+    const taskHistory = within(screen.getByRole("region", { name: "任务" }));
+    await user.click(taskHistory.getByText("测试进度"));
     expect(
       screen.getByRole("progressbar", { name: "执行进度" }),
     ).toHaveAttribute("value", "0.4");
-    expect(screen.getByText("40%")).toBeVisible();
+    expect(taskHistory.getByText("40%")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "请求取消任务" }));
     expect(operate).toHaveBeenCalledWith("cancel_task", {
       task_id: "task-one",
@@ -531,6 +580,9 @@ describe("agent 调度", () => {
       .spyOn(api, "operate")
       .mockResolvedValue({ code: "one-use-code", expires_at: 2000000000 });
     render(<AgentsPage state={platformState()} refresh={vi.fn()} />);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: /添加 agent/ }));
     await userEvent
       .setup()
       .click(screen.getByRole("button", { name: "创建一次性注册码" }));
@@ -558,7 +610,7 @@ describe("agent 调度", () => {
       .mockResolvedValue({ task_id: "new-task" });
     const user = userEvent.setup();
     render(<AgentsPage state={state} refresh={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /选择 开发机/ }));
+    await user.click(screen.getByRole("button", { name: /查看 开发机/ }));
     await user.type(screen.getByLabelText("任务说明"), "检查任务状态");
     await user.click(screen.getByRole("button", { name: "加入离线队列" }));
     expect(operate).toHaveBeenCalledWith("dispatch_task", {

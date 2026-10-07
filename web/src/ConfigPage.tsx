@@ -192,7 +192,16 @@ export default function ConfigPage({
       }
       if (typeof result.revision === "number") setRevision(result.revision);
       setClearKey(false);
-      setNotice("配置已保存。运行中的模型调用保留原配置，后续运行使用新配置。");
+      const pending = Array.isArray(result.pending_restart)
+        ? result.pending_restart.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
+      setNotice(
+        pending.length
+          ? `配置已保存。${pending.map((path) => LABELS[path.split(".")[1]] ?? path).join("、")}需重启后生效。`
+          : "配置已保存。运行中的模型调用保留原配置，后续运行使用新配置。",
+      );
       refresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -254,71 +263,7 @@ export default function ConfigPage({
         </span>
       </header>
       <div className="configuration-content">
-        <section className="runtime-status">
-          <div>
-            <h2>热重载状态</h2>
-            <p className="muted">
-              {state.runtime.last_config_error
-                ? "上次配置未通过校验，仍使用原有效配置。"
-                : "有效配置正在使用；文件与页面修改会自动加载。"}
-            </p>
-          </div>
-          <dl className="metadata-list">
-            <div>
-              <dt>协议版本</dt>
-              <dd>{state.runtime.protocol_version}</dd>
-            </div>
-            <div>
-              <dt>需要重启</dt>
-              <dd>
-                {state.runtime.pending_restart.length
-                  ? state.runtime.pending_restart.join("、")
-                  : "无"}
-              </dd>
-            </div>
-          </dl>
-          {state.runtime.pending_restart.length > 0 && (
-            <div className="pending-config">
-              <table>
-                <caption>等待重启的配置</caption>
-                <thead>
-                  <tr>
-                    <th>参数</th>
-                    <th>已保存</th>
-                    <th>当前生效</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.runtime.pending_restart.map((path) => {
-                    const [section, field] = path.split(".");
-                    const current = (state.config[section] as JsonObject)?.[
-                      field
-                    ];
-                    const saved = state.runtime.pending_restart_values?.[path];
-                    return (
-                      <tr key={path}>
-                        <th scope="row">{LABELS[field] ?? path}</th>
-                        <td className="mono">
-                          {saved === undefined
-                            ? "正在读取保存值"
-                            : typeof saved === "string"
-                              ? saved
-                              : JSON.stringify(saved)}
-                        </td>
-                        <td className="mono">
-                          {typeof current === "string"
-                            ? current
-                            : JSON.stringify(current)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <ErrorNotice error={state.runtime.last_config_error} />
-        </section>
+        <ErrorNotice error={state.runtime.last_config_error} />
         <ErrorNotice error={error} onDismiss={() => setError(null)} />
         {notice && (
           <div className="notice" role="status">
@@ -330,9 +275,6 @@ export default function ConfigPage({
             配置已在其他位置更新。当前保留你的编辑，保存时仅提交改动字段。
           </div>
         )}
-        <p className="muted small">
-          下方展示当前有效配置。需要重启的保存值单独列在上方。
-        </p>
         <form onSubmit={(event) => void save(event)}>
           {groups.map((section) => (
             <section className="settings-section" key={section}>

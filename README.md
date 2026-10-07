@@ -32,7 +32,7 @@ chiliarch serve
 
 ## 连接 agent
 
-在 agents 页面创建一次性注册码，然后在 agent 所在机器执行：
+在 Agents 管理页面点击右上角“添加 agent”，创建一次性注册码，然后在 agent 所在机器执行：
 
 ```bash
 chiliarch pair --server <平台HTTP或HTTPS地址> --name <agent名称> --state ./agent.db

@@ -9,6 +9,12 @@ import type { JsonObject, PlatformState } from "./types";
 
 type Page = "ai" | "agents" | "config";
 type Theme = "system" | "light" | "dark";
+const themes: Theme[] = ["system", "light", "dark"];
+const themeNames: Record<Theme, string> = {
+  system: "跟随系统",
+  light: "浅色",
+  dark: "深色",
+};
 
 function initialPage(): Page {
   const value = location.hash.slice(1);
@@ -43,12 +49,10 @@ export function Login({
     <main className="login-page">
       <div className="login-brand">
         <span className="brand-word">
-          chiliarch<span>.</span>
+          Chiliarch<span>.</span>
         </span>
-        <p>agent 调度工作区</p>
       </div>
       <form className="login-form" onSubmit={(event) => void submit(event)}>
-        <p className="eyebrow">单用户登录</p>
         <h1>进入工作区</h1>
         <label htmlFor="login-password">登录密码</label>
         <input
@@ -64,9 +68,8 @@ export function Login({
         <button className="primary" disabled={busy || !password}>
           {busy ? "正在登录…" : "登录 →"}
         </button>
-        <p className="muted small">使用初始化 chiliarch 时设置的密码。</p>
       </form>
-      <footer>chiliarch · agent 调度平台</footer>
+      <footer>Chiliarch · agent 调度平台</footer>
     </main>
   );
 }
@@ -80,6 +83,13 @@ export default function App(): ReactNode {
     const stored = localStorage.getItem("chiliarch-theme");
     return stored === "dark" || stored === "light" ? stored : "system";
   });
+  const [systemDark, setSystemDark] = useState(
+    () => matchMedia("(prefers-color-scheme: dark)").matches,
+  );
+  const effectiveTheme =
+    theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  const nextTheme = themes[(themes.indexOf(theme) + 1) % themes.length];
+  const themeTitle = `当前${themeNames[theme]}${theme === "system" ? `（${themeNames[effectiveTheme]}）` : ""}，切换为${themeNames[nextTheme]}`;
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
@@ -101,15 +111,15 @@ export default function App(): ReactNode {
   }, []);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
-    const apply = (): void => {
-      document.documentElement.dataset.theme =
-        theme === "system" ? (media.matches ? "dark" : "light") : theme;
-    };
+    const apply = (): void => setSystemDark(media.matches);
     apply();
-    localStorage.setItem("chiliarch-theme", theme);
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [theme]);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = effectiveTheme;
+    localStorage.setItem("chiliarch-theme", theme);
+  }, [theme, effectiveTheme]);
   useEffect(() => {
     const changed = (): void => setPage(initialPage());
     window.addEventListener("hashchange", changed);
@@ -166,7 +176,7 @@ export default function App(): ReactNode {
     return (
       <main className="boot-state">
         <span className="brand-word">
-          chiliarch<span>.</span>
+          Chiliarch<span>.</span>
         </span>
         <p role="status">读取登录状态…</p>
       </main>
@@ -190,12 +200,11 @@ export default function App(): ReactNode {
         <button
           className="brand plain"
           onClick={() => navigate("ai")}
-          aria-label="chiliarch 首页"
+          aria-label="Chiliarch 首页"
         >
           <span className="brand-word">
-            chiliarch<span>.</span>
+            Chiliarch<span>.</span>
           </span>
-          <span className="brand-caption">agent workspace</span>
         </button>
         <nav aria-label="主导航">
           <button
@@ -212,7 +221,7 @@ export default function App(): ReactNode {
             onClick={() => navigate("agents")}
           >
             <NavIcon type="agents" />
-            agents
+            Agents 管理
           </button>
           <button
             className={page === "config" ? "active" : ""}
@@ -224,24 +233,15 @@ export default function App(): ReactNode {
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="platform-indicator">
-            <span
-              className={`connection-dot ${state && !error ? "online" : ""}`}
-            />
-            {state && !error ? "平台已连接" : error ? "连接异常" : "正在连接"}
-          </div>
-          <label className="theme-select">
-            外观
-            <select
-              aria-label="外观"
-              value={theme}
-              onChange={(event) => setTheme(event.target.value as Theme)}
-            >
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
-          </label>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-label={themeTitle}
+            title={themeTitle}
+            onClick={() => setTheme(nextTheme)}
+          >
+            <ThemeIcon theme={theme} />
+          </button>
           <button className="logout plain" onClick={() => void logout()}>
             退出登录 ↗
           </button>
@@ -275,6 +275,36 @@ export default function App(): ReactNode {
         )}
       </main>
     </div>
+  );
+}
+
+function ThemeIcon({ theme }: { theme: Theme }): ReactNode {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {theme === "system" ? (
+        <>
+          <rect x="3" y="4" width="18" height="13" rx="2" />
+          <path d="M8 21h8M12 17v4" />
+        </>
+      ) : theme === "light" ? (
+        <>
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5" />
+        </>
+      ) : (
+        <path d="M20.8 14.2A9 9 0 0 1 9.8 3.2 9 9 0 1 0 20.8 14.2Z" />
+      )}
+    </svg>
   );
 }
 

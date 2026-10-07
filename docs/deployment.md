@@ -36,13 +36,15 @@ HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设�
 
 ## 配对与验收
 
-1. 登录 WebUI，在 agents 页创建一次性注册码。
+1. 登录 WebUI，在“Agents 管理”右上角点击添加按钮，在弹窗内创建一次性注册码。
 2. 在 agent 所在机器执行 `chiliarch pair --server <平台地址> --name <名称> --state <本地数据库>`，交互输入注册码。
 3. 执行 `chiliarch demo-agent --state <本地数据库>`。可使用 `--transport sse` 或 `--transport poll` 排查网络。
 4. 手动派发测试任务；parameters 可设 `{"steps":5,"delay":0.2}`，观察进度和完成结果中的 `simulated:true`。
 5. 停止客户端后派发任务，重新启动验证离线交付；吊销凭证后该客户端应停止，不能继续收发。
 
 模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。接入真实工具应实现参考客户端 handler 或同协议插件。
+
+Agents 管理列表以机器卡片展示实际连接状态、任务和待处理数；待处理徽标统计仍需处理的请求和审批。点击卡片进入详情，上方查看连接、心跳、能力与任务状态，下方派发指令、处理请求、查看任务或管理凭证。CPU、内存等机器遥测仅在 agent 实际上报时显示。
 
 ## 备份与恢复
 

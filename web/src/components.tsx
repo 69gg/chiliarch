@@ -45,6 +45,7 @@ export function Status({ value }: { value: string }): ReactNode {
     rejected: "已拒绝",
     expired: "已过期",
     cancel_requested: "请求取消",
+    cancellation_requested: "请求取消",
     unknown: "状态未知",
     interrupted: "已中断",
   };
@@ -126,36 +127,61 @@ export function MarkdownContent({ content }: { content: string }): ReactNode {
   );
 }
 
-export function ToolView({ tool }: { tool: ToolCall }): ReactNode {
+export function ToolView({
+  tool,
+  approval,
+  onResolved,
+}: {
+  tool: ToolCall;
+  approval?: Approval;
+  onResolved?: () => void;
+}): ReactNode {
+  const pendingApproval =
+    tool.status === "approval" &&
+    approval &&
+    ["pending", "awaiting_approval"].includes(approval.status);
   return (
-    <details className="tool-call">
-      <summary>
-        <span className="tool-symbol">↗</span>
-        <strong>{tool.name}</strong>
-        <Status
-          value={tool.status === "approval" ? "awaiting_approval" : tool.status}
-        />
-      </summary>
-      <div className="tool-details">
-        <h4>参数</h4>
-        <JsonView value={tool.arguments} />
-        {tool.result !== undefined && (
-          <>
-            <h4>结果</h4>
-            <JsonView value={tool.result} />
-          </>
-        )}
-      </div>
-    </details>
+    <div
+      className="tool-block"
+      role="group"
+      aria-label={`工具调用 ${tool.name}`}
+    >
+      <details className="tool-call">
+        <summary>
+          <span className="tool-symbol">↗</span>
+          <strong>{tool.name}</strong>
+          <Status
+            value={
+              tool.status === "approval" ? "awaiting_approval" : tool.status
+            }
+          />
+        </summary>
+        <div className="tool-details">
+          <h4>参数</h4>
+          <JsonView value={tool.arguments} />
+          {tool.result !== undefined && (
+            <>
+              <h4>结果</h4>
+              <JsonView value={tool.result} />
+            </>
+          )}
+        </div>
+      </details>
+      {pendingApproval && onResolved && (
+        <ApprovalItem approval={approval} onResolved={onResolved} compact />
+      )}
+    </div>
   );
 }
 
 export function ApprovalItem({
   approval,
   onResolved,
+  compact = false,
 }: {
   approval: Approval;
   onResolved: () => void;
+  compact?: boolean;
 }): ReactNode {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -176,17 +202,20 @@ export function ApprovalItem({
   }
   return (
     <section
-      className="approval-item"
+      className={`approval-item${compact ? " tool-approval" : ""}`}
       aria-label={`审批 ${approval.operation}`}
     >
-      <div className="row-between">
-        <strong>{approval.operation}</strong>
-        <Status value={approval.status} />
-      </div>
+      {!compact && (
+        <div className="row-between">
+          <strong>{approval.operation}</strong>
+          <Status value={approval.status} />
+        </div>
+      )}
       <p className="muted">
-        {approval.reason || "此操作需要你的许可。"} · {approval.requested_by}
+        {approval.reason || "此操作需要你的许可。"}
+        {!compact && ` · ${approval.requested_by}`}
       </p>
-      <JsonView value={approval.arguments} />
+      {!compact && <JsonView value={approval.arguments} />}
       <ErrorNotice error={error} />
       {pending && (
         <div className="actions">
