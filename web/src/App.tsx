@@ -79,6 +79,9 @@ export default function App(): ReactNode {
   const [state, setState] = useState<PlatformState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<Page>(initialPage);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem("chiliarch-sidebar-collapsed") === "true",
+  );
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("chiliarch-theme");
     return stored === "dark" || stored === "light" ? stored : "system";
@@ -120,6 +123,12 @@ export default function App(): ReactNode {
     document.documentElement.dataset.theme = effectiveTheme;
     localStorage.setItem("chiliarch-theme", theme);
   }, [theme, effectiveTheme]);
+  useEffect(() => {
+    localStorage.setItem(
+      "chiliarch-sidebar-collapsed",
+      String(sidebarCollapsed),
+    );
+  }, [sidebarCollapsed]);
   useEffect(() => {
     const changed = (): void => setPage(initialPage());
     window.addEventListener("hashchange", changed);
@@ -192,44 +201,63 @@ export default function App(): ReactNode {
       />
     );
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <a className="skip-link" href="#workspace">
         跳转到工作区
       </a>
-      <aside className="app-sidebar">
-        <button
-          className="brand plain"
-          onClick={() => navigate("ai")}
-          aria-label="Chiliarch 首页"
-        >
-          <span className="brand-word">
-            Chiliarch<span>.</span>
-          </span>
-        </button>
-        <nav aria-label="主导航">
+      <aside className="app-sidebar" aria-label="工作区导航">
+        <div className="sidebar-header">
+          <button
+            className="brand plain"
+            onClick={() => navigate("ai")}
+            aria-label="Chiliarch 首页"
+          >
+            <span className="brand-word">
+              Chiliarch<span>.</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            aria-label={sidebarCollapsed ? "展开导航栏" : "收起导航栏"}
+            title={sidebarCollapsed ? "展开导航栏" : "收起导航栏"}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="main-navigation"
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            <SidebarIcon collapsed={sidebarCollapsed} />
+          </button>
+        </div>
+        <nav id="main-navigation" aria-label="主导航">
           <button
             className={page === "ai" ? "active" : ""}
+            aria-label="总管对话"
+            title={sidebarCollapsed ? "总管对话" : undefined}
             aria-current={page === "ai" ? "page" : undefined}
             onClick={() => navigate("ai")}
           >
             <NavIcon type="ai" />
-            总管对话
+            <span className="nav-label">总管对话</span>
           </button>
           <button
             className={page === "agents" ? "active" : ""}
+            aria-label="Agents 管理"
+            title={sidebarCollapsed ? "Agents 管理" : undefined}
             aria-current={page === "agents" ? "page" : undefined}
             onClick={() => navigate("agents")}
           >
             <NavIcon type="agents" />
-            Agents 管理
+            <span className="nav-label">Agents 管理</span>
           </button>
           <button
             className={page === "config" ? "active" : ""}
+            aria-label="配置"
+            title={sidebarCollapsed ? "配置" : undefined}
             aria-current={page === "config" ? "page" : undefined}
             onClick={() => navigate("config")}
           >
             <NavIcon type="config" />
-            配置
+            <span className="nav-label">配置</span>
           </button>
         </nav>
         <div className="sidebar-bottom">
@@ -242,8 +270,26 @@ export default function App(): ReactNode {
           >
             <ThemeIcon theme={theme} />
           </button>
-          <button className="logout plain" onClick={() => void logout()}>
-            退出登录 ↗
+          <button
+            className="logout plain"
+            aria-label="退出登录"
+            title={sidebarCollapsed ? "退出登录" : undefined}
+            onClick={() => void logout()}
+          >
+            <span className="nav-label">退出登录</span>
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 4H4v16h5M14 8l4 4-4 4M8 12h10" />
+            </svg>
           </button>
         </div>
       </aside>
@@ -275,6 +321,26 @@ export default function App(): ReactNode {
         )}
       </main>
     </div>
+  );
+}
+
+function SidebarIcon({ collapsed }: { collapsed: boolean }): ReactNode {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d={collapsed ? "m13 9 3 3-3 3" : "m16 9-3 3 3 3"} />
+    </svg>
   );
 }
 

@@ -57,6 +57,48 @@ beforeEach(() => {
 });
 
 describe("应用外壳", () => {
+  it("收起后仍可导航和退出，偏好在重新打开时保留，按钮支持键盘展开", async () => {
+    systemTheme(false);
+    const logout = vi.spyOn(api, "logout").mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const app = render(<App />);
+    const collapse = await screen.findByRole("button", { name: "收起导航栏" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+    const navigation = screen.getByRole("navigation", { name: "主导航" });
+    expect(collapse).toHaveAttribute("aria-controls", navigation.id);
+    await user.click(collapse);
+    expect(screen.getByRole("button", { name: "展开导航栏" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(localStorage.getItem("chiliarch-sidebar-collapsed")).toBe("true");
+    const agents = screen.getByRole("button", { name: "Agents 管理" });
+    expect(agents).toHaveAttribute("title", "Agents 管理");
+    await user.click(agents);
+    expect(
+      await screen.findByRole("heading", { name: "管理页面" }),
+    ).toBeVisible();
+    expect(location.hash).toBe("#agents");
+    app.unmount();
+
+    render(<App />);
+    const expand = await screen.findByRole("button", { name: "展开导航栏" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expand.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "收起导航栏" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(localStorage.getItem("chiliarch-sidebar-collapsed")).toBe("false");
+    await user.click(screen.getByRole("button", { name: "收起导航栏" }));
+    await user.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(logout).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByRole("heading", { name: "进入工作区" }),
+    ).toBeVisible();
+  });
+
   it("默认跟随系统，按博客顺序循环主题并保存，回到系统后继续跟随变化", async () => {
     const media = systemTheme(true);
     const user = userEvent.setup();
@@ -155,7 +197,7 @@ describe("应用外壳", () => {
       .mockRejectedValueOnce(new ApiError("CSRF 校验失败", 403))
       .mockResolvedValueOnce(undefined);
     render(<App />);
-    const button = await screen.findByRole("button", { name: "退出登录 ↗" });
+    const button = await screen.findByRole("button", { name: "退出登录" });
     await userEvent.setup().click(button);
     expect(await screen.findByRole("alert")).toHaveTextContent("CSRF 校验失败");
     expect(screen.getByRole("heading", { name: "对话页面" })).toBeVisible();

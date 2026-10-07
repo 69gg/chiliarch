@@ -153,7 +153,7 @@ export default function AgentsPage({
     <div className="management-page agents-page">
       <header className="page-header agents-header">
         <div>
-          {agent ? (
+          {agent && (
             <button
               className="plain agent-back"
               onClick={() => {
@@ -164,8 +164,6 @@ export default function AgentsPage({
             >
               ← 返回 Agents 管理
             </button>
-          ) : (
-            <p className="eyebrow">手动调度</p>
           )}
           <h1 ref={heading} tabIndex={-1}>
             {agent ? agent.name : "Agents 管理"}
@@ -191,7 +189,9 @@ export default function AgentsPage({
           </button>
         </div>
       </header>
-      <div className="management-content agents-content">
+      <div
+        className={`management-content agents-content${state.agents.length === 0 ? " is-empty" : ""}`}
+      >
         <ErrorNotice error={error} onDismiss={() => setError(null)} />
         {notice && (
           <div className="notice" role="status">

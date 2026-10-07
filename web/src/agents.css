@@ -1,3 +1,30 @@
+.agents-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.agents-content {
+  width: 100%;
+}
+
+.agents-content.is-empty {
+  max-width: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding-block: 24px;
+}
+
+.agents-content.is-empty .agent-fleet {
+  flex: 1;
+  display: grid;
+}
+
+.agents-content.is-empty .empty-state {
+  height: auto;
+}
+
 .agents-header {
   height: auto;
   min-height: 106px;
