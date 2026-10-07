@@ -6,13 +6,15 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import httpx
 import pytest
+from anyio import CancelScope
 from sqlalchemy import select
 from test_ai_providers import SSE, chat, text_response
 
 from chiliarch.ai import Provider
-from chiliarch.chat import AgentInbox, ChatRun, Supervisor
+from chiliarch.chat import AgentInbox, ChatMessage, ChatRun, Supervisor
 from chiliarch.config import Settings, SettingsManager
 from chiliarch.database import Database, OperationRecord
 from chiliarch.protocol import Envelope
@@ -26,6 +28,7 @@ class Upstream:
         self.name = name
         self.arguments = arguments or {"value": 7}
         self.requests: list[JSONObject] = []
+        self.title_requests: list[JSONObject] = []
         self.second_gate: asyncio.Event | None = None
         self.first_gate: asyncio.Event | None = None
         self.first_requested = asyncio.Event()
@@ -33,7 +36,15 @@ class Upstream:
         self.first_stream: SSE | None = None
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(json.loads(request.content))
+        body = json.loads(request.content)
+        if not body.get("tools"):
+            self.title_requests.append(body)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=SSE([chat({"content": "状态变更"}, "stop")]),
+            )
+        self.requests.append(body)
         (self.first_requested if len(self.requests) == 1 else self.second_requested).set()
         if len(self.requests) == 1:
             raw = json.dumps(self.arguments)
@@ -744,5 +755,172 @@ async def test_agent_contact_model_reply_is_queued_on_existing_outbound_protocol
         assert messages[0].payload["message"] == "请等待任务确认"
         assert messages[0].payload["metadata"] == {"source_request": "contact-1"}
     finally:
+        await supervisor.stop()
+        await db.close()
+
+
+@pytest.mark.parametrize("action", ["cancel", "stop"])
+async def test_cancellation_before_execution_handler_still_persists_terminal_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    settings = manager()
+    upstream = Upstream()
+    supervisor = Supervisor(
+        db, OperationService(db, settings), settings, provider_factory=upstream.provider
+    )
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def before_handler(_: str) -> None:
+        # Represents cancellation during initial DB/config loading, before
+        # _execute enters the try/except responsible for its own finalization.
+        entered.set()
+        await gate.wait()
+
+    monkeypatch.setattr(supervisor, "_execute", before_handler)
+    await db.initialize()
+    await supervisor.start()
+    try:
+        conversation = await supervisor.create_conversation()
+        response = await supervisor.send_message(conversation["id"], "change")
+        await asyncio.wait_for(entered.wait(), 5)
+        if action == "cancel":
+            result = await supervisor.cancel_run(response["run_id"])
+            assert result["status"] == "cancelled"
+        else:
+            await supervisor.stop()
+            result = await supervisor.get_run(response["run_id"])
+            assert result["status"] == "interrupted"
+        assert upstream.requests == []
+        snapshot = await supervisor.get_conversation(conversation["id"])
+        assert snapshot["events"][-1]["data"]["status"] == result["status"]
+    finally:
+        await supervisor.stop()
+        await db.close()
+
+
+async def test_shutdown_persists_terminal_state_after_execution_cleanup_is_cancelled_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    settings = manager("yolo")
+    effects: list[int] = []
+    service = OperationService(db, settings)
+    register_change(service, effects)
+    upstream = Upstream()
+    upstream.second_gate = asyncio.Event()
+    supervisor = Supervisor(db, service, settings, provider_factory=upstream.provider)
+    cleanup_entered = asyncio.Event()
+    cleanup_gate = asyncio.Event()
+    original_terminal = supervisor._terminal
+
+    async def interrupted_cleanup(run_id: str, status: str, error: str | None = None) -> None:
+        if asyncio.current_task() is supervisor.tasks.get(run_id):
+            cleanup_entered.set()
+            await cleanup_gate.wait()
+        await original_terminal(run_id, status, error)
+
+    monkeypatch.setattr(supervisor, "_terminal", interrupted_cleanup)
+    await db.initialize()
+    await supervisor.start()
+    try:
+        conversation = await supervisor.create_conversation()
+        response = await supervisor.send_message(conversation["id"], "change")
+        await asyncio.wait_for(upstream.second_requested.wait(), 5)
+        stop = asyncio.create_task(supervisor.stop())
+        await asyncio.wait_for(cleanup_entered.wait(), 5)
+        # A second cancellation may arrive from concurrent user cancellation,
+        # a timeout or shutdown while execution is persisting its first one.
+        supervisor.tasks[response["run_id"]].cancel()
+        await asyncio.wait_for(stop, 5)
+        result = await supervisor.get_run(response["run_id"])
+        assert result["status"] == "interrupted"
+        assert effects == [7]
+        snapshot = await supervisor.get_conversation(conversation["id"])
+        assert snapshot["events"][-1]["type"] == "interrupted"
+    finally:
+        await supervisor.stop()
+        await db.close()
+
+
+async def test_shutdown_cleanup_is_shielded_from_an_already_cancelled_scope(tmp_path: Path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    settings = manager("yolo")
+    effects: list[int] = []
+    service = OperationService(db, settings)
+    register_change(service, effects)
+    upstream = Upstream()
+    upstream.second_gate = asyncio.Event()
+    supervisor = Supervisor(db, service, settings, provider_factory=upstream.provider)
+    await db.initialize()
+    await supervisor.start()
+    try:
+        conversation = await supervisor.create_conversation()
+        response = await supervisor.send_message(conversation["id"], "change")
+        await asyncio.wait_for(upstream.second_requested.wait(), 5)
+        with CancelScope() as scope:
+            scope.cancel()
+            await supervisor.stop()
+        assert (await supervisor.get_run(response["run_id"]))["status"] == "interrupted"
+        assert effects == [7]
+    finally:
+        await supervisor.stop()
+        await db.close()
+
+
+async def test_cancelled_stream_event_does_not_retain_a_sqlite_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    settings = manager()
+    supervisor = Supervisor(db, OperationService(db, settings), settings)
+    await db.initialize()
+    conversation = await supervisor.create_conversation("取消检查")
+    async with db.sessions.begin() as session:
+        message = ChatMessage(conversation_id=conversation["id"], role="assistant")
+        session.add(message)
+        await session.flush()
+    selected = asyncio.Event()
+    gate = asyncio.Event()
+    original_execute = aiosqlite.Cursor.execute
+
+    async def pause_after_select(
+        cursor: aiosqlite.Cursor, sql: str, parameters: Any = None
+    ) -> aiosqlite.Cursor:
+        result = await original_execute(cursor, sql, parameters)
+        if sql.startswith("SELECT") and "chat_messages" in sql:
+            # Retain the live cursor through cancellation, as the driver can
+            # when a stream stops after SQL executed but before fetchall.
+            selected.set()
+            await gate.wait()
+        return result
+
+    monkeypatch.setattr(aiosqlite.Cursor, "execute", pause_after_select)
+    task = asyncio.create_task(
+        supervisor._event(
+            conversation["id"], None, "text_delta", {"message_id": message.id, "delta": "部分文字"}
+        )
+    )
+    try:
+        await asyncio.wait_for(selected.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await task
+        monkeypatch.setattr(aiosqlite.Cursor, "execute", original_execute)
+        # Keep the cancellation traceback (and its cursor) alive throughout
+        # this independent connection's actual transaction. No GC or retries.
+        created = await asyncio.wait_for(supervisor.create_conversation("取消后仍可写"), 1)
+        assert created["title"] == "取消后仍可写"
+        assert isinstance(cancelled.value, asyncio.CancelledError)
+        snapshot = await supervisor.get_conversation(conversation["id"])
+        assert snapshot["messages"][0]["content"] == ""
+        assert snapshot["events"] == []
+        assert db.engine.pool.checkedout() == 0
+    finally:
+        gate.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await supervisor.stop()
         await db.close()

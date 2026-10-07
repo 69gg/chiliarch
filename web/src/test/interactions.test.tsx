@@ -152,7 +152,7 @@ describe("持久会话和事件流", () => {
         .click(screen.getByRole("button", { name: "展开会话列表" }));
       await userEvent
         .setup()
-        .click(await screen.findByRole("button", { name: /机器 A 来信/ }));
+        .click(await screen.findByRole("button", { name: /^机器 A 来信/ }));
       const workspace = screen.getByRole("region", {
         name: "与 Chiliarch AI 对话",
       });
@@ -251,13 +251,15 @@ describe("持久会话和事件流", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "展开会话列表" }));
-    await user.click(await screen.findByRole("button", { name: /第一个会话/ }));
+    await user.click(
+      await screen.findByRole("button", { name: /^第一个会话/ }),
+    );
     expect(await screen.findByText("第一段正文")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "停止运行" }),
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "展开会话列表" }));
-    await user.click(screen.getByRole("button", { name: /第二个会话/ }));
+    await user.click(screen.getByRole("button", { name: /^第二个会话/ }));
     expect(await screen.findByText("第二段正文")).toBeVisible();
     act(() =>
       receivers.first({
@@ -321,7 +323,7 @@ describe("持久会话和事件流", () => {
       .click(screen.getByRole("button", { name: "展开会话列表" }));
     await userEvent
       .setup()
-      .click(await screen.findByRole("button", { name: /工作进度/ }));
+      .click(await screen.findByRole("button", { name: /^工作进度/ }));
     await waitFor(() => expect(stream).toHaveBeenCalled());
     expect(stream.mock.calls[0][1]).toBe(12);
     act(() => {

@@ -131,7 +131,7 @@ async function openChat(
   );
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "展开会话列表" }));
-  await user.click(await screen.findByRole("button", { name: /顺序验收/ }));
+  await user.click(await screen.findByRole("button", { name: /^顺序验收/ }));
   await waitFor(() => expect(receive).toBeDefined());
   return receive;
 }

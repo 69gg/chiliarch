@@ -10,6 +10,7 @@ import {
   ToolView,
 } from "./components";
 import { ChatComposer, ChatGlyph, MessageCopy } from "./ChatUI";
+import { ConversationList } from "./ConversationList";
 import type {
   Conversation,
   ConversationDetail,
@@ -47,12 +48,14 @@ export default function ChatPage({
     tools: [],
   });
   const [content, setContent] = useState("");
-  const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<"hover" | "manual" | null>(
+    null,
+  );
+  const sidebarOpen = sidebarMode !== null;
   const [showJump, setShowJump] = useState(false);
   const [mobileSidebar, setMobileSidebar] = useState(
     () => window.matchMedia("(max-width: 700px)").matches,
@@ -61,11 +64,11 @@ export default function ChatPage({
   const sidebarButton = useRef<HTMLButtonElement>(null);
   const messageScroll = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
-  const conversationMenu = useRef<HTMLDetailsElement>(null);
   const drafts = useRef(new Map<string, string>());
   const contentRevision = useRef(0);
   const scrollPinned = useRef(true);
   const localMessageSequence = useRef(0);
+  const conversationRevision = useRef(0);
   const model = state.config.model as Record<string, Json> | undefined;
   const configured = Boolean(model?.model);
   const supervisor = state.config.supervisor as
@@ -82,10 +85,13 @@ export default function ChatPage({
     );
 
   const loadConversations = useCallback(async (): Promise<void> => {
+    const revision = ++conversationRevision.current;
     try {
-      setConversations(await api.conversations());
+      const result = await api.conversations();
+      if (revision === conversationRevision.current) setConversations(result);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      if (revision === conversationRevision.current)
+        setError(error instanceof Error ? error.message : String(error));
     }
   }, []);
   useEffect(() => {
@@ -101,11 +107,13 @@ export default function ChatPage({
     if (!sidebarOpen || !sidebar.current) return;
     const dialog = sidebar.current;
     if (mobileSidebar) dialog.showModal();
-    else dialog.show();
+    else if (sidebarMode === "manual")
+      dialog.querySelector<HTMLElement>("[data-drawer-close]")?.focus();
+    const close = (): void => setSidebarMode(null);
     const escape = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
-        setSidebarOpen(false);
+        close();
       }
     };
     document.addEventListener("keydown", escape);
@@ -116,42 +124,24 @@ export default function ChatPage({
         !dialog.contains(event.target) &&
         !sidebarButton.current?.contains(event.target)
       )
-        setSidebarOpen(false);
+        close();
     };
     document.addEventListener("pointerdown", outside);
     return () => {
       document.removeEventListener("keydown", escape);
       document.removeEventListener("pointerdown", outside);
-      dialog.close();
-      sidebarButton.current?.focus();
+      const focusInside = dialog.contains(document.activeElement);
+      if (mobileSidebar) dialog.close();
+      if (focusInside) sidebarButton.current?.focus();
     };
   }, [sidebarOpen, mobileSidebar]);
-  useEffect(() => {
-    const closeMenu = (event: PointerEvent | KeyboardEvent): void => {
-      const menu = conversationMenu.current;
-      if (!menu?.open) return;
-      if (event instanceof KeyboardEvent && event.key === "Escape") {
-        menu.open = false;
-        menu.querySelector<HTMLElement>("summary")?.focus();
-      } else if (
-        event.type === "pointerdown" &&
-        event.target instanceof Node &&
-        !menu.contains(event.target)
-      ) {
-        menu.open = false;
-      }
-    };
-    document.addEventListener("pointerdown", closeMenu);
-    document.addEventListener("keydown", closeMenu);
-    return () => {
-      document.removeEventListener("pointerdown", closeMenu);
-      document.removeEventListener("keydown", closeMenu);
-    };
-  }, []);
   useEffect(() => {
     if (!selected) {
       setDetail(null);
       setChat({ messages: [], runs: [], tools: [] });
+      setError(null);
+      setConnected(false);
+      setStreamError(null);
       return;
     }
     let cancelled = false;
@@ -165,13 +155,30 @@ export default function ChatPage({
       .then((result) => {
         if (cancelled) return;
         setDetail(result);
-        setTitle(result.title);
         setChat(restoreChatState(result));
         stop = api.streamConversation(
           selected,
           result.last_event_seq ?? 0,
           (event) => {
             if (cancelled) return;
+            if (
+              event.type === "conversation_updated" &&
+              event.data.conversation_id === selected &&
+              typeof event.data.title === "string"
+            ) {
+              const updatedTitle = event.data.title;
+              setDetail((previous) =>
+                previous ? { ...previous, title: updatedTitle } : previous,
+              );
+              setConversations((previous) =>
+                previous.map((conversation) =>
+                  conversation.id === selected
+                    ? { ...conversation, title: updatedTitle }
+                    : conversation,
+                ),
+              );
+              void loadConversations();
+            }
             setChat((previous) => applyChatEvent(previous, event));
             if (
               [
@@ -224,7 +231,7 @@ export default function ChatPage({
     drafts.current.set(selected ?? "new", content);
     setContent(drafts.current.get(id ?? "new") ?? "");
     setSelected(id);
-    setSidebarOpen(false);
+    setSidebarMode(null);
     scrollPinned.current = true;
     setShowJump(false);
   }
@@ -355,25 +362,41 @@ export default function ChatPage({
     }
   }
 
-  async function manageConversation(remove: boolean): Promise<void> {
-    if (!selected) return;
+  async function manageConversation(
+    id: string,
+    nextTitle?: string,
+  ): Promise<void> {
     setBusy(true);
-    setError(null);
     try {
       await api.operate(
-        remove ? "delete_conversation" : "rename_conversation",
-        remove
-          ? { conversation_id: selected }
-          : { conversation_id: selected, title: title.trim() },
+        nextTitle === undefined ? "delete_conversation" : "rename_conversation",
+        nextTitle === undefined
+          ? { conversation_id: id }
+          : { conversation_id: id, title: nextTitle },
       );
-      if (remove) setSelected(null);
-      else
-        setDetail((previous) =>
-          previous ? { ...previous, title: title.trim() } : previous,
+      conversationRevision.current += 1;
+      if (nextTitle === undefined) {
+        setConversations((previous) =>
+          previous.filter((conversation) => conversation.id !== id),
         );
-      await loadConversations();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+        if (selected === id) {
+          chooseConversation(null);
+          setDetail(null);
+          setChat({ messages: [], runs: [], tools: [] });
+        }
+        drafts.current.delete(id);
+      } else {
+        setConversations((previous) =>
+          previous.map((conversation) =>
+            conversation.id === id
+              ? { ...conversation, title: nextTitle }
+              : conversation,
+          ),
+        );
+        setDetail((previous) =>
+          previous?.id === id ? { ...previous, title: nextTitle } : previous,
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -383,26 +406,6 @@ export default function ChatPage({
     <div className="chat-page">
       <header className="page-header chat-header">
         <div className="chat-title">
-          <button
-            ref={sidebarButton}
-            className="chat-sidebar-toggle chat-icon-button"
-            type="button"
-            title="会话列表"
-            aria-label={sidebarOpen ? "收起会话列表" : "展开会话列表"}
-            aria-expanded={sidebarOpen}
-            aria-controls="chat-conversations"
-            onClick={() => setSidebarOpen((open) => !open)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <rect x="3" y="4" width="18" height="16" rx="3" />
-              <path d="M9 4v16" />
-            </svg>
-          </button>
           <div className="chat-heading">
             <h1>Chiliarch AI</h1>
             {detail && (
@@ -457,57 +460,84 @@ export default function ChatPage({
               <option value="yolo">yolo · 自主运行</option>
             </select>
           </label>
-          {detail && (
-            <details ref={conversationMenu} className="conversation-menu">
-              <summary aria-label="管理当前会话" title="管理会话">
-                <ChatGlyph type="more" />
-              </summary>
-              <div className="conversation-menu-panel">
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void manageConversation(false);
-                  }}
-                >
-                  <label htmlFor="conversation-title">
-                    会话名称
-                    <input
-                      id="conversation-title"
-                      value={title}
-                      onChange={(event) => setTitle(event.target.value)}
-                      required
-                      maxLength={256}
-                    />
-                  </label>
-                  <button disabled={busy || !title.trim()}>保存名称</button>
-                </form>
-                <button
-                  className="danger"
-                  disabled={busy || Boolean(activeRun)}
-                  onClick={() => void manageConversation(true)}
-                >
-                  删除当前会话
-                </button>
-                {activeRun && (
-                  <p className="small muted">先停止运行，再删除会话。</p>
-                )}
-              </div>
-            </details>
-          )}
+          <button
+            ref={sidebarButton}
+            className="chat-sidebar-toggle chat-icon-button"
+            type="button"
+            title="会话列表"
+            aria-label={sidebarOpen ? "收起会话列表" : "展开会话列表"}
+            aria-expanded={sidebarOpen}
+            aria-controls="chat-conversations"
+            onClick={() =>
+              setSidebarMode((mode) => (mode === "manual" ? null : "manual"))
+            }
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <path d="M15 4v16" />
+            </svg>
+          </button>
         </div>
       </header>
       <div
         className={`chat-layout${sidebarOpen && !mobileSidebar ? " sidebar-open" : ""}`}
+        onPointerMove={(event) => {
+          if (
+            mobileSidebar ||
+            event.pointerType !== "mouse" ||
+            sidebarMode === "manual"
+          )
+            return;
+          if (
+            event.target instanceof Node &&
+            sidebar.current?.contains(event.target)
+          )
+            return;
+          const bounds = event.currentTarget.getBoundingClientRect();
+          if (event.clientX >= bounds.right - 12) setSidebarMode("hover");
+          else if (sidebarMode === "hover" && sidebar.current) {
+            const drawerBounds = sidebar.current.getBoundingClientRect();
+            if (
+              event.clientX >= drawerBounds.left &&
+              event.clientY >= drawerBounds.top &&
+              event.clientY <= drawerBounds.bottom
+            )
+              return;
+            if (!sidebar.current.contains(document.activeElement))
+              setSidebarMode(null);
+          } else if (!sidebar.current?.contains(document.activeElement))
+            setSidebarMode(null);
+        }}
+        onPointerLeave={() => {
+          if (
+            sidebarMode === "hover" &&
+            !sidebar.current?.contains(document.activeElement)
+          )
+            setSidebarMode(null);
+        }}
       >
         <dialog
           ref={sidebar}
           id="chat-conversations"
           className={`conversation-drawer${mobileSidebar ? " mobile-drawer" : ""}`}
+          open={!mobileSidebar && sidebarOpen}
           aria-label="会话列表"
           aria-modal={mobileSidebar ? true : undefined}
+          onBlur={(event) => {
+            if (
+              sidebarMode === "hover" &&
+              !event.currentTarget.contains(event.relatedTarget)
+            )
+              setSidebarMode(null);
+          }}
           onCancel={(event) => {
             event.preventDefault();
-            setSidebarOpen(false);
+            setSidebarMode(null);
           }}
           onClick={(event) => {
             if (!mobileSidebar || event.target !== event.currentTarget) return;
@@ -518,60 +548,33 @@ export default function ChatPage({
               event.clientY < bounds.top ||
               event.clientY > bounds.bottom
             )
-              setSidebarOpen(false);
+              setSidebarMode(null);
           }}
         >
-          <div className="conversation-list">
-            <div className="conversation-list-heading">
-              <h2>最近会话</h2>
-              <button
-                className="plain"
-                type="button"
-                aria-label="关闭会话列表"
-                onClick={() => setSidebarOpen(false)}
-                autoFocus
-              >
-                ×
-              </button>
-            </div>
-            <button
-              className="new-conversation"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void createConversation()
-                  .catch((failure: unknown) =>
-                    setError(
-                      failure instanceof Error
-                        ? failure.message
-                        : String(failure),
-                    ),
-                  )
-                  .finally(() => setBusy(false));
-              }}
-            >
-              ＋ 新会话
-            </button>
-            {conversations.length === 0 && (
-              <p className="muted small">尚无会话</p>
-            )}
-            {conversations.map((conversation) => (
-              <button
-                key={conversation.id}
-                disabled={busy}
-                className={`conversation-entry${selected === conversation.id ? " selected" : ""}`}
-                onClick={() => chooseConversation(conversation.id)}
-                aria-pressed={selected === conversation.id}
-              >
-                <span>{conversation.title || "新会话"}</span>
-                <small>
-                  {conversation.source === "agent"
-                    ? "来自 agent"
-                    : time(conversation.updated_at)}
-                </small>
-              </button>
-            ))}
-          </div>
+          <ConversationList
+            conversations={conversations}
+            selected={selected}
+            busy={busy}
+            active={Boolean(activeRun)}
+            onChoose={chooseConversation}
+            onCreate={() => {
+              setBusy(true);
+              void createConversation()
+                .catch((failure: unknown) =>
+                  setError(
+                    failure instanceof Error
+                      ? failure.message
+                      : String(failure),
+                  ),
+                )
+                .finally(() => setBusy(false));
+            }}
+            onRename={(id, nextTitle) => manageConversation(id, nextTitle)}
+            onDelete={(id) => manageConversation(id)}
+            onClose={() => setSidebarMode(null)}
+            onPin={() => setSidebarMode("manual")}
+            pinned={sidebarMode === "manual" || mobileSidebar}
+          />
         </dialog>
         <section
           className="conversation-workspace"

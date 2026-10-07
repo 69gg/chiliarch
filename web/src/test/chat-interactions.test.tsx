@@ -120,7 +120,7 @@ async function selectConversation(
 ): Promise<void> {
   await user.click(screen.getByRole("button", { name: "展开会话列表" }));
   await user.click(
-    await screen.findByRole("button", { name: new RegExp(detail.title) }),
+    await screen.findByRole("button", { name: new RegExp(`^${detail.title}`) }),
   );
   await waitFor(() =>
     expect(
@@ -333,7 +333,9 @@ describe("会话草稿与阅读位置", () => {
     await user.clear(input);
     await user.type(input, "受理期间写的下一条草稿");
     await user.click(screen.getByRole("button", { name: "展开会话列表" }));
-    const nextConversation = screen.getByRole("button", { name: /另一个会话/ });
+    const nextConversation = screen.getByRole("button", {
+      name: /^另一个会话/,
+    });
     expect(nextConversation).toBeDisabled();
     expect(screen.getByRole("button", { name: "新建会话" })).toBeDisabled();
     await user.click(nextConversation);

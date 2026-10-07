@@ -80,7 +80,7 @@ function mockConversation(detail: ConversationDetail): void {
 async function selectConversation(): Promise<void> {
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "展开会话列表" }));
-  await user.click(await screen.findByRole("button", { name: /部署讨论/ }));
+  await user.click(await screen.findByRole("button", { name: /^部署讨论/ }));
 }
 
 function renderChat(state: PlatformState = platformState()): void {
@@ -201,7 +201,7 @@ describe("收起的会话侧栏", () => {
       screen.queryByRole("dialog", { name: "会话列表" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /部署讨论/ }),
+      screen.queryByRole("button", { name: /^部署讨论/ }),
     ).not.toBeInTheDocument();
     const user = userEvent.setup();
     const toggle = screen.getByRole("button", { name: "展开会话列表" });
@@ -256,7 +256,7 @@ describe("收起的会话侧栏", () => {
     expect(drawer).not.toHaveAttribute("open");
     expect(toggle).toHaveFocus();
     await user.click(toggle);
-    await user.click(await screen.findByRole("button", { name: /部署讨论/ }));
+    await user.click(await screen.findByRole("button", { name: /^部署讨论/ }));
     expect(await screen.findByText("部署讨论的历史正文")).toBeVisible();
     expect(drawer).not.toHaveAttribute("open");
     expect(toggle).toHaveFocus();

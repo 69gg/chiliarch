@@ -129,8 +129,8 @@
 }
 .chat-page .conversation-drawer {
   position: absolute;
-  inset: 8px auto 14px 14px;
-  width: 276px;
+  inset: 8px 12px 14px auto;
+  width: 304px;
   max-width: calc(100% - 28px);
   height: calc(100% - 22px);
   max-height: none;
@@ -143,6 +143,16 @@
   box-shadow: var(--shadow-lg);
   z-index: 8;
   overflow: hidden;
+}
+.conversation-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.conversation-pin svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.5;
 }
 .chat-page .conversation-drawer[open] {
   animation: chat-drawer-in var(--motion-slow) var(--ease-standard);
@@ -185,17 +195,22 @@
   background: var(--surface-raised);
 }
 .chat-page .conversation-entry {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
+  width: auto;
   padding: 12px;
   gap: 5px;
   border-radius: 9px;
   white-space: normal;
 }
 .chat-page .conversation-entry:hover {
-  transform: translateX(2px);
+  transform: none;
 }
 .chat-page .conversation-entry span {
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-page .conversation-entry small {
   display: block;
@@ -204,6 +219,65 @@
 .chat-page .conversation-list > p {
   display: block;
   padding: 8px;
+}
+.conversation-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  border-radius: 9px;
+  margin-bottom: 4px;
+}
+.conversation-row.selected,
+.conversation-row:hover {
+  background: var(--hover);
+}
+.chat-page .conversation-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  padding-right: 5px;
+  gap: 2px;
+}
+.chat-page .conversation-row-actions button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.conversation-row-actions svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
+}
+.conversation-edit {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 4px 12px 12px;
+  animation: chat-pop var(--motion-normal) var(--ease-standard);
+}
+.conversation-edit label,
+.conversation-edit p {
+  display: block;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.conversation-edit input {
+  margin-top: 6px;
+  width: 100%;
+  font-size: 13px;
+}
+.conversation-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.conversation-edit-actions button {
+  font-size: 11px;
+  padding: 6px 9px;
 }
 .chat-page .message-scroll {
   padding: 16px 32px 22px;
@@ -607,7 +681,7 @@
 @keyframes chat-drawer-in {
   from {
     opacity: 0;
-    transform: translateX(-12px);
+    transform: translateX(12px);
   }
   to {
     opacity: 1;
@@ -692,7 +766,7 @@
   }
   .chat-page .conversation-drawer.mobile-drawer {
     position: fixed;
-    inset: 12px auto 12px 12px;
+    inset: 12px 12px 12px auto;
     width: min(300px, calc(100vw - 36px));
     max-width: none;
     height: calc(100dvh - 24px);
