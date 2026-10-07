@@ -13,4 +13,4 @@
 - 验证命令：`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy`、`uv run pytest`；前端在 web 下运行 `pnpm typecheck`、`pnpm test`、`pnpm build`。
 - 发布前使用版本脚本同步版本，校验 tag、包元数据与 CHANGELOG；构建产物必须包含 WebUI 和协议 Schema。
 - Git 提交使用 GPG 签名；签名失败时请求用户刷新密钥，不退回无签名提交。不默认推送或发布。
-- 本次 v0.1.0 初版全部实现、文档和验证完成后统一提交，不按开发块逐次提交。
+- 当前继续完善 v0.1.0；按用户最新要求，每完成并验证一个独立开发块后签名提交，不默认升级版本。

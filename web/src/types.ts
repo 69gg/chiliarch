@@ -125,12 +125,19 @@ export interface ChatEvent {
 
 export interface ToolCall {
   id: string;
+  key?: string;
   name: string;
   arguments: Json;
   result?: Json;
   run_id: string;
   approval_id?: string;
-  status: "running" | "completed" | "approval";
+  status:
+    | "running"
+    | "completed"
+    | "approval"
+    | "cancelled"
+    | "interrupted"
+    | "failed";
 }
 
 export interface Session {

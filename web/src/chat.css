@@ -469,7 +469,7 @@
   background: transparent;
   animation: chat-orbit 1s linear infinite;
 }
-.is-streaming .message-body > .markdown > :last-child::after {
+.is-streaming .message-body > .markdown:nth-last-child(2) > :last-child::after {
   content: "";
   display: inline-block;
   width: 5px;

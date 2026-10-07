@@ -360,12 +360,7 @@ class Supervisor:
             events = (
                 await session.scalars(
                     select(ChatEvent)
-                    .where(
-                        ChatEvent.conversation_id == conversation_id,
-                        ChatEvent.type.in_(
-                            ["tool_start", "tool_end", "approval_required", "agent_contact"]
-                        ),
-                    )
+                    .where(ChatEvent.conversation_id == conversation_id)
                     .order_by(ChatEvent.seq)
                 )
             ).all()
@@ -641,7 +636,7 @@ class Supervisor:
                 run.conversation_id,
                 run.id,
                 "tool_start",
-                {key: call[key] for key in ("id", "name", "arguments")},
+                {key: call[key] for key in ("id", "name", "arguments", "key")},
             )
             try:
                 schema = next(
@@ -684,7 +679,7 @@ class Supervisor:
                 run.conversation_id,
                 run.id,
                 "tool_end",
-                {"id": call["id"], "name": call["name"], "result": result},
+                {"id": call["id"], "key": call["key"], "name": call["name"], "result": result},
             )
             if result.get("status") in {"execution_unknown", "unknown"}:
                 await self._terminal(

@@ -11,158 +11,23 @@ import {
 } from "./components";
 import { ChatComposer, ChatGlyph, MessageCopy } from "./ChatUI";
 import type {
-  ChatEvent,
-  ChatMessage,
   Conversation,
   ConversationDetail,
   Json,
   PlatformState,
-  Run,
-  ToolCall,
 } from "./types";
 
-export interface ChatState {
-  messages: ChatMessage[];
-  runs: Run[];
-  tools: ToolCall[];
-}
+import { applyChatEvent, messageParts, restoreChatState } from "./ChatTimeline";
+import type { ChatState } from "./ChatTimeline";
+export { applyChatEvent } from "./ChatTimeline";
+export type { ChatState } from "./ChatTimeline";
+
 const ACTIVE_RUN_STATUSES = [
   "running",
   "pending",
   "queued",
   "awaiting_approval",
 ];
-const RUN_EVENT_STATUS: Record<string, string> = {
-  run_started: "running",
-  approval_required: "awaiting_approval",
-  completed: "completed",
-  cancelled: "cancelled",
-  interrupted: "interrupted",
-};
-
-export function applyChatEvent(state: ChatState, event: ChatEvent): ChatState {
-  const data = event.data;
-  const runId = event.run_id ?? "";
-  if (!runId && event.type !== "agent_contact") return state;
-  let messages = state.messages;
-  let runs = state.runs;
-  let tools = state.tools;
-  if (["run_started", "text_delta", "reasoning_delta"].includes(event.type)) {
-    const id =
-      typeof data.message_id === "string"
-        ? data.message_id
-        : `${runId}:assistant`;
-    const existing = messages.find((message) => message.id === id);
-    const message: ChatMessage = existing ?? {
-      id,
-      role: "assistant",
-      content: "",
-      reasoning: "",
-      created_at: Date.now() / 1000,
-      run_id: runId,
-    };
-    const delta = typeof data.delta === "string" ? data.delta : "";
-    const next = {
-      ...message,
-      content: message.content + (event.type === "text_delta" ? delta : ""),
-      reasoning:
-        message.reasoning + (event.type === "reasoning_delta" ? delta : ""),
-    };
-    messages = existing
-      ? messages.map((item) => (item.id === id ? next : item))
-      : [...messages, next];
-  }
-  if (event.type === "tool_start" || event.type === "approval_required") {
-    const id = String(data.id);
-    const previous = tools.find(
-      (tool) => tool.id === id && tool.run_id === runId,
-    );
-    const tool: ToolCall = {
-      id,
-      name: String(data.name),
-      arguments: data.arguments ?? previous?.arguments ?? {},
-      run_id: runId,
-      approval_id:
-        typeof data.approval_id === "string"
-          ? data.approval_id
-          : previous?.approval_id,
-      status: event.type === "approval_required" ? "approval" : "running",
-    };
-    tools = previous
-      ? tools.map((item) =>
-          item.id === id && item.run_id === runId ? tool : item,
-        )
-      : [...tools, tool];
-  }
-  if (event.type === "tool_end") {
-    const id = String(data.id);
-    const previous = tools.find(
-      (tool) => tool.id === id && tool.run_id === runId,
-    );
-    const tool: ToolCall = {
-      id,
-      name: String(data.name),
-      arguments: previous?.arguments ?? {},
-      result: data.result,
-      run_id: runId,
-      approval_id: previous?.approval_id,
-      status: "completed",
-    };
-    tools = previous
-      ? tools.map((item) =>
-          item.id === id && item.run_id === runId ? tool : item,
-        )
-      : [...tools, tool];
-  }
-  const status =
-    event.type === "error"
-      ? typeof data.status === "string"
-        ? data.status
-        : "failed"
-      : RUN_EVENT_STATUS[event.type];
-  if (status) {
-    const previous = runs.find((run) => run.id === runId);
-    const run: Run = {
-      ...(previous ?? {
-        id: runId,
-        conversation_id: "",
-        created_at: Date.now() / 1000,
-      }),
-      status,
-      updated_at: Date.now() / 1000,
-      error:
-        event.type === "error" || event.type === "interrupted"
-          ? typeof data.message === "string"
-            ? data.message
-            : undefined
-          : undefined,
-    };
-    runs = previous
-      ? runs.map((item) => (item.id === run.id ? run : item))
-      : [...runs, run];
-  }
-  if (
-    event.type === "agent_contact" &&
-    typeof data.message_id === "string" &&
-    !messages.some((message) => message.id === data.message_id)
-  ) {
-    messages = [
-      ...messages,
-      {
-        id: data.message_id,
-        role: "agent",
-        content:
-          typeof data.content === "string"
-            ? data.content
-            : JSON.stringify(data.content ?? {}, null, 2),
-        reasoning: "",
-        created_at: Date.now() / 1000,
-        source: String(data.agent_id ?? ""),
-      },
-    ];
-  }
-  return { messages, runs, tools };
-}
 
 export default function ChatPage({
   state,
@@ -301,27 +166,7 @@ export default function ChatPage({
         if (cancelled) return;
         setDetail(result);
         setTitle(result.title);
-        const hasAgentMessage = result.messages.some(
-          (message) => message.role === "agent",
-        );
-        const restored = (result.events ?? [])
-          .filter(
-            (event) =>
-              ["tool_start", "tool_end", "approval_required"].includes(
-                event.type,
-              ) ||
-              (!hasAgentMessage && event.type === "agent_contact"),
-          )
-          .reduce(applyChatEvent, {
-            messages: result.messages,
-            runs: [],
-            tools: result.tool_calls ?? [],
-          });
-        setChat({
-          messages: restored.messages,
-          runs: result.runs,
-          tools: restored.tools,
-        });
+        setChat(restoreChatState(result));
         stop = api.streamConversation(
           selected,
           result.last_event_seq ?? 0,
@@ -837,33 +682,50 @@ export default function ChatPage({
                             来源：{message.source}
                           </p>
                         )}
-                        {message.reasoning && (
-                          <AnimatedDisclosure
-                            title="思考过程"
-                            className="reasoning"
-                            icon={<ChatGlyph type="thought" />}
-                          >
-                            <MarkdownContent content={message.reasoning} />
-                          </AnimatedDisclosure>
-                        )}
-                        {message.content && (
-                          <MarkdownContent content={message.content} />
-                        )}
-                        {message.role === "assistant" &&
-                          message.run_id &&
-                          chat.tools
-                            .filter((tool) => tool.run_id === message.run_id)
-                            .map((tool) => (
+                        {message.role === "assistant" && message.run_id ? (
+                          messageParts(message, chat).map((part) =>
+                            part.kind === "tool" ? (
                               <ToolView
-                                key={`${tool.run_id}:${tool.id}`}
-                                tool={tool}
+                                key={part.id}
+                                tool={part.tool}
                                 approval={state.approvals.find(
                                   (approval) =>
-                                    approval.id === tool.approval_id,
+                                    approval.id === part.tool.approval_id,
                                 )}
                                 onResolved={refresh}
                               />
-                            ))}
+                            ) : part.kind === "reasoning" ? (
+                              <AnimatedDisclosure
+                                key={part.id}
+                                title="思考过程"
+                                className="reasoning"
+                                icon={<ChatGlyph type="thought" />}
+                              >
+                                <MarkdownContent content={part.content} />
+                              </AnimatedDisclosure>
+                            ) : (
+                              <MarkdownContent
+                                key={part.id}
+                                content={part.content}
+                              />
+                            ),
+                          )
+                        ) : (
+                          <>
+                            {message.reasoning && (
+                              <AnimatedDisclosure
+                                title="思考过程"
+                                className="reasoning"
+                                icon={<ChatGlyph type="thought" />}
+                              >
+                                <MarkdownContent content={message.reasoning} />
+                              </AnimatedDisclosure>
+                            )}
+                            {message.content && (
+                              <MarkdownContent content={message.content} />
+                            )}
+                          </>
+                        )}
                         {running && (
                           <div
                             className={`thinking-indicator${running.status === "awaiting_approval" ? " is-waiting" : ""}`}

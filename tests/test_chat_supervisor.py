@@ -159,6 +159,21 @@ async def test_ask_approval_has_no_effect_until_decision_and_replays_once(
         assert snapshot["last_event_seq"] > 0
         tool_results = [event for event in snapshot["events"] if event["type"] == "tool_end"]
         assert len(tool_results) == 1
+        events = snapshot["events"]
+        assert [event["seq"] for event in events] == sorted(event["seq"] for event in events)
+        first_text = next(event for event in events if event["type"] == "text_delta")
+        tool_start = next(event for event in events if event["type"] == "tool_start")
+        final_text = next(
+            event
+            for event in events
+            if event["type"] == "text_delta" and event["seq"] > tool_results[0]["seq"]
+        )
+        assert first_text["seq"] < tool_start["seq"] < tool_results[0]["seq"] < final_text["seq"]
+        assert first_text["data"]["delta"] == "Working "
+        assert final_text["data"]["delta"] == "Done"
+        assert tool_start["data"]["key"] == tool_results[0]["data"]["key"]
+        assert tool_start["data"]["key"].startswith(run["run_id"] + ":")
+        assert events[-1]["seq"] == snapshot["last_event_seq"]
         # A later user message sends the native assistant/tool-result chain,
         # rather than an invalid hidden {turns: ...} container or plain summary.
         following = await supervisor.send_message(conversation["id"], "what changed?")
@@ -578,7 +593,16 @@ async def test_public_tool_events_mask_secrets_without_altering_approved_executi
         run = await supervisor.send_message(conversation["id"], "save")
         pending = await wait_status(supervisor, run["run_id"], "awaiting_approval")
         snapshot = await supervisor.get_conversation(conversation["id"])
-        for event in snapshot["events"]:
+        argument_events = [
+            event
+            for event in snapshot["events"]
+            if event["type"] in {"tool_start", "approval_required"}
+        ]
+        assert {event["type"] for event in argument_events} == {
+            "tool_start",
+            "approval_required",
+        }
+        for event in argument_events:
             assert event["data"]["arguments"] == {
                 "api_key": "********",
                 "headers": {"X-Custom": "********"},
