@@ -22,6 +22,8 @@ OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协�
 
 当前版本为 v0.1.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
+后续统一安装顺序、共享守护进程与三种系统的登录自启动要求见 [跨平台守护进程设计](../daemon.md)。下文介绍当前 MCP 会话桥与单个 runner 的接入步骤。
+
 ## 安装接入工具
 
 接入机器需要 uv，以及 Python 3.11、3.12 或 3.13。它不需要 Node、pnpm 或独立 WebUI。源码 checkout 的可信来源由你确认；进入该目录后：

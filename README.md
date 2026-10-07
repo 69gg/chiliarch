@@ -103,6 +103,7 @@ uv build
 - [部署、初始化与维护](docs/deployment.md)
 - [配置、热重载与日志](docs/configuration.md)
 - [架构与保证边界](docs/architecture.md)
+- [跨平台守护进程设计（规划）](docs/daemon.md)
 - [agent 协议与 JSON Schema](docs/protocol.md)
 - [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)
 - [供 agent 读取的自助接入指南](docs/agents/onboarding.md)
