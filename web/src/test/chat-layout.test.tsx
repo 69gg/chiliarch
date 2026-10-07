@@ -384,7 +384,7 @@ describe("工具下方的审批", () => {
       group.textContent?.includes("许可理由 approval-two"),
     )!;
     const missing = groups.find(
-      (group) => within(group).queryAllByRole("button").length === 0,
+      (group) => !within(group).queryByRole("button", { name: "允许这次操作" }),
     )!;
     expect(
       within(missing).queryByRole("button", { name: "允许这次操作" }),

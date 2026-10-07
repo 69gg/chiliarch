@@ -9,6 +9,10 @@ Object.defineProperty(Element.prototype, "scrollIntoView", {
   value: vi.fn(),
   configurable: true,
 });
+Object.defineProperty(Element.prototype, "scrollTo", {
+  value: vi.fn(),
+  configurable: true,
+});
 
 // jsdom does not implement native dialog APIs; emulate visibility for DOM tests.
 for (const method of ["show", "showModal"] as const) {

@@ -1,17 +1,28 @@
 :root {
   color-scheme: light;
   --bg: #f6f5f1;
-  --text: #3c465c;
-  --muted: #545d6e;
+  --text: #373a3f;
+  --muted: #60666c;
   --accent: #4b6084;
-  --gold: #a58a66;
-  --rule: #74809b36;
-  --surface: #f0f0ec;
-  --wash: #dde2eb70;
-  --hover: #74809b12;
+  --accent-hover: #3f5273;
+  --gold: #77644b;
+  --rule: #dcddd8;
+  --surface: #efeeea;
+  --sidebar-bg: #efeeea;
+  --surface-raised: #fffdfa;
+  --composer-bg: #fcfbf8;
+  --wash: #e5e7ea;
+  --hover: #e9e9e4;
   --button-text: #f6f5f1;
   --error: #9b4244;
   --success: #58705b;
+  --shadow-sm: 0 1px 3px rgb(29 31 34 / 5%);
+  --shadow-md: 0 8px 24px rgb(29 31 34 / 8%);
+  --shadow-lg: 0 20px 56px rgb(29 31 34 / 14%);
+  --motion-fast: 140ms;
+  --motion-normal: 200ms;
+  --motion-slow: 300ms;
+  --ease-standard: cubic-bezier(0.2, 0.65, 0.25, 1);
   --radius: 7px;
   font-family: "Noto Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
   color: var(--text);
@@ -22,18 +33,25 @@
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #34435a;
-  --text: #edf1f8;
-  --muted: #cad3e1;
-  --accent: #d1dff3;
-  --gold: #c7b992;
-  --rule: #c7d2e02e;
-  --surface: #2f3e55;
-  --wash: #c3d1e512;
-  --hover: #c3d1e51a;
-  --button-text: #34435a;
-  --error: #f1a5a3;
-  --success: #afc6b0;
+  --bg: #18191a;
+  --text: #edece8;
+  --muted: #afb1b2;
+  --accent: #9bacc2;
+  --accent-hover: #b0bed0;
+  --gold: #b9a582;
+  --rule: #343638;
+  --surface: #202122;
+  --sidebar-bg: #1d1e1f;
+  --surface-raised: #28292b;
+  --composer-bg: #252729;
+  --wash: #2d3033;
+  --hover: #2a2c2e;
+  --button-text: #18191a;
+  --error: #e2a1a0;
+  --success: #a3b9a6;
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 16%);
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 24%);
+  --shadow-lg: 0 20px 56px rgb(0 0 0 / 40%);
 }
 * {
   box-sizing: border-box;
@@ -57,9 +75,10 @@ button {
   line-height: 1.5;
   cursor: pointer;
   transition:
-    background 160ms,
-    border-color 160ms,
-    transform 160ms;
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 button:hover:not(:disabled) {
   background: var(--hover);
@@ -78,8 +97,8 @@ button.primary {
   border-color: var(--accent);
 }
 button.primary:hover:not(:disabled) {
-  opacity: 0.88;
-  background: var(--accent);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 button.plain {
   padding: 4px 0;
@@ -94,7 +113,7 @@ select,
 textarea {
   border: 1px solid var(--rule);
   border-radius: var(--radius);
-  background: transparent;
+  background: var(--composer-bg);
   padding: 10px 12px;
   width: 100%;
   min-width: 0;
@@ -444,7 +463,7 @@ pre {
   padding: 12px 0 22px;
   max-width: 770px;
   margin: 0 auto 10px;
-  animation: message-enter 180ms ease-out;
+  animation: message-enter var(--motion-normal) var(--ease-standard);
 }
 .message-heading {
   display: flex;
@@ -1099,7 +1118,7 @@ pre {
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 16px;
-  box-shadow: 0 7px 20px #18213b12;
+  box-shadow: var(--shadow-md);
 }
 .conversation-menu-panel form {
   display: grid;
@@ -1260,7 +1279,7 @@ pre {
   width: min(340px, 100%);
   display: grid;
   gap: 15px;
-  animation: message-enter 240ms ease-out;
+  animation: message-enter var(--motion-slow) var(--ease-standard);
 }
 .login-form .eyebrow {
   margin: 0;
@@ -1353,7 +1372,7 @@ pre {
     bottom: 0;
     width: 290px;
     z-index: 3;
-    box-shadow: -10px 0 24px #18213b15;
+    box-shadow: var(--shadow-lg);
   }
   .message-scroll {
     padding-left: 26px;
@@ -1633,6 +1652,11 @@ pre {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+    --motion-slow: 0ms;
+  }
   *,
   *::before,
   *::after {

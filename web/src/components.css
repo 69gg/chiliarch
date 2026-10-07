@@ -1,0 +1,281 @@
+.animated-disclosure {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 92%, var(--surface));
+  overflow: hidden;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.animated-disclosure:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+}
+
+.animated-disclosure > .disclosure-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 11px 14px;
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.animated-disclosure.has-disclosure-icon > .disclosure-summary {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  border-radius: inherit;
+}
+
+.disclosure-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--tool-accent, var(--accent));
+  flex-shrink: 0;
+}
+
+.disclosure-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.4;
+}
+
+.disclosure-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-status {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.disclosure-chevron {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
+  color: var(--muted);
+  transition: transform 180ms ease;
+}
+
+.animated-disclosure[open] > .disclosure-summary .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.animated-disclosure > .disclosure-body[hidden] {
+  display: none;
+}
+
+.animated-disclosure[open] > .disclosure-body {
+  animation: disclosure-reveal 180ms ease-out both;
+}
+
+.tool-block {
+  --tool-accent: var(--accent);
+  min-width: 0;
+}
+
+.tool-block.tool-running,
+.tool-block.tool-awaiting_approval {
+  --tool-accent: var(--gold);
+}
+
+.tool-block.tool-completed {
+  --tool-accent: var(--success);
+}
+
+.tool-block.tool-error,
+.tool-block.tool-failed,
+.tool-block.tool-rejected {
+  --tool-accent: var(--error);
+}
+
+.tool-block > .tool-call {
+  border-left: 2px solid var(--tool-accent);
+}
+
+.tool-summary-name {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tool-call .tool-summary-name strong {
+  flex: initial;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+.tool-summary-name code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.tool-call .disclosure-status .status {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+}
+
+.tool-call .disclosure-status .status-dot {
+  width: 5px;
+  height: 5px;
+}
+
+.tool-call .tool-details {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.tool-details h4 {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  margin: 14px 0 7px;
+}
+
+.tool-details .json-view {
+  margin: 0;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  line-height: 1.65;
+}
+
+.animated-disclosure.reasoning {
+  padding: 0;
+  margin-bottom: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.animated-disclosure.reasoning > .disclosure-summary {
+  min-height: 36px;
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.animated-disclosure.reasoning .disclosure-icon {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--gold);
+}
+
+.animated-disclosure.reasoning .disclosure-body {
+  padding: 2px 14px 4px;
+  margin-left: 12px;
+  border-left: 1px solid var(--rule);
+}
+
+.animated-disclosure.reasoning .markdown {
+  padding: 4px 0;
+}
+
+.code-block {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+}
+
+.code-block .code-bar {
+  min-height: 40px;
+  padding: 7px 14px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.code-bar .code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  font-size: 11px;
+  transition: color 160ms ease;
+}
+
+.code-copy svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.4;
+}
+
+.code-copy.is-copied {
+  color: var(--success);
+}
+
+.code-copy-feedback {
+  display: block;
+  padding: 0 14px 8px;
+  color: var(--success);
+  font-size: 11px;
+}
+
+.code-copy-feedback:empty {
+  padding: 0;
+}
+
+.code-copy-feedback.copy-error {
+  color: var(--error);
+}
+
+@keyframes disclosure-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 700px) {
+  .animated-disclosure > .disclosure-summary {
+    gap: 8px;
+    padding-inline: 11px;
+  }
+
+  .tool-summary-name code {
+    font-size: 9px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animated-disclosure,
+  .animated-disclosure .disclosure-chevron,
+  .animated-disclosure .disclosure-body,
+  .code-copy {
+    animation: none !important;
+    transition: none !important;
+  }
+}
