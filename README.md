@@ -32,6 +32,8 @@ chiliarch serve
 
 源码开发与本地构建见 [开发、测试与发版](docs/releasing.md)；用户部署见 [部署文档](docs/deployment.md)。
 
+在线备份可运行 `chiliarch backup --output ./backups/platform.db`，命令校验并保存包含已提交 WAL 数据的独立 SQLite 快照，不覆盖已有文件。数据库存在待重启配置变更时，使用 `--database` 指定实际运行的数据库；配置、密钥环境和 agent 状态库需另行保管。详见 [备份与恢复](docs/deployment.md#备份与恢复)。
+
 首次登录后，在“配置”页面设置模型 API、模型名称、地址和 API Key；也可通过环境变量提供密钥，例如 `CHILIARCH_MODEL__API_KEY`。未配置模型时，手动管理仍然可用，总管不会生成假回复。
 
 ## 使用总管对话

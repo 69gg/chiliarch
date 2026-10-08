@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 JsonObject = dict[str, Any]
+SCHEMA_VERSION = 1
 
 
 def new_id() -> str:
@@ -249,18 +250,18 @@ class Database:
                         select(SchemaVersion.version).where(SchemaVersion.id == 1)
                     )
                 ).scalar_one_or_none()
-                if version_number is not None and version_number != 1:
+                if version_number is not None and version_number != SCHEMA_VERSION:
                     raise RuntimeError(
-                        f"Unsupported database schema version {version_number}; expected 1"
+                        f"Unsupported database schema version {version_number}; expected {SCHEMA_VERSION}"
                     )
             await connection.run_sync(Base.metadata.create_all)
         async with self.sessions.begin() as session:
             version = await session.get(SchemaVersion, 1)
             if version is None:
-                session.add(SchemaVersion(id=1, version=1))
-            elif version.version != 1:
+                session.add(SchemaVersion(id=1, version=SCHEMA_VERSION))
+            elif version.version != SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"Unsupported database schema version {version.version}; expected 1"
+                    f"Unsupported database schema version {version.version}; expected {SCHEMA_VERSION}"
                 )
 
         if self.sqlite_path is not None:

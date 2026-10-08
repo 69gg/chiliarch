@@ -31,6 +31,12 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int)
     schema = commands.add_parser("schema", help="Export the independent protocol JSON Schema")
     schema.add_argument("--output", type=Path)
+    backup = commands.add_parser("backup", help="Create a consistent online SQLite snapshot")
+    backup.add_argument("--output", type=Path, required=True)
+    backup.add_argument(
+        "--database", type=Path, help="Explicit SQLite source instead of saved config"
+    )
+    backup.add_argument("--timeout", type=float, default=30, help="Backup deadline in seconds")
     pair = commands.add_parser("pair", help="Redeem an agent registration code from this machine")
     pair.add_argument("--server", required=True)
     pair.add_argument("--code", help="Omit to enter the one-time code interactively")
@@ -47,7 +53,7 @@ def parser() -> argparse.ArgumentParser:
 
     add_parser(commands)
     add_daemon_parser(commands)
-    for command in (initialize, serve, schema, pair, demo):
+    for command in (initialize, serve, schema, backup, pair, demo):
         command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     return root
 
@@ -114,6 +120,22 @@ def main() -> None:
                 export_schema(arguments.output)
             else:
                 print(json.dumps(protocol_schema(), ensure_ascii=False, indent=2))
+        elif arguments.command == "backup":
+            from sqlalchemy.engine import URL
+
+            from chiliarch.backup import backup_database, sqlite_source
+
+            if arguments.database is not None:
+                url = URL.create(
+                    "sqlite", database=str(arguments.database.expanduser().resolve())
+                ).render_as_string()
+            elif not arguments.config.is_file():
+                raise ValueError("请指定现有 chiliarch.toml 配置文件")
+            else:
+                url = SettingsManager(arguments.config).current.database.url
+            print(f"备份源：{sqlite_source(url)}")
+            output = backup_database(url, arguments.output, timeout=arguments.timeout)
+            print(f"数据库快照已校验并保存：{output}。请另行保管配置和日志。")
         elif arguments.command == "serve":
             import uvicorn
 
