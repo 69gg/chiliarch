@@ -82,4 +82,8 @@ Python 接入可复用 `chiliarch.adapters.mailbox.AgentMailbox`：`AgentClient(
 
 已有 `agent.message`、`request.resolved` 在持久 inbox 中保留，业务读取不影响网络 ACK。`AgentMailbox.read_messages` 使用本地 cursor，`get_request_result` 按请求身份查结果；离线时联系/请求仍可持久排队，但不能当成已送达或批准。联系的回复使用原消息 ID 作为 `send_agent_message.correlation_id`。MCP mailbox 模式仅共享队列，不建立第二条网络连接，也不暴露任务领取与完成工具。
 
+自定义 handler 可通过 `AgentClient(..., runtime_metadata=callback)` 提供无参数的本地状态回调，返回可公开的 JSON 字典（如 adapter、workspace、state、blocked_reason）。默认客户端会报告活动任务、队列数、执行模式与容量；回调不能包含凭证或原生认证诊断。托管任务应保持真实终态，平台据 `task.status` 持久唤醒总管，不需要为保证完成通知另发一封联系消息。
+
+协调资料位于 `parameters.chiliarch_context`，是任务数据，不是本机执行配置。插件可用 `agent.request.metadata.task_id` / `agent.contact.metadata.task_id` 关联自己负责的任务；平台核验所属身份后归并到目标会话。目标与验收工具详见 [目标、依赖与验收](coordination.md)。
+
 后续能力发现、插件配置、OpenCode/Undefined 等厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。

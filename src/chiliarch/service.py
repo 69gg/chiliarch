@@ -20,16 +20,28 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from chiliarch.auth import hash_password, hash_token
+from chiliarch.coordination import (
+    CoordinationService,
+    CreateGoalArguments,
+    GoalArguments,
+    RetryTaskArguments,
+    ReviewTaskArguments,
+    UpdateGoalArguments,
+    goal_view,
+    task_link_view,
+)
 from chiliarch.database import (
     Agent,
     AgentRequest,
     Approval,
     AuditEvent,
     Database,
+    Goal,
     Message,
     OperationRecord,
     PairingCode,
     Task,
+    TaskLink,
     UserSession,
     new_id,
 )
@@ -73,6 +85,10 @@ class PairingArguments(Arguments):
 class DispatchArguments(AgentArguments):
     instruction: str = Field(min_length=1, max_length=100000)
     parameters: JsonObject = Field(default_factory=dict)
+    goal_id: str | None = None
+    conversation_id: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
 
 
 class TaskArguments(Arguments):
@@ -121,7 +137,7 @@ class Operation:
         handler: Handler | None,
         risk: str,
         mutating: bool,
-        arguments: type[Arguments] | None = None,
+        arguments: type[BaseModel] | None = None,
     ) -> None:
         self.name, self.description, self.parameters = name, description, parameters
         self.handler, self.risk, self.mutating, self.arguments = handler, risk, mutating, arguments
@@ -179,6 +195,7 @@ class OperationService:
         self.listeners: list[Listener] = []
         self.changed = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self.coordination = CoordinationService(self)
         self._register_core()
 
     def register(
@@ -198,7 +215,7 @@ class OperationService:
         self.operations[name] = Operation(name, description, parameters, handler, risk, mutating)
 
     def _register_core(self) -> None:
-        specs: list[tuple[str, str, type[Arguments], str, bool]] = [
+        specs: list[tuple[str, str, type[BaseModel], str, bool]] = [
             (
                 "list_agents",
                 "List agents and their observed availability",
@@ -215,6 +232,48 @@ class OperationService:
                 False,
             ),
             ("get_task", "Read task progress and result", TaskArguments, "low", False),
+            (
+                "create_goal",
+                "Create a durable goal with constraints and acceptance criteria",
+                CreateGoalArguments,
+                "medium",
+                True,
+            ),
+            (
+                "list_goals",
+                "List goals, their tasks, reviews and artifacts",
+                EmptyArguments,
+                "low",
+                False,
+            ),
+            (
+                "get_goal",
+                "Read a goal and all its task attempts and artifacts",
+                GoalArguments,
+                "low",
+                False,
+            ),
+            (
+                "update_goal",
+                "Update goal constraints or status; completion requires accepted work; cancellation cancels unfinished tasks",
+                UpdateGoalArguments,
+                "medium",
+                True,
+            ),
+            (
+                "review_task",
+                "Accept completed work after checking its criteria and artifacts, or request changes",
+                ReviewTaskArguments,
+                "medium",
+                True,
+            ),
+            (
+                "retry_task",
+                "Create an explicit new attempt after inspecting actual effects; recovery_note must explain what was checked and why retry is safe",
+                RetryTaskArguments,
+                "high",
+                True,
+            ),
             (
                 "create_pairing_code",
                 "Create an expiring one-time agent registration code",
@@ -757,6 +816,7 @@ class OperationService:
             try:
                 async with self.db.write_lock, self.db.sessions.begin() as session:
                     await self._expire_messages(session)
+                    await self.coordination.release(session)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -778,6 +838,7 @@ class OperationService:
                 task = await session.get(Task, message.body["payload"]["task_id"])
                 if task and task.status == "queued":
                     task.status, task.updated_at = "expired", time.time()
+                    await self.coordination.terminal(session, task)
             session.add(
                 AuditEvent(
                     actor="system",
@@ -820,6 +881,15 @@ class OperationService:
         self, session: AsyncSession, name: str, args: JsonObject, actor: str
     ) -> tuple[JsonObject, tuple[str, JsonObject] | None]:
         event: tuple[str, JsonObject] | None = None
+        if name in {
+            "create_goal",
+            "list_goals",
+            "get_goal",
+            "update_goal",
+            "review_task",
+            "retry_task",
+        }:
+            return await self.coordination.execute(session, name, args, actor), None
         if name == "list_agents":
             return {
                 "agents": [
@@ -846,7 +916,8 @@ class OperationService:
             task = await session.get(Task, args["task_id"])
             if task is None:
                 raise OperationError("Task not found", 404)
-            return {"task": self.task_view(task)}, None
+            link = await self.coordination.link(session, task)
+            return {"task": self.task_view(task), "task_link": task_link_view(link)}, None
         if name == "create_pairing_code":
             code, expires_at = secrets.token_urlsafe(24), time.time() + args["ttl_seconds"]
             pairing = PairingCode(id=new_id(), code_hash=hash_token(code), expires_at=expires_at)
@@ -870,39 +941,19 @@ class OperationService:
             )
             return {"agent": self.agent_view(agent)}, ("agent.revoked", {"agent_id": agent.id})
         if name == "dispatch_task":
-            await self._agent(session, args["agent_id"])
-            task = Task(
-                id=new_id(),
-                agent_id=args["agent_id"],
-                instruction=args["instruction"],
-                parameters=args["parameters"],
-                requested_by=actor,
-                status="queued",
-                created_at=time.time(),
-                updated_at=time.time(),
-            )
-            session.add(task)
-            await self._enqueue(
-                session,
-                task.agent_id,
-                Envelope(
-                    type="task.dispatch",
-                    correlation_id=task.id,
-                    payload={
-                        "task_id": task.id,
-                        "instruction": task.instruction,
-                        "parameters": task.parameters,
-                    },
-                ),
-            )
-            return {"task": self.task_view(task)}, None
+            return await self.coordination.dispatch(session, args, actor), None
         if name == "cancel_task":
             task = await session.get(Task, args["task_id"])
             if task is None:
                 raise OperationError("Task not found", 404)
             if task.status in {"completed", "failed", "cancelled", "expired", "interrupted"}:
                 return {"task": self.task_view(task)}, None
-            await self._agent(session, task.agent_id)
+            if task.status == "blocked":
+                task.status, task.updated_at = "cancelled", time.time()
+                task.message = args["reason"]
+                await self.coordination.terminal(session, task)
+                return {"task": self.task_view(task)}, None
+            agent = await self._agent(session, task.agent_id, active=False)
             pending = (
                 await session.scalars(
                     select(Message).where(
@@ -920,6 +971,16 @@ class OperationService:
                 ):
                     message.expired = True
             task.status, task.updated_at = "cancellation_requested", time.time()
+            task.message = args["reason"]
+            if agent.revoked:
+                # A queued dispatch may already be executing when its ACK was
+                # lost. Revocation prevents further delivery, not remote work;
+                # preserve the intent without asserting that execution stopped.
+                task.message += (
+                    " (Agent credential is revoked; cancellation could not be delivered; "
+                    "remote execution state is unknown.)"
+                )
+                return {"task": self.task_view(task)}, None
             await self._enqueue(
                 session,
                 task.agent_id,
@@ -976,6 +1037,13 @@ class OperationService:
             else:
                 request.status, request.result = "rejected", {"reason": args["reason"]}
             request.resolved_at = time.time()
+            requesting_agent = await self._agent(session, request.agent_id, active=False)
+            if requesting_agent.revoked:
+                request.result = {
+                    **request.result,
+                    "notification_status": "undeliverable_revoked",
+                }
+                return {"request": self.request_view(request)}, event
             await self._enqueue(
                 session,
                 request.agent_id,
@@ -1226,6 +1294,10 @@ class OperationService:
                     task = await session.get(Task, envelope.payload["task_id"])
                     if task is None or task.agent_id != agent_id:
                         raise OperationError("Task is not assigned to this agent", 403)
+                    if task.status == "blocked":
+                        raise OperationError(
+                            "Task dependencies have not been accepted; task was not dispatched", 409
+                        )
                     new_status = envelope.payload["status"]
                     terminal = {"completed", "failed", "cancelled", "expired", "interrupted"}
                     if task.status in terminal:
@@ -1240,6 +1312,7 @@ class OperationService:
                         for field in ("progress", "result", "error", "message"):
                             setattr(task, field, envelope.payload.get(field))
                         if new_status in terminal:
+                            await self.coordination.terminal(session, task)
                             for message in (
                                 await session.scalars(
                                     select(Message).where(
@@ -1329,6 +1402,7 @@ class OperationService:
                             task = await session.get(Task, message.body["payload"]["task_id"])
                             if task and task.status == "queued":
                                 task.status, task.updated_at = "expired", time.time()
+                                await self.coordination.terminal(session, task)
                         session.add(
                             AuditEvent(
                                 actor="system",
@@ -1368,6 +1442,15 @@ class OperationService:
                             select(AgentRequest).order_by(AgentRequest.created_at.desc())
                         )
                     ).all()
+                ],
+                "goals": [
+                    goal_view(goal)
+                    for goal in (
+                        await session.scalars(select(Goal).order_by(Goal.created_at.desc()))
+                    ).all()
+                ],
+                "task_links": [
+                    task_link_view(link) for link in (await session.scalars(select(TaskLink))).all()
                 ],
                 "config": self.settings_manager.public(),
                 "runtime": {

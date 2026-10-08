@@ -43,7 +43,7 @@ chiliarch schema --output protocol.schema.json
 | task.dispatch | 平台 → agent | `task_id`、`instruction`、`parameters` |
 | task.cancel | 平台 → agent | `task_id`、`reason` |
 | task.status | agent → 平台 | `task_id`、`status`，可选 progress/result/error/message |
-| agent.request | agent → 平台 | `request_id`、`operation`、`arguments`，可选 message |
+| agent.request | agent → 平台 | `request_id`、`operation`、`arguments`，可选 message、metadata |
 | agent.contact | agent → 平台 | `message`、`metadata` |
 | agent.message | 平台 → agent | `message`、`metadata` |
 | request.resolved | 平台 → agent | `request_id`、`status`，可选 result/error |
@@ -51,6 +51,12 @@ chiliarch schema --output protocol.schema.json
 任务上报状态为 `accepted/running/completed/failed/cancelled/interrupted`；progress 在 0–1。`interrupted` 表示执行停止而外部结果可能未知。agent 只能上报分配给自己的任务；终态不能改成另一终态。服务端专用类型不能由 agent 上传。
 
 联系与协作通过上级转交：agent 用 `agent.contact` 汇报、提问或描述协调需求，metadata 可带本机任务 ID；平台 `send_agent_message` 回复时将原联系消息的 `id` 放进 `correlation_id`。操作申请使用稳定 `request_id`，`request.resolved` 的 payload 与 correlation_id 都关联它。没有收到结果就是待处理，超时不代表许可；查询结果不能通过重发新申请代替，避免副作用重复。双方不直接拨号连接其他 agent。
+
+`agent.request.metadata.task_id` 与 `agent.contact.metadata.task_id` 可标识当前工作。平台只有验证该任务确实属于发送身份后，才将请求送回其目标会话；关联信息不会授予额外管理权限。此 metadata 为协议 1.0 的可选字段；未携带字段的旧请求保留原标准化内容与消息指纹，升级后重投仍可去重。不要在重传旧消息时补写字段，应为新内容创建新消息 ID。
+
+心跳 metadata 可携带 `execution_mode`、`state`、`active_task_ids`、`queued_tasks`、`capacity`、`adapter`、`workspace` 与阻塞说明。当前参考客户端区分 `waiting_for_claim`、`idle`、`busy`、`blocked`；这些是客户端观察值，不证明原生模型登录、权限或未来任务一定成功。旧客户端不提供时，平台保留“未知”能力，而不是把 online 当成自动可执行。
+
+目标和依赖是平台调度状态，不新增 agent 必须上报的状态。等待依赖时平台任务为 `blocked`，通过验收后才发送普通 `task.dispatch`；后续任务通过 `parameters.chiliarch_context` 取得目标约束、依赖结果和产物引用。此数据不改变本地执行策略。详见 [目标、依赖与验收](coordination.md)。
 
 扩展消息使用非保留命名空间，如 `example.telemetry`。`task`、`agent`、`request` 保留给协议。扩展消息不会自动变成管理员动作；可通过服务事件监听处理，并为生产扩展增加 payload 校验。扩展操作使用注册工具的 JSON Schema，见扩展文档。
 

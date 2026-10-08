@@ -19,6 +19,16 @@ from chiliarch.protocol import Envelope, export_schema, protocol_schema
         ("task.dispatch", {"task_id": "t1", "instruction": "Inspect"}),
         ("task.status", {"task_id": "t1", "status": "interrupted"}),
         ("agent.contact", {"message": "Help"}),
+        ("agent.request", {"request_id": "r", "operation": "list_agents", "arguments": {}}),
+        (
+            "agent.request",
+            {
+                "request_id": "r",
+                "operation": "list_agents",
+                "arguments": {},
+                "metadata": {"task_id": "t"},
+            },
+        ),
         ("myplugin.event", {"data": [1, 2]}),
     ],
 )
@@ -52,3 +62,10 @@ def test_schema_export_is_valid_and_matches_runtime(tmp_path: Path) -> None:
     exported = json.loads(target.read_text())
     Draft202012Validator.check_schema(exported)
     assert exported == protocol_schema()
+
+
+def test_request_redelivery_preserves_pre_metadata_fingerprint() -> None:
+    old_payload = {"request_id": "r", "operation": "list_agents", "arguments": {}, "message": None}
+    envelope = Envelope(type="agent.request", payload=old_payload)
+    assert envelope.payload == old_payload
+    assert Envelope.model_validate_json(envelope.model_dump_json()).payload == old_payload

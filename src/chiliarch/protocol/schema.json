@@ -243,6 +243,11 @@
           ],
           "default": null,
           "title": "Message"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
         }
       },
       "required": [

@@ -12,6 +12,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Float,
+    ForeignKey,
     Integer,
     String,
     Text,
@@ -85,6 +86,55 @@ class Task(Base):
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
     requested_by: Mapped[str] = mapped_column(String(256))
+
+
+class Goal(Base):
+    """A durable user objective, independent of any individual model turn."""
+
+    __tablename__ = "coordination_goals"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(256))
+    objective: Mapped[str] = mapped_column(Text)
+    constraints: Mapped[list[str]] = mapped_column(JSON, default=list)
+    acceptance_criteria: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class TaskLink(Base):
+    """Additive coordination metadata; existing task rows remain compatible."""
+
+    __tablename__ = "coordination_task_links"
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    goal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("coordination_goals.id"), nullable=True, index=True
+    )
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    depends_on: Mapped[list[str]] = mapped_column(JSON, default=list)
+    acceptance_criteria: Mapped[list[str]] = mapped_column(JSON, default=list)
+    review_status: Mapped[str] = mapped_column(String(32), default="pending")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    artifacts: Mapped[list[JsonObject]] = mapped_column(JSON, default=list)
+    retry_of: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, unique=True)
+
+
+class CoordinationEvent(Base):
+    """Transactional outbox for supervisor work, consumed after business commit."""
+
+    __tablename__ = "coordination_events"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=new_id)
+    event_key: Mapped[str] = mapped_column(String(256), unique=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[JsonObject] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
 
 
 class Message(Base):

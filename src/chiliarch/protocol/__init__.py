@@ -55,6 +55,7 @@ class AgentRequestPayload(Payload):
     operation: str = Field(min_length=1)
     arguments: JsonObject = Field(default_factory=dict)
     message: str | None = None
+    metadata: JsonObject = Field(default_factory=dict)
 
 
 class AgentContactPayload(Payload):
@@ -113,7 +114,11 @@ class Envelope(BaseModel):
             raise ValueError("expires_at must include a timezone")
         payload_type = PAYLOAD_TYPES.get(self.type)
         if payload_type is not None:
+            legacy_request = self.type == "agent.request" and "metadata" not in self.payload
             self.payload = payload_type.model_validate(self.payload).model_dump(mode="json")
+            if legacy_request:
+                # Keep pre-upgrade request fingerprints stable across redelivery.
+                self.payload.pop("metadata", None)
         elif "." not in self.type or self.type.split(".", 1)[0] in {"task", "agent", "request"}:
             raise ValueError("extension message types require a non-reserved namespace")
         return self
