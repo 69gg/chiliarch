@@ -20,6 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
+from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
 from chiliarch.client import TaskExecutionError, TaskHandler
 from chiliarch.config import mask_sensitive
 
@@ -224,6 +225,35 @@ class RunnerHandler:
     def __init__(self, settings: RunnerSettings, state_path: Path) -> None:
         self.settings = settings
         self.state_path = state_path.expanduser().resolve()
+        self._waiting_tasks: set[str] = set()
+        self._running_tasks: set[str] = set()
+
+    def runtime_metadata(self) -> JsonObject:
+        """Describe this local runner without invoking or probing the native agent."""
+        metadata: JsonObject = {
+            "adapter": self.settings.kind,
+            "workspace": str(self.settings.workdir),
+            "capacity": 1,
+            "blocked_task_ids": sorted(self._waiting_tasks),
+            "blocked_reason": None,
+        }
+        available = self.settings.workdir.is_dir()
+        try:
+            unverified = (
+                available
+                and workspace_lock_path(self.settings.workdir)
+                .with_suffix(".unverified.json")
+                .exists()
+            )
+        except OSError:
+            available, unverified = False, False
+        if not available:
+            metadata.update(state="blocked", blocked_reason="workspace_unavailable", capacity=0)
+        elif self._waiting_tasks and not self._running_tasks:
+            metadata.update(state="blocked", blocked_reason="workspace_busy")
+        elif not self._running_tasks and unverified:
+            metadata.update(state="blocked", blocked_reason="workspace_unverified", capacity=0)
+        return metadata
 
     def _prompt(self, payload: JsonObject) -> bytes:
         instruction = payload.get("instruction")
@@ -331,8 +361,27 @@ class RunnerHandler:
         # Verify again: a configured directory can disappear between dispatches.
         if not self.settings.workdir.is_dir():
             raise RunnerError("Configured local workspace is no longer available")
+        task_id: str = payload["task_id"]
+
+        async def waiting() -> None:
+            self._waiting_tasks.add(task_id)
+            await progress(0.0, "等待其他任务释放工作区")
+
+        try:
+            async with workspace_owner(self.settings.workdir, on_wait=waiting) as lease:
+                self._waiting_tasks.discard(task_id)
+                self._running_tasks.add(task_id)
+                return await self._run_owned(payload, prompt, progress, lease)
+        finally:
+            self._waiting_tasks.discard(task_id)
+            self._running_tasks.discard(task_id)
+
+    async def _run_owned(
+        self, payload: JsonObject, prompt: bytes, progress: Progress, lease: WorkspaceLease
+    ) -> JsonObject:
         with tempfile.TemporaryDirectory(prefix="chiliarch-runner-") as directory:
             command = self._command(Path(directory), payload["task_id"])
+            await lease.begin_execution(payload["task_id"])
             try:
                 tree = await start_process_tree(
                     command, self.settings.workdir, self.settings.max_line_bytes + 1
@@ -416,13 +465,19 @@ class RunnerHandler:
                 # the client's task slot, including when the parent has exited.
                 cleanup = asyncio.create_task(self._cleanup(tree, readers))
                 interrupted = False
-                while not cleanup.done():
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        # Repeated cancel messages must not interrupt process cleanup.
-                        interrupted = True
-                cleanup.result()
+                try:
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            # Repeated cancel messages must not interrupt process cleanup.
+                            interrupted = True
+                    cleanup.result()
+                except (Exception, asyncio.CancelledError):
+                    raise RunnerError(
+                        "Native process cleanup could not be confirmed; workspace remains isolated"
+                    ) from None
+                await lease.confirm_stopped()
                 if interrupted:
                     raise asyncio.CancelledError
 

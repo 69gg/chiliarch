@@ -233,8 +233,8 @@ _WINDOWS_BOOTSTRAP = (
 )
 
 
-async def _macos_group_exited(pgid: int) -> bool:
-    """Darwin excludes zombies from killpg and can report EPERM for an exited group."""
+async def _posix_group_exited(pgid: int) -> bool:
+    """Confirm no running group members remain; unreaped zombies cannot execute work."""
     executable = shutil.which("ps")
     if executable is None:
         return False
@@ -297,18 +297,29 @@ class ProcessTree:
             except ProcessLookupError:
                 return False
             except PermissionError:
-                if sys.platform == "darwin" and await _macos_group_exited(self.process.pid):
+                # Darwin excludes zombies from killpg and can report EPERM for
+                # an exited group. A real permission failure still propagates.
+                if sys.platform == "darwin" and await _posix_group_exited(self.process.pid):
                     return False
                 raise
 
-        if await send_group(signal.SIGTERM):
-            until = time.monotonic() + grace_seconds
-            while time.monotonic() < until:
-                if not await send_group(0):
-                    break
-                await asyncio.sleep(min(0.05, grace_seconds))
-            else:
-                await send_group(signal.SIGKILL)
+        if not await send_group(signal.SIGTERM):
+            return
+        until = time.monotonic() + grace_seconds
+        while time.monotonic() < until:
+            if not await send_group(0):
+                return
+            await asyncio.sleep(min(0.05, grace_seconds))
+        if not await send_group(signal.SIGKILL):
+            return
+        # Sending SIGKILL is not confirmation: a descendant with private output
+        # can outlive both the leader and its pipes. Do not release its workspace
+        # until the group is absent or every remaining member is a zombie.
+        async with asyncio.timeout(max(5.0, grace_seconds)):
+            while await send_group(0):
+                if await _posix_group_exited(self.process.pid):
+                    return
+                await asyncio.sleep(0.01)
 
 
 async def _spawn(command: list[str], cwd: Path, limit: int) -> ProcessTree:

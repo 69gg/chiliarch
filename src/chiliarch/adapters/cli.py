@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import tomli_w
 
-from chiliarch.adapters.runtime import connection_owner, outbound_client
+from chiliarch.adapters.runtime import connection_owner, outbound_client, recover_workspace
 from chiliarch.client import AgentClient, ClientStore
 from chiliarch.config import LogSettings
 from chiliarch.logging import close_logging, configure_logging
@@ -76,6 +76,12 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     target.add_argument("--agent", help="Check one registered daemon identity")
     doctor.add_argument("--daemon-directory", type=Path)
     doctor.add_argument("--settings", type=Path)
+    recovery = actions.add_parser(
+        "workspace-recover",
+        help="Inspect workspace isolation; clear only after confirming native workers stopped",
+    )
+    recovery.add_argument("--workdir", type=Path, required=True)
+    recovery.add_argument("--confirm-stopped", action="store_true")
 
 
 def _bridge_mode(arguments: argparse.Namespace) -> Literal["daemon", "standalone", "mailbox"]:
@@ -246,6 +252,17 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(arguments: argparse.Namespace) -> None:
+    if arguments.agent_command == "workspace-recover":
+        print(
+            json.dumps(
+                asyncio.run(
+                    recover_workspace(arguments.workdir, confirm_stopped=arguments.confirm_stopped)
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
     if arguments.agent_command == "config":
         content = mcp_configuration(
             arguments.host,

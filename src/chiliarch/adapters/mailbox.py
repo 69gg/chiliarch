@@ -184,6 +184,10 @@ class AgentMailbox:
         self, operation: str, arguments: JsonObject, message: str = "", wait_seconds: float = 0
     ) -> JsonObject:
         self._wait(wait_seconds)
+        if self.managed_task is not None:
+            state, _ = await self._task(self.managed_task)
+            if state != "running":
+                raise ValueError("Managed task is no longer running")
         request_id = str(uuid4())
         envelope = Envelope(
             type="agent.request",
@@ -193,6 +197,7 @@ class AgentMailbox:
                 "operation": operation,
                 "arguments": arguments,
                 "message": message,
+                **({"metadata": {"task_id": self.managed_task}} if self.managed_task else {}),
             },
         )
         await self.store.enqueue(envelope)

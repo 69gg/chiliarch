@@ -26,6 +26,7 @@ from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
 TaskHandler = Callable[[JsonObject, Callable[[float, str], Awaitable[None]]], Awaitable[Any]]
+RuntimeMetadata = Callable[[], JsonObject]
 Sender = Callable[[Envelope], Awaitable[None]]
 logger = logging.getLogger("chiliarch.client")
 
@@ -189,13 +190,20 @@ class ClientStore:
             async with self.db().execute("SELECT body FROM work WHERE state=?", (state,)) as cursor:
                 return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
 
-    async def tasks(self, task_id: str | None = None) -> list[tuple[str, Envelope]]:
+    async def tasks(
+        self, task_id: str | None = None, *, unfinished: bool = False
+    ) -> list[tuple[str, Envelope]]:
         async with self.lock:
             query = "SELECT state,body FROM work"
             parameters: tuple[str, ...] = ()
+            clauses: list[str] = []
             if task_id is not None:
-                query += " WHERE task_id=?"
+                clauses.append("task_id=?")
                 parameters = (task_id,)
+            if unfinished:
+                clauses.append("state IN ('queued','running','cancelling')")
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
             query += " ORDER BY rowid"
             async with self.db().execute(query, parameters) as cursor:
                 return [
@@ -292,6 +300,7 @@ class AgentClient:
         options: TransportSettings | None = None,
         max_concurrent_tasks: int = 1,
         manual_tasks: bool = False,
+        runtime_metadata: RuntimeMetadata | None = None,
     ) -> None:
         parsed = urlsplit(server_url)
         if (
@@ -312,6 +321,8 @@ class AgentClient:
         self.store = ClientStore(state_path)
         self.handler = handler
         self.manual_tasks = manual_tasks
+        self.runtime_metadata = runtime_metadata
+        self.max_concurrent_tasks = max_concurrent_tasks
         self.options = options or TransportSettings()
         self.transport: str | None = None
         self.transport_history: list[str] = []
@@ -371,6 +382,7 @@ class AgentClient:
         options: TransportSettings | None = None,
         max_concurrent_tasks: int = 1,
         manual_tasks: bool = False,
+        runtime_metadata: RuntimeMetadata | None = None,
     ) -> AgentClient:
         if not await asyncio.to_thread(state_path.exists):
             raise ValueError("Pair the client before running it")
@@ -390,6 +402,40 @@ class AgentClient:
             options=options,
             max_concurrent_tasks=max_concurrent_tasks,
             manual_tasks=manual_tasks,
+            runtime_metadata=runtime_metadata,
+        )
+
+    async def execution_status(self) -> JsonObject:
+        """Report observable execution state; a live connection is not native readiness."""
+        tasks = await self.store.tasks(unfinished=True)
+        active = [
+            str(command.payload["task_id"])
+            for state, command in tasks
+            if state in {"running", "cancelling"}
+        ]
+        metadata: JsonObject = {
+            "client": "chiliarch-reference",
+            "execution_mode": "manual" if self.manual_tasks else "managed",
+            "state": "busy" if active else "waiting_for_claim" if self.manual_tasks else "idle",
+            "active_task_ids": active,
+            "queued_tasks": sum(state == "queued" for state, _ in tasks),
+            "capacity": self.max_concurrent_tasks if not self.manual_tasks else None,
+            "adapter": None,
+            "workspace": None,
+        }
+        if self.handler is None and not self.manual_tasks:
+            metadata.update(state="blocked", blocked_reason="handler_unavailable", capacity=0)
+        provider = self.runtime_metadata or getattr(self.handler, "runtime_metadata", None)
+        if callable(provider):
+            # Only a trusted local adapter supplies this optional callback. Runtime
+            # metadata must never contain credentials or native authentication output.
+            metadata.update(provider())
+        return metadata
+
+    async def heartbeat(self) -> Envelope:
+        metadata = await self.execution_status()
+        return Envelope(
+            type="heartbeat", payload={"status": metadata["state"], "metadata": metadata}
         )
 
     def _status(self, command: Envelope, status: str, **fields: Any) -> Envelope:
@@ -573,12 +619,7 @@ class AgentClient:
             for envelope in await self.store.pending():
                 await sender(envelope)
             if time.monotonic() >= heartbeat_at:
-                await sender(
-                    Envelope(
-                        type="heartbeat",
-                        payload={"status": "ready", "metadata": {"client": "chiliarch-reference"}},
-                    )
-                )
+                await sender(await self.heartbeat())
                 heartbeat_at = time.monotonic() + self.options.heartbeat_seconds
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
@@ -727,12 +768,12 @@ class AgentClient:
                     except InvalidStatus as error:
                         if error.response.status_code in {401, 403}:
                             # Some proxies block only WS. Confirm identity via outbound HTTP.
-                            await self._http_send(Envelope(type="heartbeat"))
+                            await self._http_send(await self.heartbeat())
                     except ConnectionClosed as error:
                         if error.rcvd and error.rcvd.code in {4001, 4401, 4403}:
                             raise CredentialRejected("Agent credential was revoked") from error
                         if error.rcvd and error.rcvd.code == 1008:
-                            await self._http_send(Envelope(type="heartbeat"))
+                            await self._http_send(await self.heartbeat())
                             raise ProtocolRejected(
                                 "Server closed WS for a protocol violation"
                             ) from error

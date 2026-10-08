@@ -114,6 +114,8 @@ class AgentSession:
             result.update(await self.mailbox.status())
             result["mode"] = "manual" if self.registration.runner_settings is None else "managed"
             result["connection"] = "owned_by_daemon"
+        if self.client is not None:
+            result["execution"] = await self.client.execution_status()
         return result
 
 

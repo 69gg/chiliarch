@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -119,7 +120,7 @@ async def test_darwin_permission_error_requires_an_exited_process_group(
         ("unreadable snapshot", False),
     ],
 )
-async def test_darwin_zombie_probe_distinguishes_live_and_unknown_members(
+async def test_posix_zombie_probe_distinguishes_live_and_unknown_members(
     snapshot: str, exited: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def status_command(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -127,10 +128,10 @@ async def test_darwin_zombie_probe_distinguishes_live_and_unknown_members(
 
     monkeypatch.setattr(processes.shutil, "which", lambda _: "ps")
     monkeypatch.setattr(processes.subprocess, "run", status_command)
-    assert await processes._macos_group_exited(42) is exited
+    assert await processes._posix_group_exited(42) is exited
 
 
-async def test_darwin_zombie_probe_does_not_hide_status_command_failure(
+async def test_posix_zombie_probe_does_not_hide_status_command_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def failed_command(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -138,7 +139,71 @@ async def test_darwin_zombie_probe_does_not_hide_status_command_failure(
 
     monkeypatch.setattr(processes.shutil, "which", lambda _: "ps")
     monkeypatch.setattr(processes.subprocess, "run", failed_command)
-    assert not await processes._macos_group_exited(42)
+    assert not await processes._posix_group_exited(42)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups require a POSIX host")
+@pytest.mark.parametrize("release_kill", [True, False])
+async def test_cleanup_requires_private_output_descendant_to_actually_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_kill: bool
+) -> None:
+    ready = tmp_path / "descendant-ready"
+    child_code = (
+        "import os,signal,time;from pathlib import Path;"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        f"Path({str(ready)!r}).write_text(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    script = tmp_path / "launcher.py"
+    script.write_text(
+        "import subprocess,sys;"
+        f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        "print(child.pid,flush=True)",
+        encoding="utf-8",
+    )
+    tree = await start_process_tree([str(script)], tmp_path, 65536)
+    kill_requested = asyncio.Event()
+    original_killpg = os.killpg
+    cleanup: asyncio.Task[None] | None = None
+
+    def defer_kill(pgid: int, signum: int) -> None:
+        if pgid == tree.process.pid and signum == signal.SIGKILL:
+            kill_requested.set()  # Signal delivery is not the child's actual exit.
+            return
+        original_killpg(pgid, signum)
+
+    try:
+        stdout, stderr = await asyncio.wait_for(tree.process.communicate(), 5)
+        child_pid = int(stdout)
+        assert not stderr and tree.process.returncode == 0
+        async with asyncio.timeout(5):
+            while not ready.exists():  # noqa: ASYNC110 — readiness comes from another process.
+                await asyncio.sleep(0.01)
+        assert process_running(child_pid)
+        monkeypatch.setattr(processes.os, "killpg", defer_kill)
+        cleanup = asyncio.create_task(tree.terminate(0.01))
+        await asyncio.wait_for(kill_requested.wait(), 5)
+        # The leader and its output have already ended, but this still must not
+        # succeed and let another worker acquire the same workspace.
+        if release_kill:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(cleanup), 0.1)
+            assert process_running(child_pid)
+            original_killpg(tree.process.pid, signal.SIGKILL)
+            await asyncio.wait_for(cleanup, 5)
+            assert await processes._posix_group_exited(tree.process.pid)
+        else:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(cleanup), 7)
+            assert cleanup.done()
+            assert process_running(child_pid)
+    finally:
+        monkeypatch.setattr(processes.os, "killpg", original_killpg)
+        if cleanup and not cleanup.done():
+            cleanup.cancel()
+            await asyncio.gather(cleanup, return_exceptions=True)
+        await tree.terminate(0.01)
 
 
 def npm_launcher(tmp_path: Path, name: str = "fake-agent") -> tuple[Path, Path]:
