@@ -11,9 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from chiliarch.chat import Conversation
 from chiliarch.config import Settings, SettingsManager
-from chiliarch.database import CoordinationEvent, Database, Goal, Message, Task, TaskLink
+from chiliarch.database import (
+    CoordinationEvent,
+    Database,
+    Goal,
+    Message,
+    OperationRecord,
+    Task,
+    TaskLink,
+)
 from chiliarch.protocol import Envelope
-from chiliarch.service import OperationError, OperationService
+from chiliarch.service import OperationError, OperationService, fingerprint
 
 
 @pytest.fixture
@@ -637,6 +645,330 @@ async def test_retry_requires_explicit_recovery_and_retains_auto_high_risk(
         pending[0].payload["parameters"]["recovery_note"]
         == "Checked git state and build log before continuing"
     )
+
+
+async def test_reassignment_hands_over_result_review_and_goal_without_rewriting_history(
+    service: OperationService,
+) -> None:
+    upstream, original_worker, replacement, reviewer = [await agent(service) for _ in range(4)]
+    async with service.db.sessions.begin() as session:
+        session.add(Conversation(id="handover-chat", title="Coordination", source="user"))
+    goal_id = await goal(service)
+    prerequisite = await dispatch(service, upstream)
+    await complete(service, upstream, prerequisite["id"])
+    await review(service, prerequisite["id"])
+    first = await dispatch(
+        service,
+        original_worker,
+        goal_id=goal_id,
+        conversation_id="handover-chat",
+        depends_on=[prerequisite["id"]],
+        acceptance_criteria=["Preserve the approved behavior"],
+        parameters={"feature": "handover"},
+    )
+    dependent = await dispatch(service, reviewer, goal_id=goal_id, depends_on=[first["id"]])
+    await complete(service, original_worker, first["id"])
+    artifact = {
+        "name": "Review report",
+        "uri": "https://example.test/review",
+        "kind": "reference",
+        "digest": None,
+    }
+    await review(
+        service,
+        first["id"],
+        "changes_requested",
+        note="Fix the missing cancellation test",
+        artifacts=[artifact],
+    )
+    original = await service.execute("get_task", {"task_id": first["id"]})
+    # Even after the original machine is decommissioned, a checked terminal attempt
+    # can be continued by a different paired agent, without changing its identity.
+    await service.execute("revoke_agent", {"agent_id": original_worker})
+    note = "Inspected the existing commit; add only the missing regression test"
+    arguments = {
+        "task_id": first["id"],
+        "agent_id": replacement,
+        "instruction": "Add the missing cancellation test",
+        "recovery_note": note,
+    }
+    retried = await service.execute("retry_task", arguments, idempotency_key="handover")
+    replay = await service.execute("retry_task", arguments, idempotency_key="handover")
+    assert replay == retried
+    task, link = retried["task"], retried["task_link"]
+    assert task["agent_id"] == replacement
+    assert task["parameters"]["feature"] == "handover"
+    assert link["goal_id"] == goal_id
+    assert link["conversation_id"] == "handover-chat"
+    assert link["depends_on"] == [prerequisite["id"]]
+    assert link["acceptance_criteria"] == ["Preserve the approved behavior"]
+    assert link["retry_of"] == first["id"]
+    assert link["review_status"] == "pending"
+    pending = await service.pending(replacement)
+    assert len(pending) == 1
+    context = pending[0].payload["parameters"]["chiliarch_context"]
+    previous = context["previous_attempt"]
+    assert previous["task"]["id"] == first["id"]
+    assert previous["task"]["agent_id"] == original_worker
+    assert previous["task"]["instruction"] == first["instruction"]
+    assert previous["task"]["status"] == "completed"
+    assert previous["task"]["result"] == {"commit": "sample-revision"}
+    assert "parameters" not in previous["task"]
+    assert previous["review_status"] == "changes_requested"
+    assert previous["review_note"] == "Fix the missing cancellation test"
+    assert previous["artifacts"] == [artifact]
+    assert previous["recovery_note"] == note
+    assert context["dependencies"][0]["task_id"] == prerequisite["id"]
+    assert (await service.execute("get_task", {"task_id": first["id"]})) == original
+    assert await service.pending(reviewer) == []
+    await complete(service, replacement, task["id"])
+    await review(service, task["id"])
+    assert (await service.pending(reviewer))[0].payload["task_id"] == dependent["id"]
+    await complete(service, reviewer, dependent["id"])
+    await review(service, dependent["id"])
+    assert (await service.execute("update_goal", {"goal_id": goal_id, "status": "completed"}))[
+        "goal"
+    ]["status"] == "completed"
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto"])
+async def test_reassignment_approval_revalidates_target_before_dispatch(
+    service: OperationService, mode: str
+) -> None:
+    worker, replacement = await agent(service), await agent(service)
+    original = await dispatch(service, worker)
+    await service.receive(
+        worker,
+        Envelope(
+            type="task.status",
+            payload={"task_id": original["id"], "status": "failed", "error": "Test failed"},
+        ),
+    )
+    service.settings_manager.update({"supervisor": {"mode": mode}})
+    arguments = {
+        "task_id": original["id"],
+        "agent_id": replacement,
+        "recovery_note": "Reviewed effects and existing files",
+        "_risk": {"level": "low", "reason": "The model considers handover safe"},
+    }
+    awaiting = await service.execute("retry_task", arguments, "supervisor")
+    assert awaiting["status"] == "awaiting_approval"
+    assert await service.pending(replacement) == []
+    assert len((await service.execute("list_tasks", {}))["tasks"]) == 1
+    await service.execute("revoke_agent", {"agent_id": replacement})
+    with pytest.raises(OperationError) as failure:
+        await service.execute("approve_operation", {"approval_id": awaiting["approval_id"]})
+    assert failure.value.status_code == 409
+    assert len((await service.execute("list_tasks", {}))["tasks"]) == 1
+    approvals = (await service.execute("list_approvals", {}))["approvals"]
+    assert (
+        next(item for item in approvals if item["id"] == awaiting["approval_id"])["status"]
+        == "pending"
+    )
+
+
+@pytest.mark.parametrize("status", ["queued", "accepted", "running", "cancellation_requested"])
+async def test_reassignment_cannot_migrate_work_that_might_still_execute(
+    service: OperationService, status: str
+) -> None:
+    worker, replacement = await agent(service), await agent(service)
+    original = await dispatch(service, worker)
+    if status == "cancellation_requested":
+        await service.receive(
+            worker,
+            Envelope(type="task.status", payload={"task_id": original["id"], "status": "running"}),
+        )
+        await service.execute("cancel_task", {"task_id": original["id"]})
+    elif status != "queued":
+        await service.receive(
+            worker,
+            Envelope(type="task.status", payload={"task_id": original["id"], "status": status}),
+        )
+    with pytest.raises(OperationError) as failure:
+        await service.execute(
+            "retry_task",
+            {
+                "task_id": original["id"],
+                "agent_id": replacement,
+                "recovery_note": "A reason cannot bypass the execution state check",
+            },
+        )
+    assert failure.value.status_code == 409
+    assert await service.pending(replacement) == []
+    assert len((await service.execute("list_tasks", {}))["tasks"]) == 1
+    assert (await service.execute("get_task", {"task_id": original["id"]}))["task"][
+        "status"
+    ] == status
+
+
+async def test_reassignment_concurrent_targets_cannot_fork_attempt_chain(
+    service: OperationService,
+) -> None:
+    worker, replacement, alternative = (
+        await agent(service),
+        await agent(service),
+        await agent(service),
+    )
+    original = await dispatch(service, worker)
+    await service.receive(
+        worker,
+        Envelope(type="task.status", payload={"task_id": original["id"], "status": "interrupted"}),
+    )
+    results = await asyncio.gather(
+        *(
+            service.execute(
+                "retry_task",
+                {
+                    "task_id": original["id"],
+                    "agent_id": target,
+                    "recovery_note": "Inspected the interrupted attempt",
+                },
+            )
+            for target in (replacement, alternative)
+        ),
+        return_exceptions=True,
+    )
+    successes = [result for result in results if isinstance(result, dict)]
+    failures = [result for result in results if isinstance(result, OperationError)]
+    assert len(successes) == len(failures) == 1
+    assert failures[0].status_code == 409
+    assert len((await service.execute("list_tasks", {}))["tasks"]) == 2
+    assert len(await service.pending(replacement)) + len(await service.pending(alternative)) == 1
+
+
+@pytest.mark.parametrize("target", ["missing", "revoked"])
+async def test_reassignment_invalid_target_rolls_back_without_consuming_retry(
+    service: OperationService, target: str
+) -> None:
+    worker = await agent(service)
+    original = await dispatch(service, worker)
+    await service.receive(
+        worker,
+        Envelope(type="task.status", payload={"task_id": original["id"], "status": "failed"}),
+    )
+    if target == "revoked":
+        target = await agent(service)
+        await service.execute("revoke_agent", {"agent_id": target})
+    with pytest.raises(OperationError):
+        await service.execute(
+            "retry_task",
+            {"task_id": original["id"], "agent_id": target, "recovery_note": "Checked effects"},
+        )
+    assert len((await service.execute("list_tasks", {}))["tasks"]) == 1
+    # The failed handover has not created a hidden successor or invalidated the old agent.
+    retried = await service.execute(
+        "retry_task",
+        {"task_id": original["id"], "recovery_note": "Continue on the original worker"},
+    )
+    assert retried["task"]["agent_id"] == worker
+
+
+async def test_retry_requires_nonblank_recovery_note(service: OperationService) -> None:
+    with pytest.raises(OperationError) as failure:
+        await service.execute("retry_task", {"task_id": "any-task", "recovery_note": " \t\n "})
+    assert failure.value.status_code == 422
+
+
+async def test_repeated_handover_context_is_bounded_and_masks_sensitive_results(
+    service: OperationService,
+) -> None:
+    worker, replacement = await agent(service), await agent(service)
+    first = await dispatch(service, worker)
+    await service.receive(
+        worker,
+        Envelope(
+            type="task.status",
+            payload={
+                "task_id": first["id"],
+                "status": "failed",
+                "error": "Regression check failed",
+                "result": {"report": "first-check", "api_key": "private-value"},
+            },
+        ),
+    )
+    second = await service.execute(
+        "retry_task",
+        {"task_id": first["id"], "recovery_note": "First effect check"},
+    )
+    first_context = (await service.pending(worker))[0].payload["parameters"]["chiliarch_context"]
+    assert first_context["previous_attempt"]["task"]["result"] == {
+        "report": "first-check",
+        "api_key": "********",
+    }
+    assert first_context["previous_attempt"]["task"]["error"] == "Regression check failed"
+    await service.receive(
+        worker,
+        Envelope(
+            type="task.status",
+            payload={"task_id": second["task"]["id"], "status": "failed"},
+        ),
+    )
+    third = await service.execute(
+        "retry_task",
+        {
+            "task_id": second["task"]["id"],
+            "agent_id": replacement,
+            "recovery_note": "Second effect check before changing machines",
+        },
+    )
+    previous = third["task"]["parameters"]["chiliarch_context"]["previous_attempt"]
+    assert previous["task"]["id"] == second["task"]["id"]
+    assert previous["retry_of"] == first["id"]
+    assert "parameters" not in previous["task"]
+    assert "previous_attempt" not in previous
+    assert previous["recovery_note"] == "Second effect check before changing machines"
+
+
+async def test_goal_event_marks_only_explicit_user_resume(service: OperationService) -> None:
+    goal_id = await goal(service)
+    await service.execute("update_goal", {"goal_id": goal_id, "title": "Edited title"})
+    await service.execute("update_goal", {"goal_id": goal_id, "status": "active"})
+    async with service.db.sessions() as session:
+        events = (
+            await session.scalars(
+                select(CoordinationEvent)
+                .where(CoordinationEvent.goal_id == goal_id)
+                .order_by(CoordinationEvent.created_at)
+            )
+        ).all()
+        assert len(events) == 3
+        assert "resume_requested" not in events[0].payload
+        assert "resume_requested" not in events[1].payload
+        assert events[2].payload["resume_requested"] is True
+
+
+async def test_legacy_retry_idempotency_record_replays_after_handover_upgrade(
+    service: OperationService,
+) -> None:
+    arguments = {
+        "task_id": "old-task",
+        "instruction": None,
+        "recovery_note": "Previously checked effects",
+    }
+    existing_result = {"task": {"id": "persisted-retry"}, "task_link": {"retry_of": "old-task"}}
+    async with service.db.sessions.begin() as session:
+        session.add(
+            OperationRecord(
+                actor="user",
+                idempotency_key="pre-upgrade-retry",
+                name="retry_task",
+                arguments_hash=fingerprint({"name": "retry_task", "arguments": arguments}),
+                status="completed",
+                result=existing_result,
+            )
+        )
+    for request in (arguments, {**arguments, "agent_id": None}):
+        assert (
+            await service.execute("retry_task", request, idempotency_key="pre-upgrade-retry")
+        ) == existing_result
+    with pytest.raises(OperationError) as failure:
+        await service.execute(
+            "retry_task",
+            {**arguments, "agent_id": "different-agent"},
+            idempotency_key="pre-upgrade-retry",
+        )
+    assert failure.value.status_code == 409
+    assert (await service.execute("list_tasks", {}))["tasks"] == []
 
 
 async def test_goal_and_tasks_share_the_validated_conversation(service: OperationService) -> None:

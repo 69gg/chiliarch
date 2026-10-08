@@ -269,7 +269,7 @@ class OperationService:
             ),
             (
                 "retry_task",
-                "Create an explicit new attempt after inspecting actual effects; recovery_note must explain what was checked and why retry is safe",
+                "Create a new attempt after inspecting actual effects, optionally assign another agent_id; inherits goal, dependencies and prior result; recovery_note must explain why retry is safe",
                 RetryTaskArguments,
                 "high",
                 True,
@@ -375,7 +375,11 @@ class OperationService:
             raise OperationError(f"Unknown operation: {name}", 404)
         if operation.arguments is not None:
             try:
-                return operation.arguments.model_validate(arguments).model_dump(mode="json")
+                validated = operation.arguments.model_validate(arguments).model_dump(mode="json")
+                if name == "retry_task" and validated.get("agent_id") is None:
+                    # Preserve pre-handover idempotency fingerprints and stored requests.
+                    validated.pop("agent_id", None)
+                return validated
             except ValidationError as exc:
                 error = exc.errors(include_input=False, include_url=False)[0]
                 field = ".".join(str(part) for part in error["loc"])

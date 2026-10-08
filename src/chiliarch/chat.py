@@ -48,7 +48,12 @@ from chiliarch.database import (
 )
 from chiliarch.database import Message as ProtocolMessage
 from chiliarch.service import OperationService, redact
-from chiliarch.supervision import consume_coordination, linked_conversation, recover_coordination
+from chiliarch.supervision import (
+    automatic_coordination_paused,
+    consume_coordination,
+    linked_conversation,
+    recover_coordination,
+)
 
 logger = logging.getLogger(__name__)
 JSONObject = dict[str, Any]
@@ -486,6 +491,7 @@ class Supervisor:
         source: str = "user",
         inbox_id: str | None = None,
         coordination_id: str | None = None,
+        coordination_ids: tuple[str, ...] = (),
         display_content: str | None = None,
     ) -> JSONObject:
         if not content.strip():
@@ -507,6 +513,31 @@ class Supervisor:
                 )
                 if active:
                     raise ValueError("This conversation already has an active run")
+                event_ids = set(coordination_ids)
+                if coordination_id is not None:
+                    event_ids.add(coordination_id)
+                events = (
+                    list(
+                        (
+                            await session.scalars(
+                                select(CoordinationEvent).where(CoordinationEvent.id.in_(event_ids))
+                            )
+                        ).all()
+                    )
+                    if event_ids
+                    else []
+                )
+                if len(events) != len(event_ids) or any(
+                    event.status != "pending" or event.conversation_id != conversation_id
+                    for event in events
+                ):
+                    raise ValueError("Coordination batch is no longer pending in this conversation")
+                if source != "user" and await automatic_coordination_paused(
+                    session, conversation_id, events
+                ):
+                    raise ValueError(
+                        "Automatic coordination is paused; explicit user input is required"
+                    )
                 previous = (
                     await session.scalars(
                         select(ChatMessage)
@@ -599,10 +630,7 @@ class Supervisor:
                     if inbox is None or inbox.status != "pending":
                         raise ValueError("Agent inbox item is no longer pending")
                     inbox.status, inbox.run_id = "started", run_id
-                if coordination_id is not None:
-                    event = await session.get(CoordinationEvent, coordination_id)
-                    if event is None or event.status != "pending":
-                        raise ValueError("Coordination event is no longer pending")
+                for event in events:
                     event.status, event.run_id = "started", run_id
                 conversation.updated_at = time.time()
             self.snapshots[run_id] = settings
@@ -1189,6 +1217,21 @@ class Supervisor:
                         )
                     ).all()
                 }
+                if status in {"cancelled", "failed"}:
+                    resume_events = (
+                        await session.scalars(
+                            select(CoordinationEvent).where(
+                                CoordinationEvent.conversation_id == run.conversation_id,
+                                CoordinationEvent.status == "pending",
+                                CoordinationEvent.kind == "goal_updated",
+                            )
+                        )
+                    ).all()
+                    for event in resume_events:
+                        if event.payload.get("resume_requested"):
+                            # A previously queued request cannot defeat a later
+                            # stop, even on coarse clocks or after clock rollback.
+                            event.payload = {**event.payload, "resume_requested": False}
                 for approval in approvals:
                     result = {
                         "status": "rejected",

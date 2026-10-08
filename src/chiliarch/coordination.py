@@ -82,8 +82,16 @@ class ReviewTaskArguments(CoordinationArguments):
 
 class RetryTaskArguments(CoordinationArguments):
     task_id: str = Field(min_length=1)
+    agent_id: str | None = Field(default=None, min_length=1)
     instruction: str | None = Field(default=None, min_length=1, max_length=100000)
     recovery_note: str = Field(min_length=1, max_length=100000)
+
+    @field_validator("recovery_note")
+    @classmethod
+    def meaningful_recovery_note(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Recovery note must explain why retry is safe")
+        return value
 
 
 def goal_view(goal: Goal) -> JsonObject:
@@ -198,6 +206,7 @@ class CoordinationService:
         task: Task | None = None,
         goal: Goal | None = None,
         event_key: str | None = None,
+        resume_requested: bool = False,
     ) -> None:
         from chiliarch.service import redact
 
@@ -217,6 +226,8 @@ class CoordinationService:
             payload["task_link"] = task_link_view(link)
         if goal is not None:
             payload["goal"] = goal_view(goal)
+        if resume_requested:
+            payload["resume_requested"] = True
         session.add(
             CoordinationEvent(
                 id=new_id(),
@@ -268,6 +279,22 @@ class CoordinationService:
             "dependencies": dependencies,
             "retry_of": link.retry_of,
         }
+        if link.retry_of is not None:
+            previous = await self.task(session, link.retry_of)
+            previous_link = await self.link(session, previous)
+            # Carry the previous result, not its recursively nested dispatch context.
+            context["previous_attempt"] = {
+                "task": {
+                    key: value
+                    for key, value in self.service.task_view(previous).items()
+                    if key != "parameters"
+                },
+                "review_status": previous_link.review_status,
+                "review_note": previous_link.review_note,
+                "artifacts": previous_link.artifacts,
+                "retry_of": previous_link.retry_of,
+                "recovery_note": task.parameters.get("recovery_note"),
+            }
         if goal is not None or link.depends_on or link.acceptance_criteria or link.retry_of:
             task.parameters = {**task.parameters, "chiliarch_context": redact(context)}
         await self.service._enqueue(
@@ -420,7 +447,12 @@ class CoordinationService:
             await session.flush()
             released = await self.release(session) if goal.status == "active" else []
             if actor == "user":
-                await self.event(session, "goal_updated", goal=goal)
+                await self.event(
+                    session,
+                    "goal_updated",
+                    goal=goal,
+                    resume_requested=args.get("status") == "active",
+                )
             return {"goal": await self.details(session, goal), "released_task_ids": released}
         task, link = await self.latest(session, args["task_id"])
         if task.id != args["task_id"]:
@@ -467,7 +499,7 @@ class CoordinationService:
             result = await self.dispatch(
                 session,
                 {
-                    "agent_id": task.agent_id,
+                    "agent_id": args.get("agent_id") or task.agent_id,
                     "instruction": args["instruction"] or task.instruction,
                     "parameters": parameters,
                     "goal_id": link.goal_id,
