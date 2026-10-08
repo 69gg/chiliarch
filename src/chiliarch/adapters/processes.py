@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from ctypes import wintypes
@@ -232,6 +233,31 @@ _WINDOWS_BOOTSTRAP = (
 )
 
 
+async def _macos_group_exited(pgid: int) -> bool:
+    """Darwin excludes zombies from killpg and can report EPERM for an exited group."""
+    executable = shutil.which("ps")
+    if executable is None:
+        return False
+    try:
+        snapshot = await asyncio.to_thread(
+            subprocess.run,
+            [executable, "-axo", "pgid=,stat="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if not snapshot.stdout.strip():
+            return False
+        for line in snapshot.stdout.splitlines():
+            group, status = line.split()
+            if int(group) == pgid and not status.startswith("Z"):
+                return False
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        return False  # An unavailable or incomplete snapshot cannot prove termination.
+    return True
+
+
 @dataclass
 class ProcessTree:
     process: asyncio.subprocess.Process
@@ -264,21 +290,25 @@ class ProcessTree:
         if sys.platform == "win32":
             raise ProcessLaunchError("POSIX process-group cleanup cannot run on Windows")
 
-        def send_group(sig: signal.Signals | int) -> bool:
+        async def send_group(sig: signal.Signals | int) -> bool:
             try:
                 os.killpg(self.process.pid, sig)
                 return True
             except ProcessLookupError:
                 return False
+            except PermissionError:
+                if sys.platform == "darwin" and await _macos_group_exited(self.process.pid):
+                    return False
+                raise
 
-        if send_group(signal.SIGTERM):
+        if await send_group(signal.SIGTERM):
             until = time.monotonic() + grace_seconds
             while time.monotonic() < until:
-                if not send_group(0):
+                if not await send_group(0):
                     break
                 await asyncio.sleep(min(0.05, grace_seconds))
             else:
-                send_group(signal.SIGKILL)
+                await send_group(signal.SIGKILL)
 
 
 async def _spawn(command: list[str], cwd: Path, limit: int) -> ProcessTree:

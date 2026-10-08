@@ -257,6 +257,7 @@ async def test_large_legacy_history_and_no_usage_are_compacted_in_bounded_batche
                         role=role,
                         content=content,
                         transcript={"role": role, "content": content},
+                        created_at=float(index),
                     )
                 )
         sent = await supervisor.send_message(conversation["id"], "继续核对，保留所有已有任务的结论")

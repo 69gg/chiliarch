@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,6 +77,68 @@ async def test_cancellation_while_spawning_cleans_the_started_tree(
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await tree.terminate(0.05)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups require a POSIX host")
+async def test_darwin_permission_error_requires_an_exited_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = await start_process_tree(
+        [sys.executable, "-c", "import time;time.sleep(60)"], tmp_path, 65536
+    )
+    original_killpg = os.killpg
+
+    def denied_group(pgid: int, signal: int) -> None:
+        assert pgid == tree.process.pid
+        raise PermissionError("simulated Darwin group signal denial")
+
+    monkeypatch.setattr(processes, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(processes.os, "killpg", denied_group)
+    try:
+        with pytest.raises(PermissionError):
+            await tree.terminate(0.05)
+        assert process_running(tree.process.pid)
+        tree.process.kill()
+        await tree.process.communicate()
+        assert not process_running(tree.process.pid)
+        # The same EPERM now refers to an absent group and must not turn a
+        # successfully stopped worker into a cancellation failure.
+        await tree.terminate(0.05)
+    finally:
+        monkeypatch.setattr(processes.os, "killpg", original_killpg)
+        await tree.terminate(0.05)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "exited"),
+    [
+        ("42 Z\n42 Z+\n7 S\n", True),
+        ("42 Z\n42 S\n", False),
+        ("7 S\n", True),
+        ("", False),
+        ("unreadable snapshot", False),
+    ],
+)
+async def test_darwin_zombie_probe_distinguishes_live_and_unknown_members(
+    snapshot: str, exited: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def status_command(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["ps"], 0, stdout=snapshot)
+
+    monkeypatch.setattr(processes.shutil, "which", lambda _: "ps")
+    monkeypatch.setattr(processes.subprocess, "run", status_command)
+    assert await processes._macos_group_exited(42) is exited
+
+
+async def test_darwin_zombie_probe_does_not_hide_status_command_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed_command(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(1, ["ps"])
+
+    monkeypatch.setattr(processes.shutil, "which", lambda _: "ps")
+    monkeypatch.setattr(processes.subprocess, "run", failed_command)
+    assert not await processes._macos_group_exited(42)
 
 
 def npm_launcher(tmp_path: Path, name: str = "fake-agent") -> tuple[Path, Path]:

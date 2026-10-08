@@ -36,8 +36,16 @@ class TransportGate:
         self.attempts: list[str] = []
         self.drop_acks = False
         self.dropped_acks = 0
+        self.lifespan_task: asyncio.Task[None] | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            self.lifespan_task = asyncio.current_task()
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                self.lifespan_task = None
+            return
         path = scope.get("path", "")
         transport = {
             "/api/agent/ws": "ws",
@@ -114,11 +122,25 @@ class LiveServer:
         )
         self.server = uvicorn.Server(config)
         self.task = asyncio.create_task(self.server.serve(sockets=[listener]))
-        async with asyncio.timeout(5):
-            while not self.server.started:
-                if self.task.done():
-                    self.task.result()
-                await asyncio.sleep(0.01)
+        try:
+            # Cold SQLite schema creation on native Windows runners can exceed
+            # five seconds. This only bounds fixture startup, not transport latency.
+            async with asyncio.timeout(20):
+                while not self.server.started:
+                    if self.task.done():
+                        self.task.result()
+                        raise RuntimeError("Test platform stopped before becoming ready")
+                    await asyncio.sleep(0.01)
+        except BaseException:
+            tasks = [self.task]
+            if self.gate.lifespan_task:
+                tasks.append(self.gate.lifespan_task)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            listener.close()
+            self.task = None
+            raise
 
     async def stop(self) -> None:
         if self.server and self.task:
@@ -160,6 +182,40 @@ async def live(tmp_path: Path) -> AsyncIterator[LiveServer]:
         yield server
     finally:
         await server.stop()
+
+
+async def test_cancelled_platform_startup_releases_lifespan_and_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = LiveServer(tmp_path)
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+    original_close = server.app.state.database.close
+
+    async def initialize() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def close() -> None:
+        await original_close()
+        closed.set()
+
+    monkeypatch.setattr(server.app.state.database, "initialize", initialize)
+    monkeypatch.setattr(server.app.state.database, "close", close)
+    startup = asyncio.create_task(server.start())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        startup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(startup, 5)
+        assert closed.is_set()
+        assert server.task is None
+        assert server.gate.lifespan_task is None
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", server.port))
+    finally:
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
 
 
 async def wait_for_task(live: LiveServer, task_id: str, status: str) -> JsonObject:

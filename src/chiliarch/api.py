@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from anyio import CancelScope
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -93,10 +94,21 @@ def create_app(config_path: Path | None = None, *, config: Settings | None = Non
             configure_logging(settings.logs, shared=True)
 
         manager.subscribe(reconfigure_logs)
+        cleanup = AsyncExitStack()
+        cleanup.callback(close_logging)
+        cleanup.callback(logger.info, "Chiliarch stopped", extra={"event": "server.stopped"})
+        # Database construction already owns an engine, even if schema creation fails.
+        cleanup.push_async_callback(db.close)
         try:
             await db.initialize()
             await manager.start()
+            cleanup.push_async_callback(manager.stop)
             await service.start()
+            cleanup.push_async_callback(service.stop)
+            cleanup.push_async_callback(transport.stop)
+            # Tables now exist. Register before start: recovery may schedule some
+            # runs and then fail, and those partially started tasks still need cleanup.
+            cleanup.push_async_callback(supervisor.stop)
             await supervisor.start()
             logger.info(
                 "Chiliarch started",
@@ -108,13 +120,9 @@ def create_app(config_path: Path | None = None, *, config: Settings | None = Non
             )
             yield
         finally:
-            await supervisor.stop()
-            await transport.stop()
-            await service.stop()
-            await manager.stop()
-            await db.close()
-            logger.info("Chiliarch stopped", extra={"event": "server.stopped"})
-            close_logging()
+            # Every registered resource closes even if an earlier cleanup raises.
+            with CancelScope(shield=True):
+                await cleanup.aclose()
 
     app = FastAPI(title="chiliarch", version=__version__, lifespan=lifespan)
     app.state.database = db
