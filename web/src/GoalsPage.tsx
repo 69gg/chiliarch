@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
 import { EmptyState, ErrorNotice, JsonView, Status, time } from "./components";
 import { executionLabel } from "./AgentExecution";
+import { goalSignals, latestDependency, summarizeSignals } from "./goalSignals";
 import type {
   ArtifactReference,
   Goal,
@@ -40,18 +41,6 @@ const reviewNames: Record<TaskLink["review_status"], string> = {
   changes_requested: "需要返工",
 };
 
-function latestDependency(id: string, links: TaskLink[]): string {
-  const seen = new Set<string>();
-  let current = id;
-  while (!seen.has(current)) {
-    seen.add(current);
-    const next = links.find((link) => link.retry_of === current);
-    if (!next) break;
-    current = next.task_id;
-  }
-  return current;
-}
-
 export default function GoalsPage({
   state,
   refresh,
@@ -62,14 +51,44 @@ export default function GoalsPage({
   const [selected, setSelected] = useState<string | null>(selectedFromHash);
   const [action, setAction] = useState<GoalAction | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [resumeGoalId, setResumeGoalId] = useState<string | null>(null);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [resumeNotice, setResumeNotice] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const goals = state.goals ?? [];
   const links = state.task_links ?? [];
-  const goal =
-    goals.find((item) => item.id === selected) ??
-    (selected ? null : goals[0]) ??
-    null;
+  const signals = new Map(
+    goals.map((item) => [item.id, goalSignals(item, state)]),
+  );
+  const search = query.trim().toLocaleLowerCase();
+  const visibleGoals = goals.filter((item) => {
+    const goalTaskIds = new Set(
+      links
+        .filter((link) => link.goal_id === item.id)
+        .map((link) => link.task_id),
+    );
+    const taskText = state.tasks
+      .filter((task) => goalTaskIds.has(task.id))
+      .map((task) => task.instruction)
+      .join(" ");
+    return (
+      (statusFilter === "all" || item.status === statusFilter) &&
+      (!attentionOnly || (signals.get(item.id)?.length ?? 0) > 0) &&
+      `${item.title} ${item.objective} ${item.summary} ${taskText}`
+        .toLocaleLowerCase()
+        .includes(search)
+    );
+  });
+  const missingGoal =
+    selected !== null && !goals.some((item) => item.id === selected);
+  const goal = missingGoal
+    ? null
+    : (visibleGoals.find((item) => item.id === selected) ??
+      visibleGoals[0] ??
+      null);
+  const attention = goal ? (signals.get(goal.id) ?? []) : [];
   const goalLinks = links.filter((link) => link.goal_id === goal?.id);
   const tasks = state.tasks.filter((task) =>
     goalLinks.some((link) => link.task_id === task.id),
@@ -97,8 +116,15 @@ export default function GoalsPage({
     location.hash = `goals/${encodeURIComponent(id)}`;
   }
 
+  function clearFilters(): void {
+    setQuery("");
+    setStatusFilter("all");
+    setAttentionOnly(false);
+  }
+
   async function coordinate(current: Goal): Promise<void> {
     setResuming(true);
+    setResumeGoalId(current.id);
     setResumeError(null);
     setResumeNotice(null);
     try {
@@ -140,22 +166,64 @@ export default function GoalsPage({
           </EmptyState>
         ) : (
           <div className="goals-layout">
-            <nav className="goal-list" aria-label="目标列表">
-              {goals.map((item) => (
-                <button
-                  key={item.id}
-                  className={item.id === goal?.id ? "is-selected" : ""}
-                  aria-current={item.id === goal?.id ? "true" : undefined}
-                  onClick={() => choose(item.id)}
-                >
-                  <strong>{item.title}</strong>
-                  <span>
-                    <Status value={item.status} />
-                    <time>{time(item.updated_at)}</time>
-                  </span>
-                </button>
-              ))}
-            </nav>
+            <aside className="goal-browser" aria-label="查找目标">
+              <div className="goal-filters">
+                <label>
+                  搜索目标
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="名称、目标或任务内容"
+                  />
+                </label>
+                <label>
+                  筛选状态
+                  <select
+                    value={statusFilter}
+                    onChange={(event) => setStatusFilter(event.target.value)}
+                  >
+                    <option value="all">全部状态</option>
+                    <option value="active">进行中</option>
+                    <option value="blocked">受阻</option>
+                    <option value="completed">已完成</option>
+                    <option value="cancelled">已取消</option>
+                  </select>
+                </label>
+                <label className="goal-attention-filter">
+                  <input
+                    type="checkbox"
+                    checked={attentionOnly}
+                    onChange={(event) => setAttentionOnly(event.target.checked)}
+                  />
+                  仅显示需要处理
+                </label>
+              </div>
+              <p className="goal-filter-count muted small" aria-live="polite">
+                {visibleGoals.length} / {goals.length} 个目标
+              </p>
+              <nav className="goal-list" aria-label="目标列表">
+                {visibleGoals.map((item) => (
+                  <button
+                    key={item.id}
+                    className={item.id === goal?.id ? "is-selected" : ""}
+                    aria-current={item.id === goal?.id ? "true" : undefined}
+                    onClick={() => choose(item.id)}
+                  >
+                    <strong>{item.title}</strong>
+                    <span>
+                      <Status value={item.status} />
+                      <time>{time(item.updated_at)}</time>
+                    </span>
+                    {Boolean(signals.get(item.id)?.length) && (
+                      <small className="goal-attention-summary">
+                        {summarizeSignals(signals.get(item.id) ?? [])}
+                      </small>
+                    )}
+                  </button>
+                ))}
+              </nav>
+            </aside>
             {goal ? (
               <section
                 className="goal-detail"
@@ -172,6 +240,19 @@ export default function GoalsPage({
                   </button>
                 </div>
                 <p className="goal-objective">{goal.objective}</p>
+                {attention.length > 0 && (
+                  <section className="goal-attention" aria-label="需要处理">
+                    <h3>需要处理</h3>
+                    <p>{summarizeSignals(attention)}</p>
+                    {attention
+                      .filter((signal) => !signal.taskId)
+                      .map((signal, index) => (
+                        <p className="small muted" key={index}>
+                          {signal.message}
+                        </p>
+                      ))}
+                  </section>
+                )}
                 <div className="actions goal-coordinate-actions">
                   {["active", "blocked"].includes(goal.status) && (
                     <button
@@ -182,13 +263,15 @@ export default function GoalsPage({
                       {resuming ? "正在请求…" : "继续协调"}
                     </button>
                   )}
-                  {resumeNotice && (
+                  {resumeNotice && resumeGoalId === goal.id && (
                     <span className="muted small" role="status">
                       {resumeNotice}
                     </span>
                   )}
                 </div>
-                <ErrorNotice error={resumeError} />
+                <ErrorNotice
+                  error={resumeGoalId === goal.id ? resumeError : null}
+                />
                 {goal.conversation_id && (
                   <a
                     className="goal-conversation-link"
@@ -243,14 +326,15 @@ export default function GoalsPage({
                         (item) => item.id === task.agent_id,
                       );
                       const canRetry =
-                        [
+                        !["completed", "cancelled"].includes(goal.status) &&
+                        ([
                           "failed",
                           "interrupted",
                           "cancelled",
                           "expired",
                         ].includes(task.status) ||
-                        (task.status === "completed" &&
-                          link.review_status === "changes_requested");
+                          (task.status === "completed" &&
+                            link.review_status === "changes_requested"));
                       return (
                         <li
                           key={task.id}
@@ -268,11 +352,37 @@ export default function GoalsPage({
                                 : task.agent_id}
                               <span>{reviewNames[link.review_status]}</span>
                             </p>
-                            {agent && (
-                              <p className="small muted">
-                                {executionLabel(agent)}
-                              </p>
-                            )}
+                            {agent &&
+                              ![
+                                "completed",
+                                "failed",
+                                "interrupted",
+                                "cancelled",
+                                "expired",
+                              ].includes(task.status) && (
+                                <p className="small muted">
+                                  {executionLabel(agent)}
+                                </p>
+                              )}
+                            {!retry &&
+                              attention.some(
+                                (signal) => signal.taskId === task.id,
+                              ) && (
+                                <ul
+                                  className="goal-task-signals"
+                                  aria-label="任务处理提示"
+                                >
+                                  {attention
+                                    .filter(
+                                      (signal) => signal.taskId === task.id,
+                                    )
+                                    .map((signal) => (
+                                      <li key={signal.kind}>
+                                        {signal.message}
+                                      </li>
+                                    ))}
+                                </ul>
+                              )}
                             {link.depends_on.length > 0 && (
                               <div className="goal-dependencies">
                                 <span className="muted">依赖验收：</span>
@@ -391,9 +501,14 @@ export default function GoalsPage({
                   </button>
                 </footer>
               </section>
-            ) : (
+            ) : missingGoal ? (
               <EmptyState title="目标不存在">
                 这个目标可能已不在当前列表中。
+              </EmptyState>
+            ) : (
+              <EmptyState title="没有匹配目标">
+                <p>调整关键词或筛选条件后继续查找。</p>
+                <button onClick={clearFilters}>清除筛选</button>
               </EmptyState>
             )}
           </div>
@@ -407,7 +522,10 @@ export default function GoalsPage({
           onSaved={(id) => {
             refresh();
             setAction(null);
-            if (id) choose(id);
+            if (id) {
+              clearFilters();
+              choose(id);
+            }
           }}
         />
       )}
@@ -494,6 +612,9 @@ function GoalDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [decision, setDecision] = useState("accepted");
+  const [retryAgent, setRetryAgent] = useState(
+    action.kind === "retry" ? action.task.agent_id : "",
+  );
   const [artifacts, setArtifacts] = useState<ArtifactReference[]>(
     action.kind === "review" ? action.link.artifacts : [],
   );
@@ -578,12 +699,21 @@ function GoalDialog({
           })),
         };
       } else if (action.kind === "retry") {
+        if (
+          !state.agents.some(
+            (agent) => agent.id === retryAgent && !agent.revoked,
+          )
+        )
+          throw new Error("请选择一个未吊销的 agent 接续任务。");
         if (!field("recovery"))
           throw new Error("请先核查之前的执行结果并填写核查说明。");
         operation = "retry_task";
         args = {
           task_id: action.task.id,
           recovery_note: field("recovery"),
+          ...(retryAgent !== action.task.agent_id
+            ? { agent_id: retryAgent }
+            : {}),
           ...(field("instruction")
             ? { instruction: field("instruction") }
             : {}),
@@ -817,6 +947,36 @@ function GoalDialog({
           <>
             <p className="muted small">
               先核查原执行是否已产生改动。重试会创建新任务，保留原记录与依赖。
+            </p>
+            <label>
+              接续执行的 agent
+              <select
+                value={retryAgent}
+                onChange={(event) => setRetryAgent(event.target.value)}
+                required
+                aria-describedby="retry-handoff-note"
+              >
+                {!state.agents.some(
+                  (agent) => agent.id === retryAgent && !agent.revoked,
+                ) && (
+                  <option value={retryAgent} disabled>
+                    原 agent 已不可用，请选择其他 agent
+                  </option>
+                )}
+                {state.agents
+                  .filter((agent) => !agent.revoked)
+                  .map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} · {agent.machine} · {executionLabel(agent)}
+                      {agent.id === action.task.agent_id ? "（原 agent）" : ""}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <p id="retry-handoff-note" className="muted small">
+              {retryAgent === action.task.agent_id
+                ? "由原 agent 发起新的执行尝试。"
+                : "将交给所选 agent，随任务传递原执行结果、验收记录、产物引用与核查说明；本机文件不会自动同步。"}
             </p>
             <label>
               核查说明

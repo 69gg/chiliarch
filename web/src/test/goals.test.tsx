@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import GoalsPage from "../GoalsPage";
 import { api, ApiError } from "../api";
-import type { Agent, Goal, Task, TaskLink } from "../types";
+import type { Agent, AgentRequest, Goal, Task, TaskLink } from "../types";
 import { platformState } from "./fixtures";
 
 const goal: Goal = {
@@ -353,5 +353,312 @@ describe("继续协调", () => {
       "已请求 Chiliarch AI 继续协调。",
     );
     expect(refresh).toHaveBeenCalledOnce();
+  });
+});
+
+describe("目标查找与处理提示", () => {
+  it("下级派工请求及包裹审批未处理完时，不误报目标可以结束", () => {
+    const state = stateWithGoal();
+    state.task_links[0].review_status = "accepted";
+    state.requests = [
+      {
+        id: "request-one",
+        agent_id: agent.id,
+        external_id: "external-one",
+        operation: "dispatch_task",
+        arguments: {
+          goal_id: goal.id,
+          agent_id: agent.id,
+          instruction: "补充验证",
+        },
+        message: "申请补充验证",
+        status: "pending",
+        result: null,
+        created_at: 1759800046,
+        resolved_at: null,
+      },
+    ];
+    const view = render(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "待处理请求 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent("待结束目标");
+    state.approvals = [
+      {
+        id: "approval-one",
+        operation: "resolve_agent_request",
+        arguments: { request_id: "request-one", decision: "approve" },
+        requested_by: "supervisor",
+        status: "pending",
+        reason: "ask 模式",
+        created_at: 1759800047,
+        resolved_at: null,
+        result: null,
+      },
+    ];
+    view.rerender(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "等待许可 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent(/待结束目标|待处理请求/);
+    state.requests[0] = {
+      ...state.requests[0],
+      status: "rejected",
+      resolved_at: 1759800048,
+    };
+    view.rerender(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "等待许可 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent("待结束目标");
+    state.approvals[0] = {
+      ...state.approvals[0],
+      status: "rejected",
+      resolved_at: 1759800049,
+    };
+    view.rerender(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "待结束目标 1",
+    );
+  });
+
+  it("旧尝试上的下级请求仍关联原目标，其他目标请求不污染处理状态", () => {
+    const state = stateWithGoal();
+    state.tasks[0].status = "failed";
+    state.tasks.push({ ...task, id: "accepted-retry" });
+    state.task_links.push({
+      ...link,
+      task_id: "accepted-retry",
+      retry_of: task.id,
+      review_status: "accepted",
+    });
+    const request: AgentRequest = {
+      id: "retry-request",
+      agent_id: agent.id,
+      external_id: "external-retry",
+      operation: "retry_task",
+      arguments: { task_id: task.id, recovery_note: "已核查" },
+      message: "申请接续",
+      status: "pending",
+      result: null,
+      created_at: 1759800046,
+      resolved_at: null,
+    };
+    state.requests = [request];
+    const view = render(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "待处理请求 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent("待结束目标");
+    state.requests = [
+      {
+        ...request,
+        operation: "dispatch_task",
+        arguments: { goal_id: "other-goal" },
+      },
+    ];
+    view.rerender(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "待结束目标 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent("待处理请求");
+  });
+
+  it("筛选切换目标后不会将前一个目标的协调错误显示给新目标", async () => {
+    const state = stateWithGoal();
+    state.goals.push({ ...goal, id: "second", title: "部署服务" });
+    vi.spyOn(api, "operate").mockRejectedValue(
+      new ApiError("首个目标协调失败", 409),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "继续协调" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "首个目标协调失败",
+    );
+    await user.type(
+      screen.getByRole("searchbox", { name: "搜索目标" }),
+      "部署服务",
+    );
+    expect(screen.getByRole("region", { name: "目标 部署服务" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("按任务内容搜索并组合状态筛选，无匹配时能清除筛选恢复目标", async () => {
+    const state = stateWithGoal();
+    state.goals.push(
+      { ...goal, id: "goal-done", title: "已交付支付", status: "completed" },
+      { ...goal, id: "goal-paused", title: "部署服务", status: "blocked" },
+    );
+    state.tasks[0].instruction = "验证过期会话";
+    const user = userEvent.setup();
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    const list = screen.getByRole("navigation", { name: "目标列表" });
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    await user.type(
+      screen.getByRole("searchbox", { name: "搜索目标" }),
+      "过期会话",
+    );
+    expect(within(list).getAllByRole("button")).toHaveLength(1);
+    expect(
+      screen.getByRole("region", { name: "目标 交付登录功能" }),
+    ).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("筛选状态"), "completed");
+    expect(within(list).queryAllByRole("button")).toHaveLength(0);
+    expect(screen.getByText("没有匹配目标")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    await user.selectOptions(screen.getByLabelText("筛选状态"), "blocked");
+    expect(within(list).getAllByRole("button")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "目标 部署服务" })).toBeVisible();
+  });
+
+  it("待处理只统计当前尝试，历史失败和已验收任务的离线 agent 不制造告警", async () => {
+    const state = stateWithGoal();
+    state.goals.push({ ...goal, id: "goal-running", title: "运行中的目标" });
+    state.agents.push({ ...agent, id: "offline", online: false });
+    state.tasks[0].status = "failed";
+    state.tasks.push(
+      { ...task, id: "replacement", agent_id: "offline" },
+      { ...task, id: "dependent", instruction: "依赖评审", status: "blocked" },
+      { ...task, id: "running", status: "running" },
+    );
+    state.task_links.push(
+      {
+        ...link,
+        task_id: "replacement",
+        retry_of: task.id,
+        review_status: "pending",
+      },
+      { ...link, task_id: "dependent", depends_on: [task.id] },
+      { ...link, task_id: "running", goal_id: "goal-running" },
+    );
+    const user = userEvent.setup();
+    const view = render(<GoalsPage state={state} refresh={vi.fn()} />);
+    const attention = screen.getByRole("region", { name: "需要处理" });
+    expect(attention).toHaveTextContent("待验收 1 · 等待依赖 1");
+    expect(attention).not.toHaveTextContent(/待核查|agent 离线/);
+    await user.click(screen.getByRole("checkbox", { name: "仅显示需要处理" }));
+    const list = screen.getByRole("navigation", { name: "目标列表" });
+    expect(
+      within(list).queryByRole("button", { name: /运行中的目标/ }),
+    ).toBeNull();
+    expect(within(list).getAllByRole("button")).toHaveLength(1);
+    state.task_links[1].review_status = "accepted";
+    state.tasks[2].status = "queued";
+    view.rerender(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(within(list).queryAllByRole("button")).toHaveLength(0);
+    expect(screen.getByText("没有匹配目标")).toBeVisible();
+  });
+
+  it("取消尚未确认时显示真实阻碍，不开放重试入口", () => {
+    const state = stateWithGoal();
+    state.tasks[0].status = "cancellation_requested";
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "取消待确认 1",
+    );
+    expect(screen.getByLabelText("任务处理提示")).toHaveTextContent(
+      "尚未确认执行已停止",
+    );
+    expect(screen.queryByRole("button", { name: "核查后重试" })).toBeNull();
+  });
+
+  it("目标已取消也保留尚未确认停止的任务提示，不提示历史失败需要重试", () => {
+    const state = stateWithGoal();
+    state.goals[0].status = "cancelled";
+    state.tasks[0].status = "cancellation_requested";
+    state.tasks.push({ ...task, id: "old-failure", status: "failed" });
+    state.task_links.push({ ...link, task_id: "old-failure" });
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "取消待确认 1",
+    );
+    expect(
+      screen.getByRole("region", { name: "需要处理" }),
+    ).not.toHaveTextContent("待核查");
+    expect(screen.queryByRole("button", { name: "核查后重试" })).toBeNull();
+  });
+
+  it("前置任务未验收且后续 agent 离线时，两种阻碍都可见", () => {
+    const state = stateWithGoal();
+    state.agents[0].online = false;
+    state.tasks.push({
+      ...task,
+      id: "waiting",
+      status: "blocked",
+      instruction: "后续任务",
+    });
+    state.task_links.push({
+      ...link,
+      task_id: "waiting",
+      depends_on: [task.id],
+    });
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    const article = screen.getByRole("article", { name: "任务 后续任务" });
+    expect(within(article).getByLabelText("任务处理提示")).toHaveTextContent(
+      "等待 1 项前置任务完成并通过验收",
+    );
+    expect(article).toHaveTextContent("离线不表示执行已经停止");
+    expect(screen.getByRole("region", { name: "需要处理" })).toHaveTextContent(
+      "agent 离线 1",
+    );
+  });
+});
+
+describe("任务交接", () => {
+  it("原身份吊销后可选择其他 agent 接续，交接失败仍保留选择和说明", async () => {
+    const state = stateWithGoal();
+    state.tasks[0].status = "failed";
+    state.agents[0].revoked = true;
+    state.agents.push(
+      { ...agent, id: "reviewer", name: "Claude", machine: "review-machine" },
+      { ...agent, id: "revoked", name: "已吊销执行器", revoked: true },
+    );
+    const operate = vi
+      .spyOn(api, "operate")
+      .mockRejectedValue(new ApiError("原任务已有新尝试", 409));
+    const user = userEvent.setup();
+    render(<GoalsPage state={state} refresh={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "核查后重试" }));
+    const dialog = screen.getByRole("dialog", { name: "核查后重试" });
+    const selector = within(dialog).getByRole("combobox", {
+      name: "接续执行的 agent",
+    });
+    expect(
+      within(selector).getByRole("option", { name: /原 agent 已不可用/ }),
+    ).toBeDisabled();
+    expect(
+      within(selector).queryByRole("option", { name: /已吊销执行器/ }),
+    ).toBeNull();
+    await user.selectOptions(selector, "reviewer");
+    expect(dialog).toHaveTextContent("本机文件不会自动同步");
+    await user.type(
+      within(dialog).getByLabelText("核查说明"),
+      "原执行已停止，提交已推送，接手后先核对提交",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "确认重试" }));
+    expect(operate).toHaveBeenCalledWith("retry_task", {
+      task_id: task.id,
+      agent_id: "reviewer",
+      recovery_note: "原执行已停止，提交已推送，接手后先核对提交",
+    });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "原任务已有新尝试",
+    );
+    expect(selector).toHaveValue("reviewer");
+    expect(within(dialog).getByLabelText("核查说明")).toHaveValue(
+      "原执行已停止，提交已推送，接手后先核对提交",
+    );
   });
 });

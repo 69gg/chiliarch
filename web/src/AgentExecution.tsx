@@ -1,6 +1,53 @@
 import type { ReactNode } from "react";
 import type { Agent } from "./types";
 
+const blockedReasons: Record<string, { label: string; guidance: string }> = {
+  workspace_unavailable: {
+    label: "工作目录不存在或无法访问",
+    guidance:
+      "在 agent 所在机器检查目录是否存在、是否有访问权限，并核对执行器的工作目录配置。",
+  },
+  workspace_busy: {
+    label: "工作目录正由其他任务使用",
+    guidance:
+      "等待当前任务完成后会自动继续。需要并行工作时，为不同 agent 配置独立目录。",
+  },
+  workspace_unverified: {
+    label: "上次执行的清理结果尚未确认",
+    guidance:
+      "在 agent 所在机器运行 chiliarch agent workspace-recover --workdir <工作目录> 查看记录。确认相关进程已停止并核对已有改动后，再添加 --confirm-stopped 解除隔离。",
+  },
+  handler_unavailable: {
+    label: "尚未配置任务执行器",
+    guidance:
+      "检查本机 agent 配置，启动对应执行器；通过现有会话处理任务时使用会话领取模式。",
+  },
+};
+
+export function blockedReasonLabel(reason: unknown): string {
+  return typeof reason === "string" && reason
+    ? (blockedReasons[reason]?.label ?? reason)
+    : "执行器暂时无法开始任务";
+}
+
+function executionGuidance(agent: Agent): string {
+  if (agent.revoked)
+    return "这个身份不能再接收任务。重新配对后使用新的 agent 身份。";
+  if (!agent.online)
+    return "在 agent 所在机器检查守护进程和出站连接；平台会等待它重新连接。";
+  if (agent.metadata.state === "blocked") {
+    const reason = agent.metadata.blocked_reason;
+    return typeof reason === "string" && blockedReasons[reason]
+      ? blockedReasons[reason].guidance
+      : "查看 agent 所在机器的执行器日志，确认原因后恢复运行。";
+  }
+  if (agent.metadata.execution_mode === "manual")
+    return "任务需要由该 agent 的现有会话通过 MCP 主动领取。连接在线不代表会话已经开始处理。";
+  if (agent.metadata.state === "busy")
+    return "当前任务结束后，执行器会继续处理已排队的任务。";
+  return "";
+}
+
 export function executionLabel(agent: Agent): string {
   if (agent.revoked) return "凭证已吊销";
   if (!agent.online) return "离线，等待连接";
@@ -19,6 +66,7 @@ export function executionLabel(agent: Agent): string {
 
 export function AgentExecution({ agent }: { agent: Agent }): ReactNode {
   const metadata = agent.metadata;
+  const guidance = executionGuidance(agent);
   const active = Array.isArray(metadata.active_task_ids)
     ? metadata.active_task_ids.filter(
         (id): id is string => typeof id === "string",
@@ -74,10 +122,13 @@ export function AgentExecution({ agent }: { agent: Agent }): ReactNode {
           metadata.blocked_reason && (
             <div>
               <dt>受阻原因</dt>
-              <dd>{metadata.blocked_reason}</dd>
+              <dd>{blockedReasonLabel(metadata.blocked_reason)}</dd>
             </div>
           )}
       </dl>
+      {guidance && (
+        <p className="agent-execution-guidance small muted">{guidance}</p>
+      )}
     </div>
   );
 }
