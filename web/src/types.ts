@@ -31,6 +31,38 @@ export interface Task {
   requested_by: string;
 }
 
+export interface ArtifactReference {
+  name: string;
+  uri: string;
+  kind: string;
+  digest?: string | null;
+}
+
+export interface Goal {
+  id: string;
+  title: string;
+  objective: string;
+  constraints: string[];
+  acceptance_criteria: string[];
+  status: "active" | "blocked" | "completed" | "cancelled";
+  conversation_id: string | null;
+  summary: string;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface TaskLink {
+  task_id: string;
+  goal_id: string | null;
+  conversation_id: string | null;
+  depends_on: string[];
+  acceptance_criteria: string[];
+  review_status: "pending" | "accepted" | "changes_requested";
+  review_note: string;
+  artifacts: ArtifactReference[];
+  retry_of: string | null;
+}
+
 export interface Approval {
   id: string;
   operation: string;
@@ -57,6 +89,8 @@ export interface AgentRequest {
 }
 
 export interface PlatformState {
+  goals?: Goal[];
+  task_links?: TaskLink[];
   agents: Agent[];
   tasks: Task[];
   approvals: Approval[];

@@ -415,3 +415,71 @@ describe("详情操作与授权", () => {
     expect(screen.queryByText("吊销长期凭证")).toBeNull();
   });
 });
+
+describe("agent 执行感知", () => {
+  it("在线连接与执行能力分开显示，旧客户端不推测为可执行", async () => {
+    const state = platformState();
+    state.agents = [
+      agent({
+        id: "manual",
+        name: "App 会话",
+        metadata: {
+          execution_mode: "manual",
+          state: "waiting_for_claim",
+          queued_tasks: 2,
+        },
+      }),
+      agent({
+        id: "managed",
+        name: "CLI 执行器",
+        metadata: {
+          execution_mode: "managed",
+          state: "idle",
+          capacity: 2,
+          adapter: "codex-cli",
+          workspace: "/workspace/project",
+          active_task_ids: [],
+          queued_tasks: 0,
+        },
+      }),
+      agent({
+        id: "blocked",
+        name: "受阻执行器",
+        metadata: {
+          execution_mode: "managed",
+          state: "blocked",
+          blocked_reason: "工作目录不可用",
+        },
+      }),
+      agent({ id: "legacy", name: "旧客户端" }),
+    ];
+    const user = userEvent.setup();
+    render(<AgentsPage state={state} refresh={vi.fn()} />);
+    expect(
+      within(screen.getByRole("button", { name: /查看 App 会话/ })).getByText(
+        "等待会话领取",
+      ),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole("button", { name: /查看 CLI 执行器/ })).getByText(
+        "可自动执行",
+      ),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole("button", { name: /查看 受阻执行器/ })).getByText(
+        "执行受阻",
+      ),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole("button", { name: /查看 旧客户端/ })).getByText(
+        "执行能力未上报",
+      ),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /查看 CLI 执行器/ }));
+    expect(screen.getByLabelText("执行状态")).toHaveTextContent("codex-cli");
+    expect(screen.getByLabelText("执行状态")).toHaveTextContent(
+      "/workspace/project",
+    );
+    expect(screen.getByLabelText("执行状态")).toHaveTextContent("执行容量2");
+  });
+});

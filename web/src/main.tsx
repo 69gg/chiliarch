@@ -6,6 +6,7 @@ import "./app-shell.css";
 import "./components.css";
 import "./chat.css";
 import "./agents.css";
+import "./goals.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

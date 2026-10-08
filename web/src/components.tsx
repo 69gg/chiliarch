@@ -49,6 +49,9 @@ export function Status({ value }: { value: string }): ReactNode {
     cancellation_requested: "请求取消",
     unknown: "状态未知",
     interrupted: "已中断",
+    active: "进行中",
+    blocked: "受阻",
+    changes_requested: "需要返工",
   };
   return (
     <span className={`status status-${value}`}>
@@ -256,6 +259,12 @@ const TOOL_LABELS: Record<string, string> = {
   delete_conversation: "删除会话",
   send_chat_message: "发送消息",
   cancel_chat_run: "停止运行",
+  list_goals: "查看目标",
+  get_goal: "查看目标详情",
+  create_goal: "创建目标",
+  update_goal: "更新目标",
+  review_task: "验收任务",
+  retry_task: "重试任务",
 };
 
 export function ToolView({

@@ -5,9 +5,10 @@ import { ErrorNotice } from "./components";
 import ChatPage from "./ChatPage";
 import AgentsPage from "./AgentsPage";
 import ConfigPage from "./ConfigPage";
+import GoalsPage from "./GoalsPage";
 import type { JsonObject, PlatformState } from "./types";
 
-type Page = "ai" | "agents" | "config";
+type Page = "ai" | "agents" | "config" | "goals";
 type Theme = "system" | "light" | "dark";
 const themes: Theme[] = ["system", "light", "dark"];
 const themeNames: Record<Theme, string> = {
@@ -17,8 +18,10 @@ const themeNames: Record<Theme, string> = {
 };
 
 function initialPage(): Page {
-  const value = location.hash.slice(1);
-  return value === "agents" || value === "config" ? value : "ai";
+  const value = location.hash.slice(1).split("/")[0];
+  return value === "agents" || value === "config" || value === "goals"
+    ? value
+    : "ai";
 }
 
 export function Login({
@@ -240,6 +243,16 @@ export default function App(): ReactNode {
             <span className="nav-label">总管对话</span>
           </button>
           <button
+            className={page === "goals" ? "active" : ""}
+            aria-label="目标"
+            title={sidebarCollapsed ? "目标" : undefined}
+            aria-current={page === "goals" ? "page" : undefined}
+            onClick={() => navigate("goals")}
+          >
+            <NavIcon type="goals" />
+            <span className="nav-label">目标</span>
+          </button>
+          <button
             className={page === "agents" ? "active" : ""}
             aria-label="Agents 管理"
             title={sidebarCollapsed ? "Agents 管理" : undefined}
@@ -309,6 +322,8 @@ export default function App(): ReactNode {
               refresh={refresh}
               onConfigure={() => navigate("config")}
             />
+          ) : page === "goals" ? (
+            <GoalsPage state={state} refresh={refresh} />
           ) : page === "agents" ? (
             <AgentsPage state={state} refresh={refresh} />
           ) : (
@@ -391,6 +406,12 @@ function NavIcon({ type }: { type: Page }): ReactNode {
         <>
           <path d="M5 4h14v12H9l-4 4V4Z" />
           <path d="M9 8h6M9 12h4" />
+        </>
+      ) : type === "goals" ? (
+        <>
+          <circle cx="12" cy="12" r="8" />
+          <circle cx="12" cy="12" r="3" />
+          <path d="m12 12 8-8M16 4h4v4" />
         </>
       ) : type === "agents" ? (
         <>

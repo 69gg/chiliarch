@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
+import { AgentExecution, executionLabel } from "./AgentExecution";
 import {
   ApprovalItem,
   EmptyState,
@@ -13,6 +14,7 @@ import type {
   Agent,
   AgentRequest,
   Approval,
+  Goal,
   JsonObject,
   PlatformState,
   Task,
@@ -254,6 +256,9 @@ export default function AgentsPage({
                       <p className="agent-card-machine">
                         {item.machine || "未提供机器名称"}
                       </p>
+                      <p className="agent-execution-label">
+                        {executionLabel(item)}
+                      </p>
                       <dl
                         className="agent-card-facts"
                         id={`agent-${item.id}-facts`}
@@ -442,6 +447,13 @@ export default function AgentsPage({
                   <TaskItem
                     key={task.id}
                     task={task}
+                    goal={state.goals?.find(
+                      (goal) =>
+                        goal.id ===
+                        state.task_links?.find(
+                          (link) => link.task_id === task.id,
+                        )?.goal_id,
+                    )}
                     busy={busy || agent.revoked}
                     cancel={() =>
                       void operate("cancel_task", { task_id: task.id })
@@ -555,6 +567,7 @@ function AgentCockpit({
             <dd className="mono">{agent.id}</dd>
           </div>
         </dl>
+        <AgentExecution agent={agent} />
         <div className="agent-capabilities">
           <span className="muted small">已声明能力</span>
           {agent.capabilities.length ? (
@@ -822,10 +835,12 @@ function PairingDialog({
 
 function TaskItem({
   task,
+  goal,
   busy,
   cancel,
 }: {
   task: Task;
+  goal?: Goal;
   busy: boolean;
   cancel: () => void;
 }): ReactNode {
@@ -849,6 +864,13 @@ function TaskItem({
         <Status value={task.status} />
       </summary>
       <div className="task-body">
+        {goal && (
+          <p className="small">
+            <a href={`#goals/${encodeURIComponent(goal.id)}`}>
+              目标：{goal.title} ↗
+            </a>
+          </p>
+        )}
         <dl className="metadata-list">
           <div>
             <dt>任务 ID</dt>

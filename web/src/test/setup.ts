@@ -4,6 +4,9 @@ import { cleanup } from "@testing-library/react";
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
+afterEach(() =>
+  history.replaceState(null, "", location.pathname + location.search),
+);
 
 Object.defineProperty(Element.prototype, "scrollIntoView", {
   value: vi.fn(),

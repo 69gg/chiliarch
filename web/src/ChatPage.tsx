@@ -30,6 +30,16 @@ const ACTIVE_RUN_STATUSES = [
   "awaiting_approval",
 ];
 
+function conversationFromHash(): string | null {
+  const match = location.hash.match(/^#ai\/([^/]+)$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 export default function ChatPage({
   state,
   refresh,
@@ -40,7 +50,7 @@ export default function ChatPage({
   onConfigure: () => void;
 }): ReactNode {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(conversationFromHash);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [chat, setChat] = useState<ChatState>({
     messages: [],
@@ -234,7 +244,19 @@ export default function ChatPage({
     setSidebarMode(null);
     scrollPinned.current = true;
     setShowJump(false);
+    const nextHash = id ? `#ai/${encodeURIComponent(id)}` : "#ai";
+    if (location.hash !== nextHash) history.replaceState(null, "", nextHash);
   }
+  useEffect(() => {
+    const changed = (): void => {
+      if (location.hash === "#ai" || location.hash.startsWith("#ai/")) {
+        const next = conversationFromHash();
+        if (next !== selected) chooseConversation(next);
+      }
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  });
   function jumpToLatest(): void {
     scrollPinned.current = true;
     setShowJump(false);
@@ -414,6 +436,23 @@ export default function ChatPage({
               </span>
             )}
           </div>
+          {selected &&
+            (state.goals ?? []).some(
+              (goal) => goal.conversation_id === selected,
+            ) && (
+              <div className="chat-goal-links" aria-label="关联目标">
+                {(state.goals ?? [])
+                  .filter((goal) => goal.conversation_id === selected)
+                  .map((goal) => (
+                    <a
+                      key={goal.id}
+                      href={`#goals/${encodeURIComponent(goal.id)}`}
+                    >
+                      {goal.title} ↗
+                    </a>
+                  ))}
+              </div>
+            )}
           {selected && (
             <span
               className={`chat-connection${connected ? " is-connected" : ""}`}
@@ -674,17 +713,21 @@ export default function ChatPage({
                           {message.role === "assistant"
                             ? "Chiliarch AI"
                             : message.role === "agent"
-                              ? "agent 来信"
+                              ? message.source === "coordination"
+                                ? "协调事件"
+                                : "agent 来信"
                               : "你"}
                         </strong>
                         <time>{time(message.created_at)}</time>
                       </div>
                       <div className="message-body">
-                        {message.role === "agent" && message.source && (
-                          <p className="message-source">
-                            来源：{message.source}
-                          </p>
-                        )}
+                        {message.role === "agent" &&
+                          message.source &&
+                          message.source !== "coordination" && (
+                            <p className="message-source">
+                              来源：{message.source}
+                            </p>
+                          )}
                         {message.role === "assistant" && message.run_id ? (
                           messageParts(message, chat).map((part) =>
                             part.kind === "tool" ? (

@@ -384,3 +384,46 @@ describe("逐条重命名和删除会话", () => {
     expect(input).toHaveValue("手动编辑中的名称");
   });
 });
+
+describe("目标关联会话", () => {
+  it("从目标深链接进入会话，显示协调事件并保留返回目标的入口", async () => {
+    const detail = conversation("coordination-chat", "登录功能协作");
+    detail.messages = [
+      {
+        id: "coordination-event",
+        role: "agent",
+        source: "coordination",
+        content: "实现任务已完成，等待验收。",
+        reasoning: "",
+        created_at: 0,
+      },
+    ];
+    history.replaceState(null, "", "#ai/coordination-chat");
+    vi.spyOn(api, "conversations").mockResolvedValue([detail]);
+    vi.spyOn(api, "conversation").mockResolvedValue(detail);
+    vi.spyOn(api, "streamConversation").mockReturnValue(vi.fn());
+    const state = platformState();
+    state.goals = [
+      {
+        id: "goal-one",
+        title: "交付登录功能",
+        objective: "实现并评审",
+        constraints: [],
+        acceptance_criteria: [],
+        summary: "",
+        status: "active",
+        conversation_id: detail.id,
+        created_at: 0,
+        updated_at: 0,
+      },
+    ];
+    render(<ChatPage state={state} refresh={vi.fn()} onConfigure={vi.fn()} />);
+    expect(await screen.findByText("实现任务已完成，等待验收。")).toBeVisible();
+    expect(api.conversation).toHaveBeenCalledWith(detail.id);
+    expect(screen.getByText("协调事件")).toBeVisible();
+    expect(screen.queryByText("agent 来信")).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "交付登录功能 ↗" }),
+    ).toHaveAttribute("href", "#goals/goal-one");
+  });
+});
