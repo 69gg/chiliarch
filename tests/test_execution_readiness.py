@@ -379,7 +379,12 @@ async def test_cleanup_failure_isolates_workspace_until_explicit_recovery(
         monkeypatch.setattr(ProcessTree, "terminate", original_cleanup)
         assert (await recover_workspace(workspace, confirm_stopped=True))["cleared"] is True
         assert second.runtime_metadata()["blocked_reason"] is None
-        assert workspace_lock_path(workspace).exists()
+        fake_cli(tmp_path, codex_success())
+        result = await asyncio.wait_for(second(command("recovered").payload, progress), 10)
+        assert result["session_id"] == "native-codex-session"
+        observed = json.loads((workspace / "observed.json").read_text())
+        assert "Task ID: recovered" in observed["stdin"]
+        assert not await asyncio.to_thread(marker.exists)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -462,7 +467,18 @@ def test_workspace_recovery_cli_defaults_to_read_only_and_requires_explicit_conf
     assert result["cleared"] is True
     assert result["processes_checked"] is False
     assert not marker.exists()
-    assert workspace_lock_path(tmp_path).exists()
+
+    async def execute_after_recovery() -> None:
+        async with asyncio.timeout(5):
+            async with workspace_owner(tmp_path) as lease:
+                await lease.begin_execution("after-recovery")
+                with pytest.raises(WorkspaceBlocked, match="still owned"):
+                    await recover_workspace(tmp_path, confirm_stopped=True)
+                assert await asyncio.to_thread(lease.marker.exists)
+                await lease.confirm_stopped()
+
+    asyncio.run(execute_after_recovery())
+    assert run()["unverified_execution"] is False
 
 
 async def test_renamed_directory_keeps_the_same_physical_workspace_lock(tmp_path: Path) -> None:

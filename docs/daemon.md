@@ -124,7 +124,9 @@ chiliarch agent workspace-recover --workdir "/实际工作目录"
 chiliarch agent workspace-recover --workdir "/实际工作目录" --confirm-stopped
 ```
 
-解除操作要求独占工作区锁；还有 Chiliarch worker 占用时会拒绝。它只删除隔离标记，保留锁文件，不终止任何进程，不替你验证已停止，也不重做中断任务。正常运行中的标记由 runner 自己清理，不能以恢复命令绕过仍在运行的任务。
+解除操作要求独占工作区锁；还有 Chiliarch worker 占用时会拒绝。它只主动删除隔离标记，不终止任何进程，不替你验证已停止，也不重做中断任务。正常运行中的标记由 runner 自己清理，不能以恢复命令绕过仍在运行的任务。
+
+锁文件的生命周期由 `filelock` 的系统实现管理：Linux/macOS 通常保留 `.lock` 文件，Windows 释放锁后会尝试删除它。文件存在不代表正在占用，不存在也不能代替隔离标记检查。恢复验证应检查任务能重新执行、执行中仍保持互斥以及隔离标记正常清理。
 
 Windows、macOS、Linux 复用同一登记与调度流程。POSIX 清理原生进程组；Windows 使用 Job Object 清理整个任务进程树。Windows 支持原生 `.exe`、标准 npm 安装的 `.cmd`（解析原生包的对应入口并直接启动 Node）及明确的 Python wrapper；自定义 `.cmd`/`.bat` 无法保证参数边界时拒绝运行，请设置实际可执行入口。路径包含空格或中文时仍作为参数传递，不拼接任务 shell 命令。
 

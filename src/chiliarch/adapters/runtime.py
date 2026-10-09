@@ -139,7 +139,8 @@ async def workspace_owner(
             )
         yield WorkspaceLease(marker, workdir)
     finally:
-        # Keep the lock file: deleting it lets another process lock a different inode.
+        # Leave pathname cleanup to filelock's platform backend. Unlinking it
+        # ourselves would let Unix waiters acquire different inodes concurrently.
         await _finish_lock_operation(lock.release)
 
 
