@@ -97,13 +97,17 @@ chiliarch agent doctor --agent codex-worker --settings "/绝对路径/local-agen
 
 每个任务使用 stdin 传入指令，启动 `codex exec --json`，显式选择 sandbox 和固定 cwd，注入临时 Chiliarch mailbox MCP。审批设置为 `approval_policy="never"`：原生运行不等待交互式审批；sandbox 或其他规则拒绝的操作会失败，不会因此放开权限。平台的 ask/auto/yolo 审批是另一层边界。[非交互执行文档](https://learn.chatgpt.com/docs/non-interactive-mode)
 
-每次调度创建新 Codex 原生会话，结果包含原生会话 ID、答案和可解析的用量。不自动 resume 用户已存在的 App 或 CLI 会话，也不默认枚举它们。runner 只在原生成功终态、JSONL 正常、进程退出成功共同成立时报告完成；只有文字输出或 EOF 不会假报成功。
+默认调度创建新 Codex 原生会话，结果包含原生会话 ID、答案和可解析的用量。需要继续上次工作时，在平台 `dispatch_task` 使用 `continue_task_id` 指向该身份最近一次成功完成的托管任务；runner 从自己的持久记录取得会话，使用 `codex exec [本地策略参数] resume <session-id> -`，新指令仍通过 stdin 输入。后续任务保留独立平台 task ID，结果中的 `continued_task_id` 记录来源。不接管用户现有 App 或 CLI 会话、不枚举原生会话，也不接受远端指定原生 session ID。[官方 resume 参数](https://github.com/openai/codex/blob/main/codex-rs/exec/src/cli.rs)
+
+续接要求相同平台身份、适配器及工作目录，前任务已成功且原生进程树确认停止。新轮次一旦开始，旧 task ID 不再代表会话最新状态；再续轮应引用最新成功任务。失败、取消、崩溃或清理结果未知后，不能引用更早成功任务绕过核查。关联存于该身份 SQLite 状态库，守护进程重启后仍可验证；原生历史文件若被用户删除，续接会报告失败，不静默另开新会话。runner 只在原生成功终态、JSONL 正常、进程退出成功共同成立时报告完成；只有文字输出或 EOF 不会假报成功。
 
 任务内的 mailbox MCP 用于向总管汇报、查询资源与协调，不导出 `claim_task`、`report_progress`、`complete_task`、`fail_task`、`confirm_cancellation`。runner 用 `--managed-task` 绑定本任务身份，模型不能冒用别的任务汇报。任务完成状态由父 runner 确认原生终态后上报，不要要求任务内模型先自行标记成功。固定 cwd 是启动策略，不是额外文件系统沙盒；实际可访问目录取决于 Codex sandbox、配置与操作系统权限。
 
 ## 运行中的协调与故障
 
-任务可以请求 `list_agents` 查询可用 agent，或通过 `dispatch_task` 申请给同伴派发工作；这些业务操作仍经总管、模式和权限处理。需要同伴结果时保留平台任务/请求 ID，给总管发送清楚的阻塞项与依赖关系，再查询回复。不要把整个原生会话或认证文件上传来充当汇报。
+任务可通过 `list_agents` 发现同伴，用 `send_peer_message` 直接沟通，或通过 `dispatch_task` 申请给同伴派发工作；任务变更仍遵循平台模式和权限。runner 的初始提示要求在开始和合适的工作间隙读取属于当前任务的协作消息。收到消息驱动的新任务时，使用 `reply_to` 关联原消息、`recipient_agent_id` 指向发送者；普通回复保持 `wake=false`，避免 agent 互相无限唤醒。需要继续已完成任务时可由显式唤醒创建独立续轮；运行中的会话不注入 stdin、不强行中断原生回合。
+
+需要同伴结果时保留任务/请求 ID并记录依赖；同伴若需要当前任务占用的执行槽或工作目录，先报告等待条件并结束本轮，让后续任务续接，不能原地占锁等待。不要把整个原生会话或认证文件上传来充当汇报。能力心跳中的 `supports_resume=true` 与 `notification_mode=followup_task` 描述托管 CLI；当前 App 的手动 MCP 不因此具备自动唤醒能力。
 
 断线后消息持久排队，连接自动重建；WS 不通时降级 SSE＋POST、长轮询。吊销凭证会拒绝继续通信，需要重新配对。取消、超时或 runner 退出会清理原生进程树；重启发现执行中任务时报告结果未知，不能自动重做。完整边界见 [通用说明](index.md#运行取消与恢复)。
 
