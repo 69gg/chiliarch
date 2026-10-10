@@ -1,0 +1,271 @@
+.collaboration-content {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 32px;
+}
+.collaboration-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 36px;
+  align-items: start;
+}
+.collaboration-directory {
+  min-width: 0;
+}
+.collaboration-directory h2 {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0 0 16px;
+}
+.collaboration-channel-list {
+  display: grid;
+  gap: 5px;
+  max-height: 360px;
+  overflow: auto;
+}
+.collaboration-channel-list > button {
+  padding: 13px;
+  text-align: left;
+  border-color: transparent;
+}
+.collaboration-channel-list > button.is-selected {
+  background: var(--surface);
+  border-color: var(--rule);
+}
+.collaboration-channel-list strong {
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.collaboration-channel-list small {
+  display: block;
+  color: var(--muted);
+  margin-top: 8px;
+  font-size: 11px;
+}
+.collaboration-thread {
+  min-width: 0;
+  border-left: 1px solid var(--rule);
+  padding-left: 32px;
+  animation: agent-dialog-enter var(--motion-normal) var(--ease-standard) both;
+}
+.collaboration-thread-heading {
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.collaboration-thread-heading h2 {
+  font-size: 22px;
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+.collaboration-thread-heading p {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+.collaboration-messages {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.collaboration-messages > li {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.collaboration-message-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.collaboration-message-meta strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.collaboration-message-meta > span {
+  overflow-wrap: anywhere;
+}
+.collaboration-messages .markdown {
+  margin-top: 12px;
+  font-size: 13px;
+}
+.collaboration-message-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+  font-size: 11px;
+}
+.collaboration-receipts {
+  padding: 12px 16px;
+  margin-top: 12px;
+  border-left: 2px solid var(--rule);
+  background: var(--surface);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.collaboration-receipts ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.collaboration-receipts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.collaboration-receipts time {
+  margin-left: auto;
+}
+.collaboration-receipts li > .muted {
+  flex-basis: 100%;
+}
+.collaboration-composer {
+  display: grid;
+  gap: 12px;
+  padding-top: 24px;
+}
+.collaboration-composer > label,
+.collaboration-form > label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.collaboration-composer textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+.collaboration-composer .actions,
+.collaboration-form > .actions {
+  justify-content: flex-end;
+}
+.collaboration-reply {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border-left: 2px solid var(--gold);
+  font-size: 12px;
+  background: var(--surface);
+}
+.collaboration-reply span {
+  overflow-wrap: anywhere;
+}
+.collaboration-reply button {
+  flex-shrink: 0;
+}
+.collaboration-waits {
+  border-top: 1px solid var(--rule);
+  margin-top: 28px;
+  padding-top: 24px;
+}
+.collaboration-waits > ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.collaboration-waits > ul > li {
+  padding: 0 0 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.collaboration-waits li > strong,
+.collaboration-waits li > span {
+  display: block;
+}
+.collaboration-waits li > strong {
+  font-weight: 500;
+}
+.collaboration-waits li ul {
+  padding-left: 18px;
+}
+.collaboration-waits li p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+.collaboration-modal {
+  padding: 24px;
+  width: min(560px, calc(100vw - 32px));
+}
+.collaboration-modal > header {
+  margin-bottom: 24px;
+}
+.collaboration-modal > header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+.collaboration-form {
+  display: grid;
+  gap: 20px;
+}
+.collaboration-form fieldset {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+.collaboration-form legend {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.collaboration-form .checkbox-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.collaboration-form .checkbox-field input {
+  width: auto;
+}
+.collaboration-form .collaboration-composer {
+  padding: 0;
+}
+.collaboration-form .collaboration-composer > .muted {
+  margin: 0;
+}
+.collaboration-sent {
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
+  font-size: 12px;
+}
+@media (max-width: 800px) {
+  .collaboration-content {
+    padding: 20px;
+  }
+  .collaboration-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .collaboration-thread {
+    padding: 24px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+  .collaboration-channel-list {
+    max-height: 220px;
+  }
+  .collaboration-waits {
+    margin-top: 18px;
+    padding-top: 18px;
+  }
+  .collaboration-page .page-header {
+    height: auto;
+    min-height: 85px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .collaboration-page .page-header .actions {
+    font-size: 11px;
+  }
+}

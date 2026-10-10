@@ -14,6 +14,9 @@ vi.mock("../AgentsPage", () => ({
 vi.mock("../ConfigPage", () => ({
   default: () => <h1>配置页面</h1>,
 }));
+vi.mock("../CollaborationPage", () => ({
+  default: () => <h1>协作工作区</h1>,
+}));
 
 function systemTheme(initialDark: boolean): {
   change: (dark: boolean) => void;
@@ -57,6 +60,24 @@ beforeEach(() => {
 });
 
 describe("应用外壳", () => {
+  it("从协作地址直接打开，并可在折叠导航中切换协作页", async () => {
+    systemTheme(false);
+    location.hash = "#collaboration";
+    localStorage.setItem("chiliarch-sidebar-collapsed", "true");
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "协作工作区" }),
+    ).toBeVisible();
+    const collaboration = screen.getByRole("button", { name: "协作" });
+    expect(collaboration).toHaveAttribute("aria-current", "page");
+    expect(collaboration).toHaveAttribute("title", "协作");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "总管对话" }));
+    await screen.findByRole("heading", { name: "对话页面" });
+    await user.click(collaboration);
+    expect(location.hash).toBe("#collaboration");
+    expect(screen.getByRole("heading", { name: "协作工作区" })).toBeVisible();
+  });
   it("收起后仍可导航和退出，偏好在重新打开时保留，按钮支持键盘展开", async () => {
     systemTheme(false);
     const logout = vi.spyOn(api, "logout").mockResolvedValue(undefined);

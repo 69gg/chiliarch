@@ -10,6 +10,7 @@ const SECTION_LABELS: Record<string, string> = {
   model: "总管模型",
   supervisor: "总管运行",
   transport: "连接与队列",
+  artifacts: "共享产物",
   logs: "日志存储与轮换",
   server: "平台服务",
   auth: "登录与会话",
@@ -38,12 +39,19 @@ const LABELS: Record<string, string> = {
   run_timeout: "运行超时（秒）",
   event_poll_seconds: "事件刷新间隔（秒）",
   inbox_poll_seconds: "下级请求检查间隔（秒）",
+  task_stall_seconds: "任务进度停滞判定（秒）",
+  model_recovery_attempts: "模型故障自动恢复次数",
+  model_recovery_base_seconds: "模型恢复起始等待（秒）",
+  model_recovery_max_seconds: "模型恢复最长等待（秒）",
   system_prompt: "总管系统提示词",
   heartbeat_seconds: "心跳间隔（秒）",
   offline_after_seconds: "离线判定（秒）",
   poll_timeout_seconds: "长轮询超时（秒）",
   retry_seconds: "重投间隔（秒）",
   queue_limit: "离线队列上限",
+  max_artifact_bytes: "单个产物大小上限（字节）",
+  chunk_bytes: "产物分块大小（字节）",
+  max_total_bytes: "产物总存储上限（字节）",
   message_ttl_seconds: "消息有效期（秒）",
   max_message_bytes: "单条消息上限（字节）",
   reconnect_base_seconds: "重连起始间隔（秒）",
@@ -242,6 +250,7 @@ export default function ConfigPage({
     "model",
     "supervisor",
     "transport",
+    "artifacts",
     "logs",
     "server",
     "auth",
@@ -285,6 +294,11 @@ export default function ConfigPage({
                 {section === "server" && (
                   <p className="muted">
                     监听地址、端口与数据库连接地址的修改需要重启。
+                  </p>
+                )}
+                {section === "supervisor" && (
+                  <p className="muted">
+                    任务停滞时通知总管核查；临时模型故障按退避间隔恢复。用户主动停止不会自动恢复。
                   </p>
                 )}
               </div>

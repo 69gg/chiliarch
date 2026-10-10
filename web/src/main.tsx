@@ -7,6 +7,7 @@ import "./components.css";
 import "./chat.css";
 import "./agents.css";
 import "./goals.css";
+import "./collaboration.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -6,9 +6,10 @@ import ChatPage from "./ChatPage";
 import AgentsPage from "./AgentsPage";
 import ConfigPage from "./ConfigPage";
 import GoalsPage from "./GoalsPage";
+import CollaborationPage from "./CollaborationPage";
 import type { JsonObject, PlatformState } from "./types";
 
-type Page = "ai" | "agents" | "config" | "goals";
+type Page = "ai" | "agents" | "config" | "goals" | "collaboration";
 type Theme = "system" | "light" | "dark";
 const themes: Theme[] = ["system", "light", "dark"];
 const themeNames: Record<Theme, string> = {
@@ -19,7 +20,10 @@ const themeNames: Record<Theme, string> = {
 
 function initialPage(): Page {
   const value = location.hash.slice(1).split("/")[0];
-  return value === "agents" || value === "config" || value === "goals"
+  return value === "agents" ||
+    value === "config" ||
+    value === "goals" ||
+    value === "collaboration"
     ? value
     : "ai";
 }
@@ -253,6 +257,16 @@ export default function App(): ReactNode {
             <span className="nav-label">目标</span>
           </button>
           <button
+            className={page === "collaboration" ? "active" : ""}
+            aria-label="协作"
+            title={sidebarCollapsed ? "协作" : undefined}
+            aria-current={page === "collaboration" ? "page" : undefined}
+            onClick={() => navigate("collaboration")}
+          >
+            <NavIcon type="collaboration" />
+            <span className="nav-label">协作</span>
+          </button>
+          <button
             className={page === "agents" ? "active" : ""}
             aria-label="Agents 管理"
             title={sidebarCollapsed ? "Agents 管理" : undefined}
@@ -324,6 +338,8 @@ export default function App(): ReactNode {
             />
           ) : page === "goals" ? (
             <GoalsPage state={state} refresh={refresh} />
+          ) : page === "collaboration" ? (
+            <CollaborationPage state={state} refresh={refresh} />
           ) : page === "agents" ? (
             <AgentsPage state={state} refresh={refresh} />
           ) : (
@@ -412,6 +428,11 @@ function NavIcon({ type }: { type: Page }): ReactNode {
           <circle cx="12" cy="12" r="8" />
           <circle cx="12" cy="12" r="3" />
           <path d="m12 12 8-8M16 4h4v4" />
+        </>
+      ) : type === "collaboration" ? (
+        <>
+          <path d="M3 4h12v9H8l-4 3v-3H3V4Z" />
+          <path d="M18 8h3v11h-3v3l-4-3H9v-3" />
         </>
       ) : type === "agents" ? (
         <>

@@ -178,3 +178,40 @@ export interface Session {
   authenticated: boolean;
   csrf_token?: string;
 }
+
+export interface CollaborationChannel {
+  id: string;
+  title: string;
+  members: string[];
+  created_by: string;
+  goal_id: string | null;
+  created_at: Timestamp;
+}
+
+export interface PeerMessage {
+  id: string;
+  sequence: number;
+  sender_agent_id: string | null;
+  sender_role: string;
+  source_task_id: string | null;
+  channel_id: string | null;
+  recipient_agent_id: string | null;
+  recipient_task_id: string | null;
+  message: string;
+  reply_to: string | null;
+  created_at: Timestamp;
+}
+
+export interface PeerReceipt {
+  agent_id: string;
+  state: "queued" | "delivered" | "read" | "processed";
+  wake_task_id: string | null;
+  updated_at: Timestamp;
+}
+
+export interface TaskWait {
+  task_id: string;
+  waiting_for: string[];
+  reason: string;
+  updated_at: Timestamp;
+}

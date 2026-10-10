@@ -40,6 +40,8 @@ export function Status({ value }: { value: string }): ReactNode {
     canceled: "已取消",
     queued: "队列中",
     delivered: "已投递",
+    read: "已读取",
+    processed: "已处理",
     accepted: "已接收",
     failed: "失败",
     approved: "已允许",
@@ -265,6 +267,14 @@ const TOOL_LABELS: Record<string, string> = {
   update_goal: "更新目标",
   review_task: "验收任务",
   retry_task: "重试任务",
+  list_channels: "查看协作讨论",
+  create_channel: "创建协作讨论",
+  get_channel: "读取讨论消息",
+  send_peer_message: "发送协作消息",
+  get_peer_message: "查看消息回执",
+  acknowledge_peer_message: "确认协作消息",
+  list_task_waits: "查看任务等待关系",
+  wait_for_tasks: "登记任务等待",
 };
 
 export function ToolView({
