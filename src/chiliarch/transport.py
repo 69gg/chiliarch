@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSock
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from chiliarch.delivery import DeliveryBackoff
 from chiliarch.protocol import Envelope
 from chiliarch.service import OperationError, OperationService
 
@@ -98,6 +99,7 @@ class TransportManager:
             await self.service.touch_agent(agent.id, "sse")
 
             async def stream() -> AsyncIterator[str]:
+                delivery = DeliveryBackoff()
                 yield ": chiliarch connected\n\n"
                 while not await request.is_disconnected():
                     try:
@@ -109,7 +111,13 @@ class TransportManager:
                     except OperationError:
                         yield "event: revoked\ndata: {}\n\n"
                         return
-                    for message in pending:
+                    options = self.service.settings_manager.current.transport
+                    outgoing = delivery.ready(
+                        pending,
+                        retry_seconds=options.retry_seconds,
+                        max_retry_seconds=options.offline_after_seconds,
+                    )
+                    for message in outgoing:
                         yield (
                             "event: message\nid: "
                             + message.id
@@ -117,7 +125,7 @@ class TransportManager:
                             + message.model_dump_json()
                             + "\n\n"
                         )
-                    if not pending:
+                    if not outgoing:
                         yield ": heartbeat\n\n"
                     await self._wait(self.service.settings_manager.current.transport.retry_seconds)
 
@@ -145,9 +153,15 @@ class TransportManager:
                     await socket.send_json(envelope)
 
             async def sender() -> None:
+                delivery = DeliveryBackoff()
                 while True:
                     await self.service.authenticate_agent(credential)
-                    for message in await self.service.pending(agent.id):
+                    options = self.service.settings_manager.current.transport
+                    for message in delivery.ready(
+                        await self.service.pending(agent.id),
+                        retry_seconds=options.retry_seconds,
+                        max_retry_seconds=options.offline_after_seconds,
+                    ):
                         await send(message.model_dump(mode="json"))
                     await self._wait(self.service.settings_manager.current.transport.retry_seconds)
 

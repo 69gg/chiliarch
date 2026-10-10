@@ -52,7 +52,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | heartbeat_seconds                              | 参考客户端主动心跳间隔                             |
 | offline_after_seconds                          | 超过最后主动活性记录多久显示离线，必须大于心跳间隔 |
 | poll_timeout_seconds                           | 长轮询最大等待，最长 60 秒                         |
-| retry_seconds                                  | 未 ACK 消息重投与检查间隔                          |
+| retry_seconds                                  | 队列检查间隔及未 ACK 消息首次重投等待              |
 | queue_limit                                    | 持久未确认消息数量上限                             |
 | message_ttl_seconds                            | 下行消息有效期，过期后显式停止交付                 |
 | max_message_bytes                              | 单条信封大小上限                                   |
@@ -60,6 +60,8 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | upgrade_interval_seconds                       | 降级传输定期重新尝试 WS 的间隔                     |
 
 这些客户端字段只有使用对应配置启动参考客户端时才影响其行为。跨语言插件应使用自己的配置或协商默认值；本版不自动向任意插件推送所有服务端设置。
+
+客户端出站和服务端 WS/SSE 下行对每条未确认消息独立指数退避，首次间隔为 `retry_seconds`，封顶为 `max(retry_seconds, offline_after_seconds)`。这使接收与持久化较慢时不会持续堆积相同消息；新消息仍可及时发送，重连后使用原消息 ID 立即恢复投递。退避不改变离线判定、消息有效期或 ACK 的含义。
 
 真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。原有 standalone MCP 和独立 `agent run` 保留兼容，不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
 

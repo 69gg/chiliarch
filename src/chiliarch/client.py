@@ -23,6 +23,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from chiliarch.config import TransportSettings
+from chiliarch.delivery import DeliveryBackoff
 from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
@@ -755,10 +756,15 @@ class AgentClient:
             await self.store.acknowledge(str(acknowledgment["payload"]["message_id"]))
 
     async def _writer(self, sender: Sender) -> None:
+        delivery = DeliveryBackoff()
         heartbeat_at = 0.0
         while not self.stop_event.is_set():
             await self._schedule()
-            for envelope in await self.store.pending():
+            for envelope in delivery.ready(
+                await self.store.pending(),
+                retry_seconds=self.options.retry_seconds,
+                max_retry_seconds=self.options.offline_after_seconds,
+            ):
                 await sender(envelope)
             if time.monotonic() >= heartbeat_at:
                 await sender(await self.heartbeat())

@@ -14,19 +14,36 @@ from test_client_network import LiveServer, wait_for_task
 from chiliarch.adapters.mailbox import AgentMailbox
 from chiliarch.adapters.runtime import outbound_client
 from chiliarch.client import AgentClient
+from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
 Progress = Callable[[float, str], Awaitable[None]]
 
 
-@pytest.mark.parametrize("transport", ["ws", "sse", "poll"])
+@pytest.mark.parametrize(
+    ("transport", "receive_delay"),
+    [("ws", 0), ("sse", 0), ("poll", 0), pytest.param("ws", 0.05, id="ws-slow-ack")],
+)
 async def test_discover_wake_reply_and_receipts_across_outbound_transports(
-    tmp_path: Path, transport: Literal["ws", "sse", "poll"]
+    tmp_path: Path,
+    transport: Literal["ws", "sse", "poll"],
+    receive_delay: float,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     platform = LiveServer(tmp_path)
     await platform.start()
     try:
         service = platform.app.state.service
+        if receive_delay:
+            receive = service.receive
+
+            async def delayed_receive(agent_id: str, envelope: Envelope) -> JsonObject:
+                # Model a receiver slower than the retry interval, independently of the host OS.
+                await asyncio.sleep(receive_delay)
+                result: JsonObject = await receive(agent_id, envelope)
+                return result
+
+            monkeypatch.setattr(service, "receive", delayed_receive)
         service.settings_manager.current.supervisor.mode = "yolo"
         states = {name: tmp_path / f"{name}.sqlite" for name in ("author", "reviewer")}
         identities: dict[str, str] = {}
