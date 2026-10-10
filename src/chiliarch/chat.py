@@ -53,6 +53,9 @@ from chiliarch.supervision import (
     consume_coordination,
     linked_conversation,
     recover_coordination,
+    recoverable_model_error,
+    schedule_model_recovery,
+    withdraw_resume_requests,
 )
 
 logger = logging.getLogger(__name__)
@@ -532,11 +535,27 @@ class Supervisor:
                     for event in events
                 ):
                     raise ValueError("Coordination batch is no longer pending in this conversation")
+                if any(
+                    event.kind == "model_recovery"
+                    and int(event.payload["attempt"]) > settings.supervisor.model_recovery_attempts
+                    for event in events
+                ):
+                    raise ValueError("Automatic model recovery is disabled or exhausted")
                 if source != "user" and await automatic_coordination_paused(
                     session, conversation_id, events
                 ):
                     raise ValueError(
                         "Automatic coordination is paused; explicit user input is required"
+                    )
+                if source == "user":
+                    await session.execute(
+                        update(CoordinationEvent)
+                        .where(
+                            CoordinationEvent.conversation_id == conversation_id,
+                            CoordinationEvent.kind == "model_recovery",
+                            CoordinationEvent.status == "pending",
+                        )
+                        .values(status="superseded")
                     )
                 previous = (
                     await session.scalars(
@@ -722,6 +741,7 @@ class Supervisor:
             )
             settings.model = saved_model
             self.snapshots[run_id] = settings
+        model_in_flight = False
         try:
             async with asyncio.timeout(settings.supervisor.run_timeout):
                 async with self.db.sessions.begin() as session:
@@ -768,6 +788,7 @@ class Supervisor:
                         async with self.db.sessions() as session:
                             run = await session.get(ChatRun, run_id)
                         assert run is not None
+                    model_in_flight = True
                     run = await self._prepare_context(provider, run, settings)
                     turn = ModelTurn()
                     async for event in provider.stream(
@@ -779,6 +800,7 @@ class Supervisor:
                             event.type,
                             {**event.data, "message_id": run.assistant_message_id},
                         )
+                    model_in_flight = False
                     message = turn.message(
                         provider.api_mode, settings.model.model, settings.model.base_url
                     )
@@ -818,7 +840,9 @@ class Supervisor:
                         async with self.db.sessions() as session:
                             finished = await session.get(ChatRun, run_id)
                         assert finished is not None
+                        model_in_flight = True
                         await self._prepare_context(provider, finished, settings)
+                        model_in_flight = False
                         await self._complete(run_id)
                         return
         except asyncio.CancelledError:
@@ -838,7 +862,12 @@ class Supervisor:
                 if isinstance(exc, ModelError)
                 else f"Model execution failed ({type(exc).__name__})"
             )
-            await self._terminal(run_id, "failed", text)
+            await self._terminal(
+                run_id,
+                "failed",
+                text,
+                recoverable=model_in_flight and recoverable_model_error(exc),
+            )
         finally:
             if provider is not None:
                 await provider.close()
@@ -1173,6 +1202,7 @@ class Supervisor:
         error: str | None = None,
         *,
         preserve_approval: bool = False,
+        recoverable: bool = False,
     ) -> None:
         async with self.db.write_lock:
             async with self.db.sessions.begin() as session:
@@ -1218,20 +1248,7 @@ class Supervisor:
                     ).all()
                 }
                 if status in {"cancelled", "failed"}:
-                    resume_events = (
-                        await session.scalars(
-                            select(CoordinationEvent).where(
-                                CoordinationEvent.conversation_id == run.conversation_id,
-                                CoordinationEvent.status == "pending",
-                                CoordinationEvent.kind == "goal_updated",
-                            )
-                        )
-                    ).all()
-                    for event in resume_events:
-                        if event.payload.get("resume_requested"):
-                            # A previously queued request cannot defeat a later
-                            # stop, even on coarse clocks or after clock rollback.
-                            event.payload = {**event.payload, "resume_requested": False}
+                    await withdraw_resume_requests(session, run.conversation_id)
                 for approval in approvals:
                     result = {
                         "status": "rejected",
@@ -1253,6 +1270,10 @@ class Supervisor:
                     .where(CoordinationEvent.run_id == run_id)
                     .values(status="failed")
                 )
+                if recoverable:
+                    await schedule_model_recovery(
+                        session, run_id, self.settings_manager.current.supervisor
+                    )
                 if assistant is not None:
                     warning = {
                         "role": "assistant",
@@ -1277,7 +1298,32 @@ class Supervisor:
     async def cancel_run(self, run_id: str) -> JSONObject:
         status = await self.get_run(run_id)
         if status["status"] not in ACTIVE:
-            return status
+            if status["status"] != "failed":
+                return status
+            resumed_run_id: str | None = None
+            cancelled_pending = False
+            async with self.lock, self.db.write_lock, self.db.sessions.begin() as session:
+                recovery = await session.scalar(
+                    select(CoordinationEvent).where(
+                        CoordinationEvent.event_key == f"model-recovery:{run_id}"
+                    )
+                )
+                if recovery is not None and recovery.status == "pending":
+                    recovery.status = "cancelled"
+                    stopped = await session.get(ChatRun, run_id)
+                    assert stopped is not None
+                    stopped.status, stopped.updated_at = "cancelled", time.time()
+                    await withdraw_resume_requests(session, stopped.conversation_id)
+                    cancelled_pending = True
+                elif recovery is not None and recovery.status == "started":
+                    resumed_run_id = recovery.run_id
+            if cancelled_pending:
+                await self._event(
+                    status["conversation_id"], run_id, "cancelled", {"status": "cancelled"}
+                )
+            if resumed_run_id is not None:
+                await self.cancel_run(resumed_run_id)
+            return await self.get_run(run_id)
         task = self.tasks.get(run_id)
         if task is not None:
             if task is asyncio.current_task():
@@ -1292,7 +1338,12 @@ class Supervisor:
             # A task cancelled before its first step cannot run its exception
             # handler. Finalize after waiting as well; _terminal is idempotent.
             await self._terminal(run_id, "cancelled")
-        return await self.get_run(run_id)
+        result = await self.get_run(run_id)
+        if result["status"] == "failed":
+            # Failure may have committed a retry between the initial status read
+            # and cancellation. Revoke that retry through the same locked path.
+            return await self.cancel_run(run_id)
+        return result
 
     async def receive_agent_request(self, agent_id: str, envelope: JSONObject) -> None:
         request_id = (

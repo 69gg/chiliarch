@@ -12,7 +12,7 @@
 | Codex CLI   | stdio MCP                       | `codex exec --json`           | [Codex App / CLI](docs/agents/codex.md)   |
 | Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
 
-接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 每次调度创建新的原生会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 默认创建新会话，也可明确续接 Chiliarch 创建的最近成功会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
@@ -75,9 +75,17 @@ chiliarch demo-agent --state ./agent.db
 
 目标列表支持按名称、说明或任务内容搜索，按状态筛选，也可只看需要处理的目标。页面区分待验收、待返工、依赖等待、agent 离线、会话未领取、待请求和待审批；历史尝试不会误算成当前故障。重试弹窗可选择接手 agent，并保留执行前的核查说明。
 
-任务完成、失败、中断，以及用户更新目标会进入持久协调队列，自动交给总管继续处理。任务相关来信回到原目标会话；会话正在运行或等待审批时，新事件排队等待，同一会话积压的协调事件会合并处理。总管的回复不会反过来反复唤醒自己。模型暂未配置时先保留事件；用户停止或模型失败后暂停自动唤醒，之后发送新消息或在目标页点击“继续协调”恢复。
+任务完成、失败、中断，以及用户更新目标会进入持久协调队列，自动交给总管继续处理。任务相关来信回到原目标会话；会话正在运行或等待审批时，新事件排队等待，同一会话积压的协调事件会合并处理。总管的回复不会反过来反复唤醒自己。模型暂未配置时先保留事件；临时模型连接或限流故障按配置退避开启新的核查轮次，用户停止和不可恢复失败仍需明确继续。任务停滞或 agent 长期失联会通知总管核查，不把离线当作已停止。
 
 执行成功与验收通过分别记录。需要返工时创建新的尝试并保留旧结果，也可选择另一个 agent 接手；交接携带原结果、评审、产物引用与恢复说明，保留原目标和依赖关系。仍在执行或取消未确认的任务不能直接转交。目标只能在有效任务均验收通过后完成。服务重启后先将最新中断的协调轮次与实际任务状态核对，不重放旧工具调用，也不越过后来的用户停止。agent 心跳区分等待领取、忙碌和工作区阻塞；相同实际目录的托管任务互斥执行。详细工具、恢复流程和保证边界见 [目标、依赖与验收](docs/coordination.md)。
+
+## 同伴通信与共享材料
+
+导航“协作”提供讨论组、私信、回执和“谁在等谁”。agent 可以直接发现同伴、交换消息并查询讨论，普通通信不需要总管逐条传话；ask 下状态变更仍需批准。消息区分已送达、已读和已处理，托管收件箱按任务隔离，稳定请求 ID 与消费游标支持重启恢复。
+
+明确设置 `wake=true` 的私信会为托管 agent 创建响应任务，继承目标与会话；普通回复默认不再唤醒，避免相互调用。`dispatch_task(continue_task_id=...)` 可安全续接 Codex／Claude 最近成功的受管会话；manual App 仍需主动读取 MCP 消息。协作等待会检查依赖环与执行资源冲突；相同工作目录仍保持互斥。
+
+共享产物经已有出站通道分块上传、下载，带成员访问范围、不可变大小/哈希清单和落盘校验。文件内容不会作为总管工具结果展开；可将 `chiliarch:artifact:<ID>` 登记为任务交付引用。详见 [横向通信与协作](docs/collaboration.md) 和 [共享产物](docs/artifacts.md)。
 
 ## 总管模式
 
@@ -112,6 +120,8 @@ uv build
 - [配置、热重载与日志](docs/configuration.md)
 - [架构与保证边界](docs/architecture.md)
 - [目标、任务依赖、产物与验收](docs/coordination.md)
+- [同伴消息、讨论、唤醒与任务等待](docs/collaboration.md)
+- [跨机器共享产物与访问范围](docs/artifacts.md)
 - [本机共享守护进程、登录自启动与维护](docs/daemon.md)
 - [agent 协议与 JSON Schema](docs/protocol.md)
 - [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)

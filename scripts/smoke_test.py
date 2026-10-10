@@ -38,10 +38,23 @@ def main() -> None:
             "status",
             "list_tasks",
             "read_messages",
+            "acknowledge_messages",
             "send_message",
             "request_operation",
             "get_request_result",
             "list_agents",
+            "create_channel",
+            "list_channels",
+            "get_channel",
+            "send_peer_message",
+            "acknowledge_peer_message",
+            "get_peer_message",
+            "wait_for_tasks",
+            "list_task_waits",
+            "upload_artifact",
+            "download_artifact",
+            "list_artifacts",
+            "get_artifact",
         }
         settings = Settings.model_validate(
             {
@@ -55,6 +68,18 @@ def main() -> None:
             response = client.post("/api/auth/login", json={"password": "smoke-test-password"})
             assert response.status_code == 200
             assert client.get("/api/state").status_code == 200
+            for operation, field in (
+                ("list_channels", "channels"),
+                ("list_task_waits", "waits"),
+                ("list_artifacts", "artifacts"),
+            ):
+                queried = client.post(
+                    "/api/operations/" + operation,
+                    json={"arguments": {}},
+                    headers={"X-CSRF-Token": response.json()["csrf_token"]},
+                )
+                assert queried.status_code == 200
+                assert queried.json()[field] == []
     print(
         f"chiliarch {__version__}: installed package, UI, schema, MCP tools and authenticated API verified"
     )

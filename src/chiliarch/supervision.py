@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+import anthropic
+import httpx
+import openai
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from chiliarch.config import SupervisorSettings
 from chiliarch.database import CoordinationEvent, Goal, OperationRecord, Task, TaskLink
 from chiliarch.service import redact
 
@@ -18,6 +23,117 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
+
+
+def recoverable_model_error(error: Exception) -> bool:
+    """Retry only typed transport/overload failures, never malformed model output."""
+    if isinstance(
+        error, (openai.APIConnectionError, anthropic.APIConnectionError, httpx.TransportError)
+    ):
+        return True
+    if isinstance(error, (openai.APIStatusError, anthropic.APIStatusError)):
+        return error.status_code in {408, 429} or error.status_code >= 500
+    return False
+
+
+async def schedule_model_recovery(
+    session: AsyncSession, run_id: str, settings: SupervisorSettings
+) -> None:
+    """Persist a bounded new reconciliation, never an old tool-call replay."""
+    from chiliarch.chat import ChatRun
+
+    run = await session.get(ChatRun, run_id)
+    if run is None or run.status != "failed" or not settings.model_recovery_attempts:
+        return
+    previous = (
+        await session.scalars(select(CoordinationEvent).where(CoordinationEvent.run_id == run_id))
+    ).all()
+    attempts = [
+        int(event.payload.get("attempt", 0)) for event in previous if event.kind == "model_recovery"
+    ]
+    # A service restart may have wrapped the failed reconciliation once.
+    for event in previous:
+        attempts.extend(
+            int(item.get("data", {}).get("attempt", 0))
+            for item in event.payload.get("original_events", [])
+            if item.get("event") == "model_recovery"
+        )
+    attempt = max(attempts, default=0) + 1
+    if attempt > settings.model_recovery_attempts:
+        return
+    delay = min(
+        settings.model_recovery_max_seconds,
+        settings.model_recovery_base_seconds * 2 ** (attempt - 1),
+    )
+    # Carry the original task references forward without recursively embedding
+    # every prior model failure, and supply the newest snapshots at consumption.
+    references: list[JsonObject] = []
+    for event in previous:
+        if event.kind in {"model_recovery", "recovery"}:
+            references.extend(event.payload.get("original_events", []))
+        else:
+            references.append(
+                {
+                    "id": event.id,
+                    "event": event.kind,
+                    "goal_id": event.goal_id,
+                    "task_id": event.task_id,
+                    "data": event.payload,
+                }
+            )
+    keys = [call["key"] for call in run.pending_calls]
+    records = (
+        (
+            await session.scalars(
+                select(OperationRecord).where(
+                    OperationRecord.actor == "supervisor", OperationRecord.idempotency_key.in_(keys)
+                )
+            )
+        ).all()
+        if keys
+        else []
+    )
+    session.add(
+        CoordinationEvent(
+            event_key=f"model-recovery:{run_id}",
+            kind="model_recovery",
+            conversation_id=run.conversation_id,
+            payload={
+                "failed_run_id": run_id,
+                "attempt": attempt,
+                "ready_at": time.time() + delay,
+                "original_events": references,
+                "operations": [
+                    {"name": record.name, "status": record.status, "result": redact(record.result)}
+                    for record in records
+                ],
+                "instruction": "模型暂时不可用。请先核对当前任务和已有操作结果，再继续处理原请求；不得重放旧工具或结果未知的外部操作。",
+            },
+        )
+    )
+
+
+async def recovery_ready(
+    session: AsyncSession, event: CoordinationEvent, *, now: float | None = None
+) -> bool:
+    from chiliarch.chat import ChatRun
+
+    if event.kind != "model_recovery":
+        return True
+    latest = await session.scalar(
+        select(ChatRun)
+        .where(ChatRun.conversation_id == event.conversation_id)
+        .order_by(ChatRun.created_at.desc(), ChatRun.id.desc())
+        .limit(1)
+    )
+    if (
+        latest is None
+        or latest.id != event.payload.get("failed_run_id")
+        or latest.status != "failed"
+    ):
+        event.status = "superseded"
+        return False
+    return float(event.payload["ready_at"]) <= (time.time() if now is None else now)
 
 
 async def linked_conversation(
@@ -212,10 +328,26 @@ async def recover_coordination(supervisor: Supervisor) -> None:
             )
 
 
+async def withdraw_resume_requests(session: AsyncSession, conversation_id: str) -> None:
+    """Already queued user resumes cannot defeat a later explicit stop."""
+    events = (
+        await session.scalars(
+            select(CoordinationEvent).where(
+                CoordinationEvent.conversation_id == conversation_id,
+                CoordinationEvent.status == "pending",
+                CoordinationEvent.kind == "goal_updated",
+            )
+        )
+    ).all()
+    for event in events:
+        if event.payload.get("resume_requested"):
+            event.payload = {**event.payload, "resume_requested": False}
+
+
 async def automatic_coordination_paused(
     session: AsyncSession, conversation_id: str, events: Sequence[CoordinationEvent] = ()
 ) -> bool:
-    """Only fresh, explicit user input may resume a stopped or failed conversation."""
+    """Only explicit user input or a due typed-failure recovery can resume work."""
     from chiliarch.chat import ChatRun
 
     latest = await session.scalar(
@@ -226,6 +358,10 @@ async def automatic_coordination_paused(
     )
     if latest is None or latest.status not in {"cancelled", "failed"}:
         return False
+    if latest.status == "failed":
+        for event in events:
+            if event.kind == "model_recovery" and await recovery_ready(session, event):
+                return False
     return not any(
         event.kind == "goal_updated" and event.payload.get("resume_requested") is True
         for event in events
@@ -246,6 +382,14 @@ async def pending_batches(supervisor: Supervisor) -> dict[str, list[Coordination
             )
         ).all()
         for event in pending:
+            if not await recovery_ready(session, event):
+                continue
+            if (
+                event.kind == "model_recovery"
+                and int(event.payload["attempt"])
+                > supervisor.settings_manager.current.supervisor.model_recovery_attempts
+            ):
+                continue
             goal = await session.get(Goal, event.goal_id) if event.goal_id else None
             link = await session.get(TaskLink, event.task_id) if event.task_id else None
             conversation_id = (
@@ -299,7 +443,7 @@ async def consume_coordination(supervisor: Supervisor) -> None:
             tasks: dict[str, JsonObject] = {}
             for event in events:
                 references = [(event.goal_id, event.task_id)]
-                if event.kind == "recovery":
+                if event.kind in {"recovery", "model_recovery"}:
                     references.extend(
                         (item.get("goal_id"), item.get("task_id"))
                         for item in event.payload.get("original_events", [])
@@ -317,7 +461,7 @@ async def consume_coordination(supervisor: Supervisor) -> None:
             if len(events) == 1:
                 context = contexts[0]
                 event = events[0]
-                if event.kind == "recovery":
+                if event.kind in {"recovery", "model_recovery"}:
                     context.update(goals=list(goals.values()), tasks=list(tasks.values()))
                 elif event.goal_id:
                     context["goal"] = goals[event.goal_id]
@@ -361,6 +505,12 @@ def event_description(kind: str, context: JsonObject) -> str:
     """Keep protocol snapshots in the model transcript, not the user's chat bubble."""
     data = context["data"]
     task = data.get("task", {})
+    if kind == "model_recovery":
+        return "模型暂时不可用，退避后重新核对任务与操作结果，再继续协调。"
+    if kind == "agent_offline":
+        return "任务关联的 agent 已失联，需要核查执行状态。"
+    if kind == "task_stalled":
+        return "任务长时间没有进度更新，需要核查是否仍在推进。"
     if kind == "recovery":
         return "服务已恢复，需要核对现有任务与执行结果，再继续协调。"
     if kind == "task_terminal":

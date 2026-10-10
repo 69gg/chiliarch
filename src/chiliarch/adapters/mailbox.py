@@ -7,9 +7,10 @@ import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
+from chiliarch.adapters.artifacts import public_result
 from chiliarch.client import ClientStore
 from chiliarch.protocol import Envelope
 
@@ -71,14 +72,33 @@ class AgentMailbox:
             ]
         }
 
-    async def read_messages(self, after: int = 0, limit: int = 100) -> JsonObject:
-        messages = await self.store.messages(after, limit)
+    async def _scope(self, task_id: str | None) -> str | None:
+        if self.managed_task is not None:
+            if task_id is not None and task_id != self.managed_task:
+                raise ValueError("Cannot access another managed task's mailbox")
+            task_id = self.managed_task
+        if task_id is not None:
+            await self._task(task_id)
+        return task_id
+
+    async def read_messages(
+        self, after: int | None = 0, limit: int = 100, task_id: str | None = None
+    ) -> JsonObject:
+        task_id = await self._scope(task_id)
+        if after is None:
+            after = await self.store.message_cursor(task_id)
+        messages = await self.store.messages(after, limit, task_id=task_id)
         return {
             "messages": [
-                {"seq": seq, **envelope.model_dump(mode="json")} for seq, envelope in messages
+                public_result({"seq": seq, **envelope.model_dump(mode="json")})
+                for seq, envelope in messages
             ],
             "cursor": messages[-1][0] if messages else after,
         }
+
+    async def acknowledge_messages(self, cursor: int, task_id: str | None = None) -> JsonObject:
+        task_id = await self._scope(task_id)
+        return {"cursor": await self.store.acknowledge_messages(cursor, task_id)}
 
     async def claim_task(self, task_id: str | None = None, wait_seconds: float = 0) -> JsonObject:
         if not self.manual_tasks:
@@ -181,9 +201,16 @@ class AgentMailbox:
         return {"status": "queued", "message_id": envelope.id}
 
     async def request_operation(
-        self, operation: str, arguments: JsonObject, message: str = "", wait_seconds: float = 0
+        self,
+        operation: str,
+        arguments: JsonObject,
+        message: str = "",
+        wait_seconds: float = 0,
+        client_request_id: str | None = None,
+        task_id: str | None = None,
     ) -> JsonObject:
         self._wait(wait_seconds)
+        task_id = await self._scope(task_id)
         if self.managed_task is not None:
             state, _ = await self._task(self.managed_task)
             if state != "running":
@@ -197,14 +224,18 @@ class AgentMailbox:
                 "operation": operation,
                 "arguments": arguments,
                 "message": message,
-                **({"metadata": {"task_id": self.managed_task}} if self.managed_task else {}),
+                **({"metadata": {"task_id": task_id}} if task_id else {}),
             },
         )
-        await self.store.enqueue(envelope)
+        request_id = await self.store.enqueue_request(envelope, client_request_id)
         return await self.get_request_result(request_id, wait_seconds)
 
     async def get_request_result(self, request_id: str, wait_seconds: float = 0) -> JsonObject:
         self._wait(wait_seconds)
+        if self.managed_task is not None and not await self.store.request_belongs_to(
+            request_id, self.managed_task
+        ):
+            raise ValueError("Request does not belong to this managed task")
         deadline = time.monotonic() + wait_seconds
         while True:
             # A response remains durable after its transport ACK and after restarts.
@@ -218,6 +249,146 @@ class AgentMailbox:
     async def list_agents(self, wait_seconds: float = 10) -> JsonObject:
         return await self.request_operation(
             "list_agents", {}, "Discover agents for coordination", wait_seconds
+        )
+
+    async def create_channel(
+        self,
+        title: str,
+        members: list[str],
+        goal_id: str | None = None,
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self.request_operation(
+            "create_channel",
+            {"title": title, "members": members, "goal_id": goal_id},
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def list_channels(self, wait_seconds: float = 10) -> JsonObject:
+        return await self.request_operation("list_channels", {}, wait_seconds=wait_seconds)
+
+    async def get_channel(
+        self, channel_id: str, after: int = 0, limit: int = 100, wait_seconds: float = 10
+    ) -> JsonObject:
+        return await self.request_operation(
+            "get_channel",
+            {"channel_id": channel_id, "after": after, "limit": limit},
+            wait_seconds=wait_seconds,
+        )
+
+    async def send_peer_message(
+        self,
+        message: str,
+        recipient_agent_id: str | None = None,
+        channel_id: str | None = None,
+        task_id: str | None = None,
+        recipient_task_id: str | None = None,
+        reply_to: str | None = None,
+        wake: bool = False,
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        task_id = await self._scope(task_id)
+        return await self.request_operation(
+            "send_peer_message",
+            {
+                "message": message,
+                "recipient_agent_id": recipient_agent_id,
+                "channel_id": channel_id,
+                "task_id": task_id,
+                "recipient_task_id": recipient_task_id,
+                "reply_to": reply_to,
+                "wake": wake,
+            },
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+            task_id=task_id,
+        )
+
+    async def acknowledge_peer_message(
+        self,
+        message_id: str,
+        state: Literal["read", "processed"],
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self.request_operation(
+            "acknowledge_peer_message",
+            {"message_id": message_id, "state": state},
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def get_peer_message(self, message_id: str, wait_seconds: float = 10) -> JsonObject:
+        return await self.request_operation(
+            "get_peer_message", {"message_id": message_id}, wait_seconds=wait_seconds
+        )
+
+    async def wait_for_tasks(
+        self,
+        waiting_for: list[str],
+        task_id: str | None = None,
+        reason: str = "",
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        task_id = await self._scope(task_id)
+        if task_id is None:
+            raise ValueError("Provide the task_id that is waiting for other tasks")
+        return await self.request_operation(
+            "wait_for_tasks",
+            {"task_id": task_id, "waiting_for": waiting_for, "reason": reason},
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+            task_id=task_id,
+        )
+
+    async def list_task_waits(
+        self, task_id: str | None = None, wait_seconds: float = 10
+    ) -> JsonObject:
+        task_id = await self._scope(task_id)
+        return await self.request_operation(
+            "list_task_waits", {"task_id": task_id}, wait_seconds=wait_seconds, task_id=task_id
+        )
+
+    async def upload_artifact(
+        self,
+        path: str,
+        members: list[str],
+        goal_id: str | None = None,
+        task_id: str | None = None,
+        client_request_id: str | None = None,
+        timeout_seconds: float = 20,
+    ) -> JsonObject:
+        from chiliarch.adapters.artifacts import upload_artifact
+
+        return await upload_artifact(
+            self,
+            path,
+            members,
+            goal_id=goal_id,
+            task_id=await self._scope(task_id),
+            client_request_id=client_request_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def download_artifact(
+        self,
+        artifact_id: str,
+        destination: str,
+        task_id: str | None = None,
+        timeout_seconds: float = 20,
+    ) -> JsonObject:
+        from chiliarch.adapters.artifacts import download_artifact
+
+        return await download_artifact(
+            self,
+            artifact_id,
+            destination,
+            task_id=await self._scope(task_id),
+            timeout_seconds=timeout_seconds,
         )
 
 

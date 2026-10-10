@@ -64,7 +64,7 @@ class ArtifactReference(CoordinationArguments):
     def no_embedded_credentials(cls, value: str) -> str:
         parsed = urlsplit(value)
         if (
-            parsed.scheme.lower() not in {"", "http", "https", "file", "git", "ssh"}
+            parsed.scheme.lower() not in {"", "http", "https", "file", "git", "ssh", "chiliarch"}
             and not PureWindowsPath(value).is_absolute()
         ):
             raise ValueError("Artifact references must use a file, repository or web URI")
@@ -267,6 +267,7 @@ class CoordinationService:
         return ready, summaries
 
     async def enqueue(self, session: AsyncSession, task: Task, link: TaskLink) -> bool:
+        from chiliarch.collaboration import TaskContext
         from chiliarch.service import redact
 
         ready, dependencies = await self.dependencies(session, link)
@@ -295,7 +296,16 @@ class CoordinationService:
                 "retry_of": previous_link.retry_of,
                 "recovery_note": task.parameters.get("recovery_note"),
             }
-        if goal is not None or link.depends_on or link.acceptance_criteria or link.retry_of:
+        extra = await session.get(TaskContext, task.id)
+        if extra:
+            context.update(extra.context)
+        if (
+            goal is not None
+            or link.depends_on
+            or link.acceptance_criteria
+            or link.retry_of
+            or extra
+        ):
             task.parameters = {**task.parameters, "chiliarch_context": redact(context)}
         await self.service._enqueue(
             session,
@@ -337,11 +347,17 @@ class CoordinationService:
         *,
         retry_of: str | None = None,
     ) -> JsonObject:
+        from chiliarch.collaboration import TaskContext
         from chiliarch.service import OperationError
 
         await self.service._agent(session, args["agent_id"])
         if "chiliarch_context" in args["parameters"]:
             raise OperationError("chiliarch_context is reserved for platform coordination", 422)
+        continuation = args.get("continue_task_id")
+        if continuation:
+            previous = await self.task(session, continuation)
+            if previous.agent_id != args["agent_id"] or previous.status != "completed":
+                raise OperationError("Continue only completed work owned by the same agent", 409)
         goal = await self.goal(session, args["goal_id"]) if args.get("goal_id") else None
         if goal and goal.status in {"completed", "cancelled"}:
             raise OperationError("Cannot dispatch into a closed goal", 409)
@@ -364,6 +380,8 @@ class CoordinationService:
         )
         session.add(task)
         await session.flush()
+        if continuation:
+            session.add(TaskContext(task_id=task.id, context={"continue_task_id": continuation}))
         link = TaskLink(
             task_id=task.id,
             goal_id=goal.id if goal else None,

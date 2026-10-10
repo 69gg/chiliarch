@@ -21,10 +21,23 @@ COORDINATION_TOOLS = {
     "status",
     "list_tasks",
     "read_messages",
+    "acknowledge_messages",
     "send_message",
     "request_operation",
     "get_request_result",
     "list_agents",
+    "create_channel",
+    "list_channels",
+    "get_channel",
+    "send_peer_message",
+    "acknowledge_peer_message",
+    "get_peer_message",
+    "wait_for_tasks",
+    "list_task_waits",
+    "upload_artifact",
+    "download_artifact",
+    "list_artifacts",
+    "get_artifact",
 }
 EXECUTION_TOOLS = {
     "claim_task",
@@ -160,14 +173,17 @@ async def test_standalone_stdio_exposes_full_tools_and_executes_explicitly_claim
                     )
                     assert confirmed["status"] == "cancelled"
                     await wait_for_task(platform, cancelled_id, "cancelled")
-                    request = payload(await session.call_tool("list_agents", {"wait_seconds": 0}))
-                    assert request["status"] == "pending"
+                    request = payload(await session.call_tool("list_agents", {"wait_seconds": 10}))
+                    assert request["status"] == "approved"
                     later = payload(
                         await session.call_tool(
                             "get_request_result", {"request_id": request["request_id"]}
                         )
                     )
-                    assert later["status"] == "pending"
+                    assert later["status"] == "approved"
+                    assert any(
+                        item["id"] == identity["agent_id"] for item in later["result"]["agents"]
+                    )
     finally:
         await platform.stop()
 
@@ -236,6 +252,24 @@ async def test_managed_stdio_mailbox_exposes_only_coordination_and_task_bound_re
                         )
                     )
                     assert request["status"] == "pending"
+                    peer = payload(
+                        await session.call_tool(
+                            "send_peer_message",
+                            {
+                                "message": "Review this result",
+                                "recipient_agent_id": "peer",
+                                "wait_seconds": 0,
+                                "client_request_id": "first-review",
+                            },
+                        )
+                    )
+                    outgoing = next(
+                        item
+                        for item in await store.pending()
+                        if item.payload.get("request_id") == peer["request_id"]
+                    )
+                    assert outgoing.payload["arguments"]["task_id"] == "managed"
+                    assert outgoing.payload["metadata"]["task_id"] == "managed"
                     await store.transition("managed", {"running"}, "cancelled", [])
                     error = await session.call_tool("send_message", {"message": "Late report"})
                     assert error.isError

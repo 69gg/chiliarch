@@ -189,8 +189,13 @@ class RemoteMailbox:
     async def list_tasks(self, status: str | None = None) -> JsonObject:
         return await self._call("list_tasks", status=status)
 
-    async def read_messages(self, after: int = 0, limit: int = 100) -> JsonObject:
-        return await self._call("read_messages", after=after, limit=limit)
+    async def read_messages(
+        self, after: int | None = 0, limit: int = 100, task_id: str | None = None
+    ) -> JsonObject:
+        return await self._call("read_messages", after=after, limit=limit, task_id=task_id)
+
+    async def acknowledge_messages(self, cursor: int, task_id: str | None = None) -> JsonObject:
+        return await self._call("acknowledge_messages", cursor=cursor, task_id=task_id)
 
     async def send_message(
         self, message: str, task_id: str | None = None, correlation_id: str | None = None
@@ -200,7 +205,13 @@ class RemoteMailbox:
         )
 
     async def request_operation(
-        self, operation: str, arguments: JsonObject, message: str = "", wait_seconds: float = 0
+        self,
+        operation: str,
+        arguments: JsonObject,
+        message: str = "",
+        wait_seconds: float = 0,
+        client_request_id: str | None = None,
+        task_id: str | None = None,
     ) -> JsonObject:
         return await self._call(
             "request_operation",
@@ -208,6 +219,8 @@ class RemoteMailbox:
             arguments=arguments,
             message=message,
             wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+            task_id=task_id,
         )
 
     async def get_request_result(self, request_id: str, wait_seconds: float = 0) -> JsonObject:
@@ -217,6 +230,142 @@ class RemoteMailbox:
 
     async def list_agents(self, wait_seconds: float = 10) -> JsonObject:
         return await self._call("list_agents", wait_seconds=wait_seconds)
+
+    async def create_channel(
+        self,
+        title: str,
+        members: list[str],
+        goal_id: str | None = None,
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self._call(
+            "create_channel",
+            title=title,
+            members=members,
+            goal_id=goal_id,
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def list_channels(self, wait_seconds: float = 10) -> JsonObject:
+        return await self._call("list_channels", wait_seconds=wait_seconds)
+
+    async def get_channel(
+        self, channel_id: str, after: int = 0, limit: int = 100, wait_seconds: float = 10
+    ) -> JsonObject:
+        return await self._call(
+            "get_channel",
+            channel_id=channel_id,
+            after=after,
+            limit=limit,
+            wait_seconds=wait_seconds,
+        )
+
+    async def send_peer_message(
+        self,
+        message: str,
+        recipient_agent_id: str | None = None,
+        channel_id: str | None = None,
+        task_id: str | None = None,
+        recipient_task_id: str | None = None,
+        reply_to: str | None = None,
+        wake: bool = False,
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self._call(
+            "send_peer_message",
+            message=message,
+            recipient_agent_id=recipient_agent_id,
+            channel_id=channel_id,
+            task_id=task_id,
+            recipient_task_id=recipient_task_id,
+            reply_to=reply_to,
+            wake=wake,
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def acknowledge_peer_message(
+        self,
+        message_id: str,
+        state: Literal["read", "processed"],
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self._call(
+            "acknowledge_peer_message",
+            message_id=message_id,
+            state=state,
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def get_peer_message(self, message_id: str, wait_seconds: float = 10) -> JsonObject:
+        return await self._call(
+            "get_peer_message", message_id=message_id, wait_seconds=wait_seconds
+        )
+
+    async def wait_for_tasks(
+        self,
+        waiting_for: list[str],
+        task_id: str | None = None,
+        reason: str = "",
+        wait_seconds: float = 10,
+        client_request_id: str | None = None,
+    ) -> JsonObject:
+        return await self._call(
+            "wait_for_tasks",
+            waiting_for=waiting_for,
+            task_id=task_id,
+            reason=reason,
+            wait_seconds=wait_seconds,
+            client_request_id=client_request_id,
+        )
+
+    async def list_task_waits(
+        self, task_id: str | None = None, wait_seconds: float = 10
+    ) -> JsonObject:
+        return await self._call("list_task_waits", task_id=task_id, wait_seconds=wait_seconds)
+
+    async def upload_artifact(
+        self,
+        path: str,
+        members: list[str],
+        goal_id: str | None = None,
+        task_id: str | None = None,
+        client_request_id: str | None = None,
+        timeout_seconds: float = 20,
+    ) -> JsonObject:
+        path = str(await asyncio.to_thread(lambda: Path(path).expanduser().absolute()))
+        return await self._call(
+            "upload_artifact",
+            path=path,
+            members=members,
+            goal_id=goal_id,
+            task_id=task_id,
+            client_request_id=client_request_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def download_artifact(
+        self,
+        artifact_id: str,
+        destination: str,
+        task_id: str | None = None,
+        timeout_seconds: float = 20,
+    ) -> JsonObject:
+        destination = str(
+            await asyncio.to_thread(lambda: Path(destination).expanduser().absolute())
+        )
+        return await self._call(
+            "download_artifact",
+            artifact_id=artifact_id,
+            destination=destination,
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def claim_task(self, task_id: str | None = None, wait_seconds: float = 0) -> JsonObject:
         return await self._call("claim_task", task_id=task_id, wait_seconds=wait_seconds)

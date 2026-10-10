@@ -337,6 +337,114 @@
       ],
       "title": "RequestResolvedPayload",
       "type": "object"
+    },
+    "CollaborationMessagePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "sender_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sender Agent Id"
+        },
+        "sender_role": {
+          "enum": [
+            "agent",
+            "user",
+            "supervisor"
+          ],
+          "title": "Sender Role",
+          "type": "string"
+        },
+        "recipient_agent_id": {
+          "minLength": 1,
+          "title": "Recipient Agent Id",
+          "type": "string"
+        },
+        "channel_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel Id"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Id"
+        },
+        "source_task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Task Id"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "reply_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reply To"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "wake": {
+          "default": false,
+          "title": "Wake",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "message_id",
+        "sender_role",
+        "recipient_agent_id",
+        "message",
+        "sequence"
+      ],
+      "title": "CollaborationMessagePayload",
+      "type": "object"
     }
   },
   "oneOf": [
@@ -469,6 +577,20 @@
     {
       "properties": {
         "type": {
+          "const": "collaboration.message"
+        },
+        "payload": {
+          "$ref": "#/$defs/CollaborationMessagePayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
           "pattern": "^(?!task\\.|agent\\.|request\\.)[^.]+\\..+$",
           "not": {
             "enum": [
@@ -480,7 +602,8 @@
               "agent.request",
               "agent.contact",
               "agent.message",
-              "request.resolved"
+              "request.resolved",
+              "collaboration.message"
             ]
           }
         },

@@ -63,6 +63,18 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。原有 standalone MCP 和独立 `agent run` 保留兼容，不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
 
+### artifacts
+
+跨机器产物经已有出站请求分块存入 SQLite，不要求服务端访问 agent 的文件路径或 URL。配置支持热重载：
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| max_artifact_bytes | 67108864（64 MiB） | 新上传的单文件上限 |
+| chunk_bytes | 65536（64 KiB） | 新上传的分块大小；自动适配 `transport.max_message_bytes` 的信封开销和 base64 扩张 |
+| max_total_bytes | 1073741824（1 GiB） | 所有产物清单声明大小的合计配额；未完成上传也预占额度 |
+
+已开始上传的清单、成员、SHA256、分块大小保持不变；降低配额不会删除已有内容，超额后拒绝新的上传。`max_total_bytes` 不是 SQLite 磁盘大小上限：出入站消息、请求历史、索引和备份也占用空间。废弃上传使用 `discard_artifact_upload`，删除已发布内容使用需审批的 `delete_artifact`；这些操作释放产物清单配额，但不回收已交付副本、传输历史或既有备份，也不承诺物理擦除。见 [产物共享](artifacts.md)。
+
 ### 本机 daemon 配置
 
 共享守护目录中的 `daemon.json` 是独立私有配置，不属于平台 `chiliarch.toml`。它保存格式版本、agent 登记、本地调用凭证、监听端口、启动超时和日志/传输策略；`port=0` 让系统选择可用回环端口，发现信息供本机客户端读取。不要把该文件、运行时发现信息或每个 agent 的 SQLite 状态库写入仓库或共享给其他用户。
@@ -72,6 +84,18 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 ### supervisor / model
 
 `supervisor.mode` 为 ask/auto/yolo；`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
+
+任务长期不更新由 `supervisor.task_stall_seconds` 控制，默认 **300 秒**；失联仍使用 `transport.offline_after_seconds`（默认 60 秒）。服务端维护循环按 `transport.retry_seconds` 扫描，仅生成持久核查事件，不认定任务失败，也不重新派发。每个任务进度时间、每次 agent 活性时间分别去重；进度恢复或重连后可开启新的监护周期。未配置总管模型或会话暂停时事件仍保留。
+
+模型传输故障的恢复策略也可热重载：
+
+| supervisor 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| model_recovery_attempts | 3 | 单次连续故障最多新增的核查轮次，范围 0–10；0 禁用 |
+| model_recovery_base_seconds | 5 | 首次恢复等待秒数，此后按指数退避 |
+| model_recovery_max_seconds | 60 | 单次等待上限，必须不小于 base |
+
+这与 `model.retries` 不同：后者是 SDK 请求层重试；总管恢复在原轮次已失败后另开核查轮次，携带已有历史、当前任务快照与操作结果，不直接重放工具。仅连接/传输异常、HTTP 408/429/5xx 可自动恢复；认证错误、无效参数、模型返回不完整、逻辑错误和用户停止仍要求用户处理。失败次数与下次核查时间持久保存，重启不会重置预算。到达上限后自动协调暂停，用户新消息或明确“继续协调”可恢复。用户停止可撤销等待中的恢复；新消息会取代旧恢复计划。
 
 `model.context_window` 为正整数，默认 **200000 tokens**；填写服务商模型实际支持的上下文窗口。达到 **90%** 时，总管自动将历史压缩成接续摘要，保留最近的完整调用与结果，并继续当前工作。页面展示上下文占用，估算值标注“约”；压缩不会删除完整聊天记录。优先使用服务商当前轮次的输入和输出用量，缓存输入同样计入窗口；没有 usage 时采用本地估算。修改窗口热重载，后续新运行使用新值，已运行或等待审批的执行仍使用自己的模型配置快照。
 

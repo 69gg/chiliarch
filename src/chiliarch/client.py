@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import random
@@ -67,6 +68,15 @@ class ClientStore:
             CREATE TABLE IF NOT EXISTS work (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS work_results (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cancellations (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS local_requests (
+                request_id TEXT PRIMARY KEY, client_request_id TEXT UNIQUE,
+                task_id TEXT, body TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS message_cursors (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
+            INSERT OR IGNORE INTO local_requests(request_id,task_id,body)
+                SELECT json_extract(body,'$.payload.request_id'),
+                       json_extract(body,'$.payload.metadata.task_id'),body FROM outbox
+                WHERE json_extract(body,'$.type')='agent.request';
         """)
         await self.connection.commit()
 
@@ -113,10 +123,69 @@ class ClientStore:
             )
 
     async def enqueue(self, envelope: Envelope) -> None:
+        if envelope.type == "agent.request":
+            await self.enqueue_request(envelope)
+            return
         async with self._transaction():
             await self.db().execute(
                 "INSERT OR IGNORE INTO outbox VALUES (?,?)", (envelope.id, envelope.canonical())
             )
+
+    async def enqueue_request(
+        self, envelope: Envelope, client_request_id: str | None = None
+    ) -> str:
+        """Persist request identity and task scope even after its outbox ACK is removed."""
+        if envelope.type != "agent.request":
+            raise ValueError("Expected an agent request")
+        if client_request_id is not None and (
+            not client_request_id.strip() or len(client_request_id) > 128
+        ):
+            raise ValueError("client_request_id must contain 1 to 128 characters")
+        async with self._transaction():
+            if client_request_id is not None:
+                async with self.db().execute(
+                    "SELECT request_id,body FROM local_requests WHERE client_request_id=?",
+                    (client_request_id,),
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                if existing:
+                    original = Envelope.model_validate_json(existing[1])
+                    old_payload = {k: v for k, v in original.payload.items() if k != "request_id"}
+                    new_payload = {k: v for k, v in envelope.payload.items() if k != "request_id"}
+                    if json.dumps(old_payload, sort_keys=True) != json.dumps(
+                        new_payload, sort_keys=True
+                    ):
+                        raise ValueError("client_request_id already belongs to different arguments")
+                    return str(existing[0])
+            request_id = str(envelope.payload["request_id"])
+            body = envelope.canonical()
+            async with self.db().execute(
+                "SELECT body FROM local_requests WHERE request_id=?", (request_id,)
+            ) as cursor:
+                existing_request = await cursor.fetchone()
+            if existing_request and existing_request[0] != body:
+                raise ValueError("The same request ID has conflicting content")
+            await self.db().execute(
+                "INSERT OR IGNORE INTO local_requests VALUES (?,?,?,?)",
+                (
+                    request_id,
+                    client_request_id,
+                    envelope.payload.get("metadata", {}).get("task_id"),
+                    body,
+                ),
+            )
+            await self.db().execute(
+                "INSERT OR IGNORE INTO outbox VALUES (?,?)", (envelope.id, body)
+            )
+            return request_id
+
+    async def request_belongs_to(self, request_id: str, task_id: str) -> bool:
+        async with self.lock:
+            async with self.db().execute(
+                "SELECT 1 FROM local_requests WHERE request_id=? AND task_id=?",
+                (request_id, task_id),
+            ) as cursor:
+                return await cursor.fetchone() is not None
 
     async def pending(self) -> list[Envelope]:
         async with self.lock:
@@ -211,23 +280,96 @@ class ClientStore:
                     for row in await cursor.fetchall()
                 ]
 
-    async def messages(self, after: int = 0, limit: int = 100) -> list[tuple[int, Envelope]]:
+    async def messages(
+        self, after: int = 0, limit: int = 100, *, task_id: str | None = None
+    ) -> list[tuple[int, Envelope]]:
         """Expose durable business replies with a local cursor, never transport ACKs."""
         if after < 0 or not 1 <= limit <= 1000:
             raise ValueError("Invalid message cursor or limit")
+        query = """SELECT rowid,body FROM inbox WHERE rowid>?
+            AND json_extract(body,'$.type') IN
+                ('agent.message','request.resolved','task.cancel','collaboration.message')"""
+        parameters: list[str | int] = [after]
+        if task_id is not None:
+            scopes = await self._peer_message_scopes(task_id)
+            placeholders = ",".join("?" for _ in scopes)
+            query += """ AND (
+                json_extract(body,'$.payload.task_id')=? OR
+                json_extract(body,'$.payload.metadata.task_id')=? OR
+                (json_extract(body,'$.type')='request.resolved' AND EXISTS (
+                    SELECT 1 FROM local_requests r
+                    WHERE r.request_id=json_extract(inbox.body,'$.payload.request_id')
+                    AND r.task_id=?))"""
+            parameters.extend([task_id, task_id, task_id])
+            query += (
+                " OR (json_extract(body,'$.type')='collaboration.message' "
+                f"AND json_extract(body,'$.payload.task_id') IN ({placeholders})))"
+            )
+            parameters.extend(scopes)
+        query += " ORDER BY rowid LIMIT ?"
+        parameters.append(limit)
+        async with self.lock:
+            async with self.db().execute(query, parameters) as cursor:
+                return [
+                    (int(row[0]), Envelope.model_validate_json(row[1]))
+                    for row in await cursor.fetchall()
+                ]
+
+    async def _peer_message_scopes(self, task_id: str) -> list[str]:
+        """A continuation inherits late peer replies to completed ancestors, not sibling work."""
+        scopes = [task_id]
+        async with self.lock:
+            while True:
+                async with self.db().execute(
+                    "SELECT body FROM work WHERE task_id=?", (scopes[-1],)
+                ) as cursor:
+                    current = await cursor.fetchone()
+                if current is None:
+                    break
+                command = Envelope.model_validate_json(current[0])
+                context = command.payload.get("parameters", {}).get("chiliarch_context", {})
+                parent = context.get("continue_task_id") if isinstance(context, dict) else None
+                if not isinstance(parent, str) or parent in scopes:
+                    break
+                async with self.db().execute(
+                    "SELECT state FROM work WHERE task_id=?", (parent,)
+                ) as cursor:
+                    previous = await cursor.fetchone()
+                if previous is None or previous[0] != "completed":
+                    break
+                scopes.append(parent)
+        return scopes
+
+    async def message_cursor(self, task_id: str | None = None) -> int:
         async with self.lock:
             async with self.db().execute(
-                "SELECT rowid,body FROM inbox WHERE rowid>? ORDER BY rowid", (after,)
+                "SELECT cursor FROM message_cursors WHERE scope=?",
+                ("agent" if task_id is None else "task:" + task_id,),
             ) as cursor:
-                rows = await cursor.fetchall()
-        result: list[tuple[int, Envelope]] = []
-        for sequence, body in rows:
-            envelope = Envelope.model_validate_json(body)
-            if envelope.type in {"agent.message", "request.resolved", "task.cancel"}:
-                result.append((int(sequence), envelope))
-                if len(result) >= limit:
-                    break
-        return result
+                row = await cursor.fetchone()
+                return int(row[0]) if row else 0
+
+    async def acknowledge_messages(self, cursor: int, task_id: str | None = None) -> int:
+        """Advance a local consumer only after it explicitly confirms receiving the page."""
+        if cursor < 0:
+            raise ValueError("Invalid message cursor")
+        if cursor:
+            found = await self.messages(cursor - 1, 1, task_id=task_id)
+            if not found or found[0][0] != cursor:
+                raise ValueError("Message cursor does not belong to this mailbox")
+        scope = "agent" if task_id is None else "task:" + task_id
+        async with self._transaction():
+            await self.db().execute(
+                """INSERT INTO message_cursors VALUES (?,?) ON CONFLICT(scope)
+                   DO UPDATE SET cursor=MAX(cursor,excluded.cursor)""",
+                (scope, cursor),
+            )
+            async with self.db().execute(
+                "SELECT cursor FROM message_cursors WHERE scope=?", (scope,)
+            ) as result:
+                row = await result.fetchone()
+                assert row is not None
+                return int(row[0])
 
     async def request_result(self, request_id: str) -> Envelope | None:
         async with self.lock:

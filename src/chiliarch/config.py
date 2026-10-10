@@ -131,6 +131,10 @@ class SupervisorSettings(ConfigModel):
     run_timeout: float = Field(default=600, gt=0)
     event_poll_seconds: float = Field(default=0.25, gt=0)
     inbox_poll_seconds: float = Field(default=1, gt=0)
+    task_stall_seconds: float = Field(default=300, gt=0)
+    model_recovery_attempts: int = Field(default=3, ge=0, le=10)
+    model_recovery_base_seconds: float = Field(default=5, gt=0)
+    model_recovery_max_seconds: float = Field(default=60, gt=0)
     system_prompt: str = (
         "You are chiliarch AI, the user's agent supervisor. Use platform tools to inspect "
         "agents, coordinate tasks and respond to requests. All agent connections originate "
@@ -149,6 +153,14 @@ class SupervisorSettings(ConfigModel):
         "arrive in this goal's conversation; do not poll repeatedly while waiting."
     )
 
+    @model_validator(mode="after")
+    def validate_recovery(self) -> SupervisorSettings:
+        if self.model_recovery_max_seconds < self.model_recovery_base_seconds:
+            raise ValueError(
+                "model_recovery_max_seconds must not be less than model_recovery_base_seconds"
+            )
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def remove_legacy_limits(cls, value: Any) -> Any:
@@ -166,11 +178,18 @@ class LogSettings(ConfigModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
+class ArtifactSettings(ConfigModel):
+    max_artifact_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
+    chunk_bytes: int = Field(default=64 * 1024, ge=1)
+    max_total_bytes: int = Field(default=1024 * 1024 * 1024, ge=1)
+
+
 class Settings(ConfigModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     transport: TransportSettings = Field(default_factory=TransportSettings)
+    artifacts: ArtifactSettings = Field(default_factory=ArtifactSettings)
     model: ModelSettings = Field(default_factory=ModelSettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
     logs: LogSettings = Field(default_factory=LogSettings)

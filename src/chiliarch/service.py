@@ -19,7 +19,34 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from chiliarch.artifacts import (
+    CONTINUATION_OPERATIONS as ARTIFACT_CONTINUATIONS,
+)
+from chiliarch.artifacts import (
+    INTERNAL_OPERATIONS as ARTIFACT_INTERNAL,
+)
+from chiliarch.artifacts import (
+    OPERATIONS as ARTIFACT_OPERATIONS,
+)
+from chiliarch.artifacts import (
+    SPECS as ARTIFACT_SPECS,
+)
+from chiliarch.artifacts import (
+    ArtifactService,
+)
 from chiliarch.auth import hash_password, hash_token
+from chiliarch.collaboration import (
+    DIRECT_OPERATIONS,
+    TELEMETRY_OPERATIONS,
+    CollaborationService,
+    RequestContext,
+)
+from chiliarch.collaboration import (
+    OPERATIONS as COLLABORATION_OPERATIONS,
+)
+from chiliarch.collaboration import (
+    SPECS as COLLABORATION_SPECS,
+)
 from chiliarch.coordination import (
     CoordinationService,
     CreateGoalArguments,
@@ -45,7 +72,7 @@ from chiliarch.database import (
     UserSession,
     new_id,
 )
-from chiliarch.protocol import AGENT_MESSAGE_TYPES, Envelope
+from chiliarch.protocol import AGENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, Envelope
 
 if TYPE_CHECKING:
     from chiliarch.config import SettingsManager
@@ -89,6 +116,7 @@ class DispatchArguments(AgentArguments):
     conversation_id: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
+    continue_task_id: str | None = None
 
 
 class TaskArguments(Arguments):
@@ -165,6 +193,7 @@ SENSITIVE_NAMES = frozenset(
         "token",
         "code",
         "authorization",
+        "data_base64",
         "secret",
     }
 )
@@ -196,6 +225,8 @@ class OperationService:
         self.changed = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
         self.coordination = CoordinationService(self)
+        self.collaboration = CollaborationService(self)
+        self.artifacts = ArtifactService(self)
         self._register_core()
 
     def register(
@@ -350,13 +381,21 @@ class OperationService:
                 True,
             ),
         ]
-        for name, description, arguments, risk, mutating in specs:
+        for name, description, arguments, risk, mutating in [
+            *specs,
+            *COLLABORATION_SPECS,
+            *ARTIFACT_SPECS,
+        ]:
             self.operations[name] = Operation(
                 name, description, arguments.model_json_schema(), None, risk, mutating, arguments
             )
 
     def schemas(self) -> list[JsonObject]:
-        return [operation.schema() for operation in self.operations.values()]
+        return [
+            operation.schema()
+            for operation in self.operations.values()
+            if operation.name not in ARTIFACT_INTERNAL
+        ]
 
     def add_listener(self, callback: Listener) -> None:
         self.listeners.append(callback)
@@ -379,6 +418,8 @@ class OperationService:
                 if name == "retry_task" and validated.get("agent_id") is None:
                     # Preserve pre-handover idempotency fingerprints and stored requests.
                     validated.pop("agent_id", None)
+                if name == "dispatch_task" and validated.get("continue_task_id") is None:
+                    validated.pop("continue_task_id", None)
                 return validated
             except ValidationError as exc:
                 error = exc.errors(include_input=False, include_url=False)[0]
@@ -415,6 +456,20 @@ class OperationService:
             (assessment or {}).get("reason", operation.description)
         )
 
+    def _policy(self, name: str, arguments: JsonObject) -> Operation:
+        operation = self.operations[name]
+        if name == "send_peer_message" and arguments.get("wake"):
+            return Operation(
+                operation.name,
+                operation.description,
+                operation.parameters,
+                operation.handler,
+                "medium",
+                True,
+                operation.arguments,
+            )
+        return operation
+
     async def execute(
         self,
         name: str,
@@ -429,6 +484,10 @@ class OperationService:
             )
         if actor not in {"user", "supervisor"}:
             raise OperationError("Unknown actor", 403)
+        if actor == "supervisor" and name in ARTIFACT_INTERNAL:
+            raise OperationError(
+                "Binary transfer is performed by local artifact tools, not model context", 403
+            )
         raw_arguments = dict(arguments)
         supplied_assessment = raw_arguments.pop("_risk", None)
         if supplied_assessment is not None:
@@ -440,7 +499,7 @@ class OperationService:
                 raise OperationError("_risk requires level and reason", 422)
             risk_assessment = supplied_assessment
         validated = self._validate(name, raw_arguments)
-        operation = self.operations[name]
+        operation = self._policy(name, validated)
         if actor == "supervisor" and name in {"approve_operation", "reject_operation"}:
             raise OperationError(
                 "Only the authenticated user may resolve supervisor approvals", 403
@@ -481,7 +540,11 @@ class OperationService:
                     request = await session.get(AgentRequest, validated["request_id"])
                     if request is None:
                         raise OperationError("Agent request not found", 404)
-                    requested_operation = self.operations.get(request.operation)
+                    requested_operation = (
+                        self._policy(request.operation, request.arguments)
+                        if request.operation in self.operations
+                        else None
+                    )
                     if requested_operation is not None:
                         effective_operation = Operation(
                             operation.name,
@@ -816,11 +879,14 @@ class OperationService:
             self._maintenance_task = None
 
     async def _maintenance(self) -> None:
+        from chiliarch.monitoring import monitor_tasks
+
         while True:
             try:
                 async with self.db.write_lock, self.db.sessions.begin() as session:
                     await self._expire_messages(session)
                     await self.coordination.release(session)
+                    await monitor_tasks(session, self.settings_manager.current)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -885,6 +951,10 @@ class OperationService:
         self, session: AsyncSession, name: str, args: JsonObject, actor: str
     ) -> tuple[JsonObject, tuple[str, JsonObject] | None]:
         event: tuple[str, JsonObject] | None = None
+        if name in ARTIFACT_OPERATIONS:
+            return await self.artifacts.execute(session, name, args, actor), None
+        if name in COLLABORATION_OPERATIONS:
+            return await self.collaboration.execute(session, name, args, actor), None
         if name in {
             "create_goal",
             "list_goals",
@@ -1036,7 +1106,28 @@ class OperationService:
                         "Extension requests must be handled by an explicit plugin decision handler",
                         409,
                     )
-                result, event = await self._core(session, request.operation, validated, actor)
+                request_actor = (
+                    f"agent:{request.agent_id}"
+                    if request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS
+                    else actor
+                )
+                context = await session.get(RequestContext, request.id)
+                if request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS:
+                    validator = (
+                        self.artifacts
+                        if request.operation in ARTIFACT_OPERATIONS
+                        else self.collaboration
+                    )
+                    await validator.validate_scope(
+                        session,
+                        request.operation,
+                        validated,
+                        request.agent_id,
+                        context.task_id if context else None,
+                    )
+                result, event = await self._core(
+                    session, request.operation, validated, request_actor
+                )
                 request.status, request.result = "approved", result
             else:
                 request.status, request.result = "rejected", {"reason": args["reason"]}
@@ -1207,9 +1298,7 @@ class OperationService:
                 agent.metadata_json = {**agent.metadata_json, "transport": transport}
 
     async def receive(self, agent_id: str, envelope: Envelope) -> JsonObject:
-        if envelope.type not in AGENT_MESSAGE_TYPES and (
-            envelope.type in {"task.dispatch", "task.cancel", "request.resolved", "agent.message"}
-        ):
+        if envelope.type not in AGENT_MESSAGE_TYPES and envelope.type in SERVER_MESSAGE_TYPES:
             raise OperationError("Message type is reserved for the server", 403)
         body = envelope.model_dump(mode="json")
         if (
@@ -1259,6 +1348,7 @@ class OperationService:
                     ).scalar_one_or_none()
                     if message is not None:
                         message.acked = True
+                        await self.collaboration.delivered(session, message.message_id, agent_id)
                         if message.body.get("type") == "task.dispatch":
                             task = await session.get(Task, message.body["payload"]["task_id"])
                             if task and task.status == "queued":
@@ -1326,7 +1416,10 @@ class OperationService:
                                     )
                                 )
                             ).all():
-                                if message.body.get("payload", {}).get("task_id") == task.id:
+                                if (
+                                    message.body.get("type") in {"task.dispatch", "task.cancel"}
+                                    and message.body.get("payload", {}).get("task_id") == task.id
+                                ):
                                     message.acked = True
                     event = ("task.updated", {"agent_id": agent_id, "task": self.task_view(task)})
                 elif envelope.type == "agent.request":
@@ -1354,17 +1447,26 @@ class OperationService:
                                 "Request ID already belongs to different arguments", 409
                             )
                     else:
-                        session.add(
-                            AgentRequest(
-                                id=new_id(),
-                                agent_id=agent_id,
-                                external_id=requested["request_id"],
-                                operation=requested["operation"],
-                                arguments=arguments,
-                                message=requested.get("message"),
-                            )
+                        request = AgentRequest(
+                            id=new_id(),
+                            agent_id=agent_id,
+                            external_id=requested["request_id"],
+                            operation=requested["operation"],
+                            arguments=arguments,
+                            message=requested.get("message"),
                         )
-                        event = ("agent.request", {"agent_id": agent_id, "envelope": body})
+                        session.add(request)
+                        await session.flush()
+                        task_scope = requested.get("metadata", {}).get("task_id")
+                        if (
+                            task_scope
+                            and request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS
+                        ):
+                            await self.collaboration._task(session, task_scope, agent_id)
+                            session.add(RequestContext(request_id=request.id, task_id=task_scope))
+                            await session.flush()
+                        if not await self._direct_request(session, request):
+                            event = ("agent.request", {"agent_id": agent_id, "envelope": body})
                 elif envelope.type == "agent.contact":
                     event = ("agent.contact", {"agent_id": agent_id, "envelope": body})
                 else:
@@ -1381,6 +1483,60 @@ class OperationService:
             ).model_dump(mode="json"),
             "duplicate": False,
         }
+
+    async def _direct_request(self, session: AsyncSession, request: AgentRequest) -> bool:
+        """Resolve deterministic peer operations through the same validation and policy boundary."""
+        if request.operation not in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS:
+            return False
+        operation = self._policy(request.operation, request.arguments)
+        if (
+            request.operation not in TELEMETRY_OPERATIONS | ARTIFACT_CONTINUATIONS
+            and self._approval_reason(operation, f"agent:{request.agent_id}", None)
+        ):
+            return False
+        try:
+            async with session.begin_nested():
+                context = await session.get(RequestContext, request.id)
+                validator = (
+                    self.artifacts
+                    if request.operation in ARTIFACT_OPERATIONS
+                    else self.collaboration
+                )
+                await validator.validate_scope(
+                    session,
+                    request.operation,
+                    request.arguments,
+                    request.agent_id,
+                    context.task_id if context else None,
+                )
+                result, _ = await self._core(
+                    session, request.operation, request.arguments, f"agent:{request.agent_id}"
+                )
+            request.status, request.result = "approved", result
+        except OperationError as exc:
+            request.status, request.result = "failed", {"error": str(exc)}
+        request.resolved_at = time.time()
+        await self._enqueue(
+            session,
+            request.agent_id,
+            Envelope(
+                type="request.resolved",
+                correlation_id=request.external_id,
+                payload={
+                    "request_id": request.external_id,
+                    "status": request.status,
+                    "result": request.result,
+                },
+            ),
+        )
+        session.add(
+            AuditEvent(
+                actor=f"agent:{request.agent_id}",
+                action=request.operation,
+                details={"request_id": request.id, "status": request.status},
+            )
+        )
+        return True
 
     async def pending(self, agent_id: str) -> list[Envelope]:
         async with self.db.write_lock:

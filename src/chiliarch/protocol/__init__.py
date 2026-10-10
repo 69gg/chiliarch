@@ -75,6 +75,20 @@ class RequestResolvedPayload(Payload):
     error: str | None = None
 
 
+class CollaborationMessagePayload(Payload):
+    message_id: str = Field(min_length=1)
+    sender_agent_id: str | None = None
+    sender_role: Literal["agent", "user", "supervisor"]
+    recipient_agent_id: str = Field(min_length=1)
+    channel_id: str | None = None
+    task_id: str | None = None
+    source_task_id: str | None = None
+    message: str = Field(min_length=1)
+    reply_to: str | None = None
+    sequence: int = Field(ge=1)
+    wake: bool = False
+
+
 PAYLOAD_TYPES: dict[str, type[Payload]] = {
     "heartbeat": HeartbeatPayload,
     "ack": AckPayload,
@@ -85,12 +99,13 @@ PAYLOAD_TYPES: dict[str, type[Payload]] = {
     "agent.contact": AgentContactPayload,
     "agent.message": AgentMessagePayload,
     "request.resolved": RequestResolvedPayload,
+    "collaboration.message": CollaborationMessagePayload,
 }
 AGENT_MESSAGE_TYPES = frozenset(
     {"heartbeat", "ack", "task.status", "agent.request", "agent.contact"}
 )
 SERVER_MESSAGE_TYPES = frozenset(
-    {"task.dispatch", "task.cancel", "request.resolved", "agent.message"}
+    {"task.dispatch", "task.cancel", "request.resolved", "agent.message", "collaboration.message"}
 )
 
 
@@ -182,6 +197,7 @@ __all__ = [
     "AgentContactPayload",
     "AgentMessagePayload",
     "RequestResolvedPayload",
+    "CollaborationMessagePayload",
     "AGENT_MESSAGE_TYPES",
     "SERVER_MESSAGE_TYPES",
     "protocol_schema",
