@@ -27,6 +27,23 @@ from chiliarch.protocol import Envelope
 JsonObject = dict[str, Any]
 
 
+def pending_task_stacks() -> str:
+    """Capture coroutine locations before teardown cancellation changes the evidence."""
+    descriptions: list[str] = []
+    for task in sorted(asyncio.all_tasks(), key=lambda item: item.get_name()):
+        locations: list[str] = []
+        waiting: Any = task.get_coro()
+        while waiting is not None:
+            frame = getattr(waiting, "cr_frame", getattr(waiting, "gi_frame", None))
+            if frame is not None:
+                locations.append(
+                    f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
+                )
+            waiting = getattr(waiting, "cr_await", getattr(waiting, "gi_yieldfrom", None))
+        descriptions.append(f"{task.get_name()}: " + " -> ".join(locations))
+    return "\n".join(descriptions)
+
+
 class TransportGate:
     """A real ASGI gateway rejects transport handshakes, while POST remains usable."""
 
@@ -144,10 +161,49 @@ class LiveServer:
 
     async def stop(self) -> None:
         if self.server and self.task:
-            self.server.should_exit = True
-            async with asyncio.timeout(5):
-                await self.task
-            self.task = None
+            server = self.server
+            server_task = self.task
+            server.should_exit = True
+            try:
+                # wait() leaves the blocked task intact long enough to capture
+                # its actual cleanup phase, rather than only a CancelledError.
+                done, _ = await asyncio.wait([server_task], timeout=5)
+                if not done:
+                    raise TimeoutError("Test platform shutdown stalled:\n" + pending_task_stacks())
+                await server_task
+            finally:
+
+                async def join_owned_tasks() -> None:
+                    for listener in server.servers:
+                        listener.close()
+                    for connection in tuple(server.server_state.connections):
+                        connection.transport.close()
+                    # Stop requests before the lifespan disposes their database
+                    # and other resources, including when Uvicorn never reached
+                    # its own graceful shutdown routine.
+                    tasks = [server_task, *server.server_state.tasks]
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    lifespan = self.gate.lifespan_task
+                    if lifespan is not None:
+                        if not lifespan.done():
+                            lifespan.cancel()
+                        await asyncio.gather(lifespan, return_exceptions=True)
+                    await asyncio.gather(*(listener.wait_closed() for listener in server.servers))
+
+                cleanup = asyncio.create_task(join_owned_tasks())
+                cancelled = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup.result()
+                self.task = None
+                if cancelled:
+                    raise asyncio.CancelledError
 
     async def restart(self) -> None:
         blocked = self.gate.blocked
@@ -216,6 +272,95 @@ async def test_cancelled_platform_startup_releases_lifespan_and_listener(
     finally:
         startup.cancel()
         await asyncio.gather(startup, return_exceptions=True)
+
+
+@pytest.mark.parametrize("cancel_stop", [True, False], ids=["cancelled", "timed-out"])
+async def test_interrupted_platform_shutdown_joins_lifespan_and_releases_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_stop: bool
+) -> None:
+    platform = LiveServer(tmp_path)
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+    request_entered = asyncio.Event()
+    request_closed = asyncio.Event()
+    cleanup_order: list[str] = []
+    original_app = platform.gate.app
+    original_close = platform.app.state.database.close
+
+    async def hold_request(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("path") == "/test-blocked-request":
+            request_entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_order.append("request")
+                request_closed.set()
+        else:
+            await original_app(scope, receive, send)
+
+    async def close() -> None:
+        await original_close()
+        cleanup_order.append("database")
+        closed.set()
+
+    async def hold_shutdown(sockets: list[socket.socket] | None = None) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(platform.gate, "app", hold_request)
+    monkeypatch.setattr(platform.app.state.database, "close", close)
+    await platform.start()
+    assert platform.server is not None
+    monkeypatch.setattr(platform.server, "shutdown", hold_shutdown)
+    maintenance = platform.app.state.service._maintenance_task
+    sweeper = platform.app.state.supervisor.sweeper
+    server_task = platform.task
+    async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
+        request = asyncio.create_task(client.get(platform.url + "/test-blocked-request"))
+        shutdown: asyncio.Task[None] | None = None
+        try:
+            async with asyncio.timeout(8):
+                await request_entered.wait()
+                requests = tuple(platform.server.server_state.tasks)
+                assert requests
+                shutdown = asyncio.create_task(platform.stop())
+                await entered.wait()
+                if cancel_stop:
+                    shutdown.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await shutdown
+                else:
+                    with pytest.raises(TimeoutError) as error:
+                        await shutdown
+                    # Capture nested coroutine locations before cancellation.
+                    assert "hold_shutdown" in str(error.value)
+                    assert "hold_request" in str(error.value)
+                with pytest.raises(httpx.TransportError):
+                    await request
+            assert request_closed.is_set() and closed.is_set()
+            assert cleanup_order == ["request", "database"]
+            assert all(task.done() for task in requests)
+            assert not platform.server.server_state.tasks
+            assert not platform.server.server_state.connections
+            assert maintenance.done()
+            assert sweeper.done()
+            assert server_task is not None and server_task.done()
+            assert platform.task is None
+            assert platform.gate.lifespan_task is None
+            assert all(not listener.is_serving() for listener in platform.server.servers)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                # Match startup's reuse option: the accepted connection may
+                # legitimately remain in TCP TIME_WAIT after both ends close.
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", platform.port))
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            if shutdown is not None:
+                shutdown.cancel()
+                await asyncio.gather(shutdown, return_exceptions=True)
+            else:
+                await platform.stop()
 
 
 async def wait_for_task(live: LiveServer, task_id: str, status: str) -> JsonObject:

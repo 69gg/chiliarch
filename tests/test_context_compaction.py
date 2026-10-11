@@ -18,7 +18,7 @@ from chiliarch.ai import ModelTurn, Provider
 from chiliarch.ai.context import compact_context, context_size, usage_state
 from chiliarch.chat import ChatContext, ChatMessage, ChatRun, Supervisor
 from chiliarch.config import ModelSettings, SettingsManager
-from chiliarch.database import Database
+from chiliarch.database import Database, OperationRecord
 from chiliarch.service import OperationService
 
 JSON = dict[str, Any]
@@ -468,6 +468,7 @@ async def test_more_than_twenty_tool_rounds_continue_with_distinct_operation_key
     tmp_path: Path,
 ) -> None:
     rounds: list[int] = []
+    observed_rounds: asyncio.Queue[int] = asyncio.Queue()
     upstream = CompactionUpstream()
 
     async def handle(request: httpx.Request) -> httpx.Response:
@@ -510,6 +511,7 @@ async def test_more_than_twenty_tool_rounds_continue_with_distinct_operation_key
 
     async def inspect(arguments: JSON) -> JSON:
         rounds.append(arguments["round"])
+        observed_rounds.put_nowait(arguments["round"])
         return {"status": "checked", "round": arguments["round"]}
 
     service.register(
@@ -526,9 +528,24 @@ async def test_more_than_twenty_tool_rounds_continue_with_distinct_operation_key
     try:
         conversation = await supervisor.create_conversation(title="连续轮次")
         sent = await supervisor.send_message(conversation["id"], "连续核对")
+        # Bound each missing observation, rather than turning 25 durable tool
+        # rounds into an aggregate storage-performance requirement.
+        for index in range(25):
+            assert await asyncio.wait_for(observed_rounds.get(), 5) == index
         await wait_status(supervisor, sent["run_id"], "completed")
         assert rounds == list(range(25))
         assert len(upstream.business) == 26
+        async with db.sessions() as session:
+            operations = list(
+                (
+                    await session.scalars(
+                        select(OperationRecord).where(OperationRecord.name == "inspect_round")
+                    )
+                ).all()
+            )
+        assert len(operations) == 25
+        assert len({operation.idempotency_key for operation in operations}) == 25
+        assert {operation.status for operation in operations} == {"completed"}
     finally:
         await supervisor.stop()
         await db.close()
