@@ -227,11 +227,34 @@ describe("聊天事件时间线", () => {
       expect.any(Function),
       expect.any(Function),
     );
-    const user = userEvent.setup();
-    await user.click(thoughts[0]);
-    await user.click(thoughts[1]);
+    expect(thoughts[0]).toHaveAttribute("aria-expanded", "true");
+    expect(thoughts[1]).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("先确认当前连接")).toBeVisible();
     expect(screen.getByText("机器在线，下一步需要派发")).toBeVisible();
+    const user = userEvent.setup();
+    await user.click(thoughts[0]);
+    expect(screen.getByText("先确认当前连接")).not.toBeVisible();
+    expect(screen.getByText("机器在线，下一步需要派发")).toBeVisible();
+    await user.click(thoughts[0]);
+    expect(screen.getByText("先确认当前连接")).toBeVisible();
+    expect(screen.getByText("机器在线，下一步需要派发")).toBeVisible();
+  });
+
+  it("没有运行时间线的历史公开思考也默认展开，并保留答案位置", async () => {
+    const snapshot = detail([]);
+    delete snapshot.messages[0].run_id;
+    snapshot.messages[0].reasoning = "历史公开思考。";
+    snapshot.messages[0].content = "历史最终答案。";
+    await openChat(snapshot);
+    expect(screen.getByRole("button", { name: "思考过程" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("历史公开思考。")).toBeVisible();
+    expectBefore(
+      screen.getByRole("region", { name: "思考内容" }),
+      screen.getByText("历史最终答案。"),
+    );
   });
 
   it("流式更新工具原位置，审批恢复不重复，后续答案出现在工具之后", async () => {

@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, ApiError } from "./api";
 import {
-  AnimatedDisclosure,
   ErrorNotice,
   MarkdownContent,
   Status,
   time,
   ToolView,
 } from "./components";
-import { ChatComposer, ChatGlyph, MessageCopy } from "./ChatUI";
+import { ChatComposer, ChatGlyph, MessageCopy, ReasoningView } from "./ChatUI";
 import { ConversationList } from "./ConversationList";
 import type {
   Conversation,
@@ -777,14 +776,11 @@ export default function ChatPage({
                                 onResolved={refresh}
                               />
                             ) : part.kind === "reasoning" ? (
-                              <AnimatedDisclosure
+                              <ReasoningView
                                 key={part.id}
-                                title="思考过程"
-                                className="reasoning"
-                                icon={<ChatGlyph type="thought" />}
-                              >
-                                <MarkdownContent content={part.content} />
-                              </AnimatedDisclosure>
+                                content={part.content}
+                                streaming={running?.status === "running"}
+                              />
                             ) : (
                               <MarkdownContent
                                 key={part.id}
@@ -795,13 +791,10 @@ export default function ChatPage({
                         ) : (
                           <>
                             {message.reasoning && (
-                              <AnimatedDisclosure
-                                title="思考过程"
-                                className="reasoning"
-                                icon={<ChatGlyph type="thought" />}
-                              >
-                                <MarkdownContent content={message.reasoning} />
-                              </AnimatedDisclosure>
+                              <ReasoningView
+                                content={message.reasoning}
+                                streaming={running?.status === "running"}
+                              />
                             )}
                             {message.content && (
                               <MarkdownContent content={message.content} />

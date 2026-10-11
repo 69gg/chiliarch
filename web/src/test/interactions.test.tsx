@@ -367,7 +367,6 @@ describe("持久会话和事件流", () => {
     expect(screen.getByText("真实输出").tagName).toBe("STRONG");
     expect(screen.getAllByText("已保存的回答。")).toHaveLength(1);
     const reasoning = screen.getByText("思考过程").closest("details")!;
-    await userEvent.setup().click(within(reasoning).getByText("思考过程"));
     expect(reasoning).toHaveAttribute("open");
     expect(within(reasoning).getByText("先读取任务状态。")).toBeVisible();
     const tool = screen.getByText("get_state").closest("details")!;

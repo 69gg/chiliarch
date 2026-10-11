@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode, RefObject } from "react";
+import { AnimatedDisclosure, MarkdownContent } from "./components";
 
 export function ChatGlyph({
   type,
@@ -49,6 +50,49 @@ export function ChatGlyph({
     >
       {paths[type]}
     </svg>
+  );
+}
+
+export function ReasoningView({
+  content,
+  streaming = false,
+}: {
+  content: string;
+  streaming?: boolean;
+}): ReactNode {
+  const scrollArea = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+
+  useLayoutEffect(() => {
+    const area = scrollArea.current;
+    // History opens at the beginning; streaming follows only while the reader
+    // is at the bottom. Hidden disclosures have no layout to scroll.
+    if (streaming && followLatest.current && area && area.clientHeight > 0)
+      area.scrollTop = area.scrollHeight;
+  }, [content, streaming]);
+
+  return (
+    <AnimatedDisclosure
+      title="思考过程"
+      className="reasoning"
+      icon={<ChatGlyph type="thought" />}
+      defaultOpen
+    >
+      <div
+        ref={scrollArea}
+        className="reasoning-scroll"
+        role="region"
+        aria-label="思考内容"
+        tabIndex={0}
+        onScroll={(event) => {
+          const area = event.currentTarget;
+          followLatest.current =
+            area.scrollHeight - area.scrollTop - area.clientHeight <= 24;
+        }}
+      >
+        <MarkdownContent content={content} />
+      </div>
+    </AnimatedDisclosure>
   );
 }
 
