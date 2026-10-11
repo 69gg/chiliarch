@@ -689,14 +689,38 @@ async def test_sse_without_agent_heartbeats_becomes_offline(
             assert response.status_code == 200
             lines = response.aiter_lines()
             assert await anext(lines) == ": chiliarch connected"
-            assert (await live.app.state.service.execute("get_agent", {"agent_id": agent_id}))[
-                "agent"
-            ]["online"]
-            await asyncio.sleep(live.settings.transport.offline_after_seconds + 0.1)
-            assert not (await live.app.state.service.execute("get_agent", {"agent_id": agent_id}))[
-                "agent"
-            ]["online"]
-            assert response.is_closed is False
+            heartbeat_received = asyncio.Event()
+            stop_reader = asyncio.Event()
+
+            async def consume_heartbeats() -> None:
+                async for line in lines:
+                    if line == ": heartbeat":
+                        heartbeat_received.set()
+                    # Finish the current SSE record before closing its socket.
+                    # Leaving server heartbeats unread can reset the connection.
+                    if stop_reader.is_set() and not line:
+                        return
+
+            async with asyncio.TaskGroup() as readers:
+                reader = readers.create_task(consume_heartbeats())
+                try:
+                    assert (
+                        await live.app.state.service.execute("get_agent", {"agent_id": agent_id})
+                    )["agent"]["online"]
+                    # Only receive server events: no agent heartbeat is sent.
+                    await asyncio.sleep(live.settings.transport.offline_after_seconds + 0.1)
+                    assert not (
+                        await live.app.state.service.execute("get_agent", {"agent_id": agent_id})
+                    )["agent"]["online"]
+                    heartbeat_received.clear()
+                    async with asyncio.timeout(5):
+                        await heartbeat_received.wait()
+                    assert not reader.done()
+                    assert response.is_closed is False
+                finally:
+                    stop_reader.set()
+                    async with asyncio.timeout(5):
+                        await reader
 
 
 async def test_permanent_http_protocol_error_stops_client_without_fallback_loop(
