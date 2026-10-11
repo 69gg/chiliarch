@@ -1,3 +1,6 @@
+# 使用 chiliarch init 生成包含密码哈希的真实配置；此文件只展示字段。
+# uv 工具安装默认保存到用户状态目录的 chiliarch/server/chiliarch.toml；
+# 源码运行默认保存到当前目录，显式 --config 始终优先。
 [server]
 host = "127.0.0.1"
 port = 8000
@@ -36,6 +39,8 @@ api_key = ""
 timeout = 120.0
 retries = 2
 context_window = 200000
+# 仅 Anthropic Messages：设置 anthropic_max_tokens 为模型支持的正整数。
+# 默认未配置；初始化向导和 WebUI 在选择 anthropic 后提供此字段。
 reasoning_enabled = false
 thinking_enabled = false
 reasoning_replay = true
@@ -45,6 +50,8 @@ system_prompt_as_user = false
 [model.headers]
 
 [model.request_params]
+# Chat Completions / Responses 默认不设置输出上限；需要时可在此显式添加
+# 当前 API 支持的 max_completion_tokens / max_tokens 或 max_output_tokens。
 
 [supervisor]
 mode = "auto"

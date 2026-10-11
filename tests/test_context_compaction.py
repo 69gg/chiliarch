@@ -144,7 +144,15 @@ async def setup(
 ) -> tuple[Database, SettingsManager, OperationService, Supervisor]:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'context.db'}")
     settings = manager(mode=mode)
-    settings.update({"model": {"api_mode": upstream.mode, "context_window": WINDOW}})
+    settings.update(
+        {
+            "model": {
+                "api_mode": upstream.mode,
+                "context_window": WINDOW,
+                "anthropic_max_tokens": 4096,
+            }
+        }
+    )
     service = OperationService(db, settings)
     supervisor = Supervisor(db, service, settings, provider_factory=upstream.provider)
     await db.initialize()

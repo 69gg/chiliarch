@@ -57,7 +57,9 @@ async def test_complete_runtime_guidance_reaches_provider_requests(
         )
 
     provider = Provider(
-        ModelSettings.model_validate({"api_mode": mode, "model": "test"}),
+        ModelSettings.model_validate(
+            {"api_mode": mode, "model": "test", "anthropic_max_tokens": 4096}
+        ),
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
     try:

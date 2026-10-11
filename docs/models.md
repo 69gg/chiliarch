@@ -18,6 +18,7 @@
 | request_params | 模型特有请求参数；不能替换平台 transcript、tools、model、stream 等控制字段 |
 | timeout / retries | SDK 请求超时与有限重试 |
 | context_window | 模型上下文窗口，默认 200000 tokens，达到 90% 自动压缩 |
+| anthropic_max_tokens | 仅 Anthropic Messages 使用，需填写模型支持的最大输出 tokens 正整数；默认未配置 |
 | temperature | 可省略，不接受的模型保持空值 |
 | reasoning_enabled / reasoning_effort | 请求模型推理及强度；按 API 映射 |
 | thinking_enabled / thinking_budget_tokens | thinking 参数与预算；服务商不支持时关闭 |
@@ -28,9 +29,13 @@
 
 不要把业务消息、工具 Schema 或流式控制字段塞进 request_params；它们由平台生成。保留字段冲突会报错，而非静默覆盖。兼容开关按网关能力配置，不按某几个模型名硬编码。
 
-默认不发送 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`，由服务端决定输出长度。明确需要覆盖时，可以在 `request_params` 中写对应 API 的参数；平台不会额外加入另一个输出上限。
+`chiliarch init` 可选择立即配置总管，依次填写 API 类型、模型名称、API 地址和隐藏输入的 API Key；也可跳过，之后在 WebUI“配置”中填写。API Key 与模型地址不从原生 agent 配置中读取，也不需要填写到聊天消息里。
 
-原生 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create) 要求 `max_tokens`，没有可依赖的服务端默认值。选择该 API 时，在“额外请求参数（JSON）”填写它，例如 `{"max_tokens":32768}`，值需符合实际模型能力。提供默认值的兼容网关可保持空对象；请求仍被网关拒绝时按其文档设置参数。
+**Chat Completions / Responses** 默认不设置输出上限，由服务端决定输出长度。用户可以在 `model.request_params` 中显式配置当前 API 支持的参数：Chat Completions 使用 `max_completion_tokens`（部分兼容网关使用 `max_tokens`），Responses 使用 `max_output_tokens`。平台会发送用户填写的值，不自动追加另一种输出上限；应按实际服务商要求选择字段和数值。
+
+**Anthropic Messages** 的 [API 定义](https://platform.claude.com/docs/en/api/messages/create) 要求 `max_tokens`，没有可依赖的服务端默认值。初始化向导和 WebUI 仅在选择该格式时显示“最大输出 tokens”，保存为 `model.anthropic_max_tokens`；请填写当前模型支持的正整数。平台默认不设置该值，也不会根据模型名称猜测；未填写时，请求前会明确报错。
+
+为兼容已有配置，`request_params.max_tokens` 中的正整数仍可作为 Anthropic 的值；同时配置时，以 `anthropic_max_tokens` 为准。专用字段只在 Anthropic 格式生效；切换 API 时，请同步检查 `request_params` 中手动填写的参数是否适用。输出上限是单次回答的输出预算，`context_window` 则是输入、工具及输出占用的上下文容量，两者不能混用。
 
 ## 三种 API
 

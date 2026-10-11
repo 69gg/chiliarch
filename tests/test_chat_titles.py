@@ -94,7 +94,7 @@ async def test_first_completed_answer_is_named_without_blocking_chat(
 ) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
     settings = manager()
-    settings.update({"model": {"api_mode": mode}})
+    settings.update({"model": {"api_mode": mode, "anthropic_max_tokens": 4096}})
     upstream = NamingUpstream(mode)
     upstream.title_gate = asyncio.Event()
     service = OperationService(db, settings)

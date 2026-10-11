@@ -106,6 +106,7 @@ class ModelSettings(ConfigModel):
     timeout: float = Field(default=120, gt=0)
     retries: int = Field(default=2, ge=0, le=10)
     context_window: int = Field(default=200000, ge=1)
+    anthropic_max_tokens: int | None = Field(default=None, ge=1, strict=True)
     temperature: float | None = Field(default=None, ge=0, le=2)
     reasoning_effort: str | None = None
     reasoning_enabled: bool = False

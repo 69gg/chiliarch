@@ -26,6 +26,7 @@ const LABELS: Record<string, string> = {
   timeout: "请求超时（秒）",
   retries: "请求重试次数",
   context_window: "模型上下文窗口（tokens）",
+  anthropic_max_tokens: "Anthropic 最大输出 tokens",
   temperature: "Temperature",
   reasoning_effort: "推理强度",
   reasoning_enabled: "启用 reasoning",
@@ -90,7 +91,11 @@ const OPTIONS: Record<string, [string, string][]> = {
     ["ERROR", "ERROR"],
   ],
 };
-const NULLABLE_NUMBERS = new Set(["temperature", "thinking_budget_tokens"]);
+const NULLABLE_NUMBERS = new Set([
+  "temperature",
+  "thinking_budget_tokens",
+  "anthropic_max_tokens",
+]);
 
 export function configDraft(config: JsonObject): Record<string, string> {
   const result: Record<string, string> = {};
@@ -121,6 +126,11 @@ export function configPatch(
   const patch: JsonObject = {};
   for (const [path, text] of Object.entries(draft)) {
     const [section, field] = path.split(".");
+    if (
+      field === "anthropic_max_tokens" &&
+      draft["model.api_mode"] !== "anthropic"
+    )
+      continue;
     if (field === "api_key" && !text) continue;
     if (text === original[path]) continue;
     const values = config[section] as JsonObject;
@@ -135,6 +145,11 @@ export function configPatch(
         value = Number(text);
         if (!text || !Number.isFinite(value))
           throw new Error(`${LABELS[field] ?? field}需要有效数字。`);
+        if (
+          field === "anthropic_max_tokens" &&
+          (!Number.isInteger(value) || value < 1)
+        )
+          throw new Error(`${LABELS[field]}需要正整数。`);
       }
     } else value = text || (previous === null ? null : "");
     const part = (patch[section] ??= {}) as JsonObject;
@@ -167,7 +182,12 @@ export default function ConfigPage({
   const initial = configDraft(original);
   const dirty =
     clearKey ||
-    Object.entries(draft).some(([path, value]) => initial[path] !== value);
+    Object.entries(draft).some(
+      ([path, value]) =>
+        (path !== "model.anthropic_max_tokens" ||
+          draft["model.api_mode"] === "anthropic") &&
+        initial[path] !== value,
+    );
 
   useEffect(() => {
     if (!dirty && revision !== state.runtime.config_revision) {
@@ -289,7 +309,9 @@ export default function ConfigPage({
                 <h2>{SECTION_LABELS[section]}</h2>
                 {section === "model" && (
                   <p className="muted">
-                    输出长度使用服务端默认值，上下文达到窗口的 90% 时自动压缩。
+                    OpenAI
+                    默认不设置输出上限，可通过额外请求参数显式配置；Anthropic
+                    需要单独填写输出上限。上下文达到窗口的 90% 时自动压缩。
                   </p>
                 )}
                 {section === "server" && (
@@ -306,6 +328,11 @@ export default function ConfigPage({
               <div className="settings-grid">
                 {Object.entries(original[section] as JsonObject)
                   .filter(([field]) => field !== "password_hash")
+                  .filter(
+                    ([field]) =>
+                      field !== "anthropic_max_tokens" ||
+                      draft["model.api_mode"] === "anthropic",
+                  )
                   .map(([field, value]) => (
                     <ConfigField
                       key={`${section}.${field}`}
@@ -480,18 +507,18 @@ function ConfigField({
     );
   const secret = field === "api_key";
   const numeric = typeof original === "number" || NULLABLE_NUMBERS.has(field);
+  const positiveInteger =
+    field === "context_window" || field === "anthropic_max_tokens";
   return (
     <label htmlFor={id}>
       {label}
       <input
         id={id}
         aria-label={label}
-        aria-describedby={
-          secret || field === "context_window" ? `${id}-help` : undefined
-        }
+        aria-describedby={secret || positiveInteger ? `${id}-help` : undefined}
         type={secret ? "password" : numeric ? "number" : "text"}
-        step={field === "context_window" ? "1" : numeric ? "any" : undefined}
-        min={field === "context_window" ? 1 : undefined}
+        step={positiveInteger ? "1" : numeric ? "any" : undefined}
+        min={positiveInteger ? 1 : undefined}
         value={value}
         autoComplete={secret ? "new-password" : "off"}
         onChange={(event) => onChange(event.target.value)}
@@ -500,9 +527,11 @@ function ConfigField({
             ? original === MASK
               ? "已设置 · 留空保持原值"
               : "尚未设置"
-            : original === null
-              ? "使用模型默认值"
-              : undefined
+            : field === "anthropic_max_tokens"
+              ? "发送 Anthropic 请求前请填写"
+              : original === null
+                ? "使用模型默认值"
+                : undefined
         }
       />
       {secret && (
@@ -513,6 +542,11 @@ function ConfigField({
       {field === "context_window" && (
         <small id={`${id}-help`} className="muted">
           默认 200,000；请填写模型实际支持的窗口。压缩后保留完整聊天记录。
+        </small>
+      )}
+      {field === "anthropic_max_tokens" && (
+        <small id={`${id}-help`} className="muted">
+          Anthropic Messages 必填，请按模型能力设置正整数；不影响 OpenAI 请求。
         </small>
       )}
     </label>

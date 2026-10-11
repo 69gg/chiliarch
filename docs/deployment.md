@@ -6,22 +6,37 @@
 
 ```bash
 uv tool install chiliarch
-chiliarch --config ./chiliarch.toml init
-chiliarch --config ./chiliarch.toml serve
+chiliarch init
+chiliarch serve
 ```
 
 需要固定版本时，使用 `uv tool install chiliarch==<版本>`。启动检查保留该约束，固定版本不会被自动跨越。
 
 v0.3.0 起，标准 uv 工具安装在 `serve` 和 agent 服务启动时默认检查并安装兼容的正式新版，通过校验后使用新的独立运行环境。检查或安装失败时继续启动已有版本，不中断运行中的实例。旧版先手动升级一次，详见 [自动升级与开关](upgrading.md)。
 
-`init` 交互输入并确认至少 8 字符的密码，服务端保存 scrypt 哈希，不保存明文。没有默认密码。已有配置不会被覆盖，除非显式指定 `init --force`。不要对正在使用的配置随意重新初始化；日常修改使用 WebUI 或编辑 TOML。
+`init` 会依次询问常用设置，直接按 Enter 可接受显示的默认值：
+
+| 设置 | 默认值或行为 |
+| --- | --- |
+| WebUI 密码与确认 | 必填，至少 8 字符，隐藏输入；只保存 scrypt 哈希，没有默认密码 |
+| 监听 host / port | `127.0.0.1` / `8000` |
+| 浏览器公开访问地址 | 留空；使用反向代理时填写实际公开 origin，如 `https://chiliarch.example.com`，不含路径 |
+| 总管审批模式 | `auto`；可选择 `ask` 或 `yolo` |
+| 日志级别 | `INFO` |
+| 现在配置总管模型 | 可跳过，之后在 WebUI 配置 |
+
+选择配置模型时，还会询问 API 类型（`chat_completions`、`responses` 或 `anthropic`）、模型名称、API 地址、API Key 和上下文窗口（默认 `200000` tokens）。API Key 隐藏输入，可留空或之后通过环境变量提供；不要把 WebUI 登录密码作为模型 API Key。选择 Anthropic Messages 时，还需填写模型支持的最大输出 tokens；其他两种 API 的向导不询问输出上限，默认使用服务端值，需要时可之后通过 `model.request_params` 显式配置。此处配置只供 Chiliarch AI 总管使用，不改变本机 Codex／Claude／OpenCode 设置，详见 [模型配置](models.md#配置模型)。
+
+只想先用默认设置启动，可执行 `chiliarch init --defaults`：它跳过非密码问题，仍要求输入并确认密码。初始化成功会显示配置文件的绝对路径，以及明确携带该路径的 `--config` 启动命令。已有配置不会被覆盖，除非显式指定 `init --force`；同时运行多个 `init` 时，写入锁也会防止未指定 `--force` 的初始化互相覆盖。日常修改使用 WebUI 或编辑 TOML。
+
+平台使用单用户密码登录，不需要用户名。未登录不能读取平台业务数据或执行管理操作；登录限流、会话和 CSRF 保护仍然生效，修改密码会使已有登录会话失效。
 
 新初始化的总管审批模式默认为 `auto`，会根据操作风险决定是否询问用户。希望每项状态变更都经用户审批时，可在 WebUI 切换为 `ask`；已有配置保存的选择会继续生效。平台模式不改写原生 agent 的权限。
 
 服务默认监听 `127.0.0.1:8000`。需要 agent 所在机器访问时，配置适当的监听地址与端口，并确保客户端能主动访问平台；agent 不需要开放端口。服务器不需要访问 agent IP。
 
 ```bash
-chiliarch --config ./chiliarch.toml serve --host <监听地址> --port <端口>
+chiliarch serve --host <监听地址> --port <端口>
 ```
 
 CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加多 workers 或并行启动两个实例共同使用同一业务数据库。
@@ -29,6 +44,27 @@ CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加�
 启动未完成或被取消时，平台会释放已创建的数据库连接、后台任务和日志资源，并保留原始启动错误。关闭某个组件失败时，其他组件仍继续关闭。
 
 停止平台时，HTTP/SSE 连接与请求的结束等待默认上限为 15 秒，超过后取消尚未结束的请求并继续应用资源清理。通过 `[server]` 中的 `graceful_shutdown_seconds` 设置正整数秒，或在 WebUI 修改“关闭时等待请求结束（秒）”，重启后生效。长驻 SSE 不会因此无限阻塞这一阶段；该值不是整个进程退出的总时限，后续数据库、后台任务与 agent 进程树仍按各自生命周期清理，不因该期限被强行跳过。
+
+## 配置文件位置
+
+通过 `uv tool install chiliarch` 安装时，服务端配置默认放在当前用户状态目录，与 agent 的 `daemon` 目录同级：
+
+| 系统 | 默认服务端配置路径 |
+| --- | --- |
+| Linux | `~/.local/state/chiliarch/server/chiliarch.toml` |
+| macOS | `~/Library/Application Support/chiliarch/server/chiliarch.toml` |
+| Windows | `%LOCALAPPDATA%\chiliarch\server\chiliarch.toml` |
+
+Linux 的 `XDG_STATE_HOME` 若设置为绝对路径，则使用 `$XDG_STATE_HOME/chiliarch/server/chiliarch.toml`；相对值不作为状态根目录。`init`、`serve` 和 `backup` 使用相同的路径选择，自动更新后的独立运行环境也沿用这一规则。数据库默认位于配置目录下的 `data/chiliarch.db`，日志默认位于该目录下的 `logs`，不随启动时的工作目录变化。
+
+显式 `--config` 始终优先，可用于独立部署目录或继续使用已有配置；包含空格的路径要加引号：
+
+```bash
+chiliarch --config "/你的部署目录/chiliarch.toml" init
+chiliarch --config "/你的部署目录/chiliarch.toml" serve
+```
+
+源码 `uv run` 或普通非 uv 工具环境仍默认使用当前目录的 `chiliarch.toml`。服务端配置与守护进程的 `daemon.json` 分开管理，不需要先安装本机 agent 守护进程才能初始化平台。POSIX 上生成的配置文件权限为 0600；Windows 使用所在目录继承的 ACL，自定义路径也应选择当前用户的私有目录。
 
 ## 源码开发运行
 
@@ -42,7 +78,7 @@ uv run chiliarch --config ./chiliarch.toml init
 uv run chiliarch --config ./chiliarch.toml serve
 ```
 
-源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
+源码运行默认配置就是当前目录的 `chiliarch.toml`，上例显式指定以便区分用户目录中的服务端配置。源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
 
 ## Agent 机器：共享守护进程
 
@@ -70,7 +106,7 @@ chiliarch agent doctor --agent codex-main
 
 ## HTTP、HTTPS 与反向代理
 
-HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设置 `server.public_url` 为浏览器实际访问的公开 origin，避免代理后的 Origin 校验使用内部地址。启用 HTTPS 后可设置 `auth.secure_cookie=true`。
+HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设置 `server.public_url` 为浏览器实际访问的公开 origin，避免代理后的 Origin 校验使用内部地址。`init` 中填写 HTTPS 公开地址会同时设置 `auth.secure_cookie=true`；HTTP 地址或留空则为 `false`。这不会让 Chiliarch 自行配置 TLS；以后变更访问方式时，要在配置中同步调整 cookie 设置。
 
 代理需要允许 WebSocket Upgrade；SSE 禁用缓冲和缓存，读超时应长于心跳/轮询间隔。即使代理不支持 WS，agent 仍可使用 SSE 或长轮询。对于浏览器聊天流，平台同样发送 `X-Accel-Buffering: no`。同源部署 WebUI 和 API；本版没有跨域登录功能。
 
@@ -95,12 +131,12 @@ Agents 管理列表以机器卡片展示实际连接状态、任务和待处理�
 服务端业务数据库、配置和日志是不同资源。SQLite 在运行中有 WAL 文件；不要只复制主 `.db` 文件并假设已得到一致快照。平台运行时可使用内置命令获取一致快照：
 
 ```bash
-chiliarch --config ./chiliarch.toml backup --output ./backups/platform-snapshot.db
+chiliarch backup --output ./backups/platform-snapshot.db
 ```
 
 命令使用 SQLite backup API，包含已提交的 WAL 数据，不包含尚未提交的事务。输出经过完整性及 schema version 校验，是无需原库 WAL/SHM 的独立数据库文件；默认 30 秒超时，可用 `--timeout` 调整。只有成功后才原子发布输出，已存在的文件永不覆盖，失败时清理临时快照。输出目录需要支持硬链接；不支持时命令明确失败，应选择本机支持的文件系统保存后再转移。仅支持普通本地 SQLite 文件，不支持内存库、SQLite URI 选项或其他数据库；其他数据库使用对应厂商备份工具。
 
-默认来源由磁盘上的 TOML 与备份命令当前环境变量解析，命令会显示源路径，**不会自动识别运行实例的有效配置**。如果数据库设置存在待重启变更，或后台服务环境变量与当前终端不同，请核对运行配置中的数据库路径，并显式选择：
+默认读取与 `init`、`serve` 相同位置的 TOML；自定义部署需传入相同的 `--config`。来源由磁盘上的 TOML 与备份命令当前环境变量解析，命令会显示源路径，**不会自动识别运行实例的有效配置**。如果数据库设置存在待重启变更，或后台服务环境变量与当前终端不同，请核对运行配置中的数据库路径，并显式选择：
 
 ```bash
 chiliarch backup --database /实际运行的数据库路径/chiliarch.db --output ./backups/platform-snapshot.db

@@ -4,6 +4,10 @@
 
 ## 优先级与路径
 
+命令行显式 `--config` 优先；未指定时，uv 工具安装使用当前用户状态根下的 `chiliarch/server/chiliarch.toml`，自动更新后的运行环境保持相同位置。Linux 默认为 `~/.local/state/chiliarch/server/chiliarch.toml`，macOS 为 `~/Library/Application Support/chiliarch/server/chiliarch.toml`，Windows 为 `%LOCALAPPDATA%\chiliarch\server\chiliarch.toml`；Linux 尊重绝对路径的 `XDG_STATE_HOME`。源码 `uv run` 和普通非 uv 工具环境默认读取当前目录的 `chiliarch.toml`。`init`、`serve`、`backup` 采用同一规则，完整示例见 [配置文件位置](deployment.md#配置文件位置)。
+
+`chiliarch init` 交互配置密码、监听 host/port、公开 origin、审批模式、日志级别及可选总管模型，最后输出配置绝对路径和启动命令。`init --defaults` 使用非密码字段的默认值，密码仍需输入并确认；已有文件默认拒绝覆盖。
+
 默认值 → TOML → `CHILIARCH_<SECTION>__<FIELD>` 环境变量 → 本次 CLI 的监听参数。环境变量可提供 JSON 对象；数值和布尔值按模型校验。例如 `CHILIARCH_MODEL__API_KEY`、`CHILIARCH_MODEL__HEADERS`。
 
 相对日志路径和 SQLite 路径相对于配置文件所在目录解析，不依赖进程从哪里启动。未指定配置文件的嵌入式应用则以创建应用时的当前目录为基准。
@@ -43,6 +47,8 @@ WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子�
 | database.url                                   | 默认 SQLite async URL，改动需重启；初版验收存储为 SQLite |
 
 UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie 和 `X-CSRF-Token`；登录会校验 Origin。初版为单用户，没有多用户、角色管理或默认管理员密码。
+
+初始化时，`server.public_url` 填写 HTTPS origin 会同时开启 `auth.secure_cookie`；填写 HTTP 或留空则关闭。保存后的两项设置分别管理，之后改用 HTTPS 或 HTTP 时需同步调整；只有反向代理或部署环境提供 TLS，设置公开地址本身不会启动 HTTPS 监听。
 
 侧栏底部的主题按钮按“跟随系统 → 浅色 → 深色”循环切换。默认跟随系统，选择保存在当前浏览器中；返回跟随系统后继续响应系统明暗变化。
 
@@ -112,7 +118,9 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 平台不设置最大工具轮次、上下文消息条数或全局并行运行上限；同一会话仍只能有一个活跃运行，运行超时与审批规则继续生效。并行能力受机器资源及模型服务的限流约束。
 
-默认不发送最大输出 token 参数，使用服务端默认输出长度。需要服务商特有上限时，在 `model.request_params` 显式配置；**原生 Anthropic Messages 要求 `max_tokens`，须在该参数表中填写对应模型支持的值**。兼容网关若支持省略，可保持参数表为空。
+Chat Completions / Responses 默认不设置最大输出 tokens，使用服务端默认输出长度。需要自定义时，可在 `model.request_params` 中显式填写：Chat Completions 通常使用 `max_completion_tokens`（部分兼容网关使用 `max_tokens`），Responses 使用 `max_output_tokens`。这些手动设置会随请求发送，平台不会另加默认上限；参数名称和数值以服务商支持范围为准。
+
+Anthropic Messages 的 `max_tokens` 是必填参数，对应 **`model.anthropic_max_tokens`**：默认未配置，用户应填写实际模型支持的正整数，不存在平台硬编码上限。初始化向导和 WebUI 只在选择 `anthropic` 时显示这一项；缺失时模型请求会明确报错。已有 `model.request_params.max_tokens` 正整数仍可使用，专用字段优先。专用字段不影响 OpenAI 两种格式；切换 API 时仍应检查 `request_params` 中手动填写的参数。它控制单次输出，与 `model.context_window` 的上下文容量和压缩触发条件分开。
 
 模型字段的 API 映射、压缩过程与失败处理见 [模型文档](models.md#上下文窗口与自动压缩)。
 

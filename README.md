@@ -2,7 +2,7 @@
 
 连接、管理与统一调度 agents 的平台。内置 Chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.2 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.4.0 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
 
 ## 支持的 agents
 
@@ -32,7 +32,11 @@ chiliarch init
 chiliarch serve
 ```
 
-`init` 交互设置单用户登录密码并创建 `chiliarch.toml`；POSIX 权限为 0600，Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。配置保存支持三系统的原子替换与热重载。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
+`init` 交互设置并确认单用户登录密码，再配置监听地址（默认 `127.0.0.1`）、端口（默认 `8000`）、公开访问地址、总管审批模式和日志级别；也可当场配置总管模型。只想使用默认设置时运行 `chiliarch init --defaults`，仍需设置密码。
+
+uv 工具安装默认将服务端配置保存到当前用户的 Chiliarch 状态目录，例如 Linux 的 `~/.local/state/chiliarch/server/chiliarch.toml`；Windows、macOS 路径见 [配置位置](docs/deployment.md#配置文件位置)。`init` 最后打印绝对路径和启动命令，之后从其他工作目录运行 `chiliarch serve` 也读取同一配置；显式 `--config` 始终优先。源码开发运行仍默认使用当前目录的 `chiliarch.toml`。
+
+配置保存支持三系统的原子替换与热重载。密码只保存 scrypt 哈希；POSIX 配置权限为 0600，Windows 继承当前用户私有目录的 ACL。使用默认监听设置时，在浏览器访问 `http://127.0.0.1:8000` 并输入初始化密码登录。需要其他机器访问时，在初始化中设置监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
 
 停止平台或本机守护进程时，默认等待 HTTP/SSE 请求结束最多 15 秒，随后进入资源清理，避免长连接无限阻塞关闭。平台使用 `server.graceful_shutdown_seconds`，守护进程使用 `daemon.json` 中的同名字段；修改后重启生效。该期限不限制后续 agent 任务及进程树清理，详见 [部署文档](docs/deployment.md)。
 
@@ -42,7 +46,7 @@ v0.3.0 起，标准 uv 工具安装默认在平台或 agent 服务启动时检�
 
 在线备份可运行 `chiliarch backup --output ./backups/platform.db`，命令校验并保存包含已提交 WAL 数据的独立 SQLite 快照，不覆盖已有文件。数据库存在待重启配置变更时，使用 `--database` 指定实际运行的数据库；配置、密钥环境和 agent 状态库需另行保管。详见 [备份与恢复](docs/deployment.md#备份与恢复)。
 
-首次登录后，在“配置”页面设置模型 API、模型名称、地址和 API Key；也可通过环境变量提供密钥，例如 `CHILIARCH_MODEL__API_KEY`。未配置模型时，手动管理仍然可用，总管不会生成假回复。
+如果初始化时跳过了模型设置，首次登录后可在“配置”页面设置模型 API、模型名称、地址和 API Key；也可通过环境变量提供密钥，例如 `CHILIARCH_MODEL__API_KEY`。未配置模型时，手动管理仍然可用，总管不会生成假回复。
 
 ## 使用总管对话
 
@@ -50,7 +54,7 @@ v0.3.0 起，标准 uv 工具安装默认在平台或 agent 服务启动时检�
 
 底部输入区随内容增高：Enter 发送，Shift + Enter 换行，也支持 Ctrl / ⌘ + Enter；输入法确认候选词时不会提交。阅读历史时不抢走滚动位置，点击“回到最新”或发送消息后继续跟随输出。关闭页面后总管仍在后台运行。
 
-模型输出长度默认由服务端决定；“配置”中可设置模型上下文窗口，默认 200k tokens，达到 90% 后自动压缩并继续工作。页面显示上下文占用与压缩状态，完整聊天和工具记录保留；工具轮次、消息条数和全局并行运行不再设固定上限。原生 Anthropic API 的必填输出参数及压缩机制见 [模型与总管行为](docs/models.md#上下文窗口与自动压缩)。
+Chat Completions / Responses 默认不设置输出上限，使用服务端默认值；需要时可通过 `model.request_params` 显式配置。Anthropic Messages 需要在配置中填写模型支持的最大输出 tokens，平台不代填固定值，见 [模型配置](docs/models.md#配置模型)。“配置”中可设置模型上下文窗口，默认 200k tokens，达到 90% 后自动压缩并继续工作。页面显示上下文占用与压缩状态，完整聊天和工具记录保留；工具轮次、消息条数和全局并行运行不再设固定上限，详见 [上下文压缩](docs/models.md#上下文窗口与自动压缩)。
 
 左侧导航支持收起，并记住当前浏览器的选择；配置表单在工作区内居中。主题按钮可切换跟随系统、浅色和深色；暗色采用炭灰背景、暖白文字及中性表面层级。抽屉、消息和折叠动画遵循系统“减少动态效果”设置。更多说明见 [模型与总管行为](docs/models.md)。
 
@@ -125,7 +129,7 @@ uv run pytest
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web build
-uv run python scripts/bump_version.py 0.3.2 --dry-run
+uv run python scripts/bump_version.py 0.4.0 --dry-run
 uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 ```

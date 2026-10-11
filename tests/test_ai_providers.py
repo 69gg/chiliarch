@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from chiliarch.ai import ModelError, ModelTurn, Provider
 from chiliarch.config import ModelSettings
@@ -29,16 +29,15 @@ TOOLS: list[JSONObject] = [
 
 
 @pytest.mark.parametrize(
-    ("mode", "override"),
+    ("mode", "limit"),
     [
         ("chat_completions", "max_tokens"),
         ("chat_completions", "max_completion_tokens"),
         ("responses", "max_output_tokens"),
-        ("anthropic", "max_tokens"),
     ],
 )
-async def test_output_length_uses_server_defaults_or_explicit_provider_parameters(
-    mode: str, override: str
+async def test_openai_defaults_to_no_output_cap_and_honors_explicit_provider_limit(
+    mode: str, limit: str
 ) -> None:
     bodies: list[JSONObject] = []
 
@@ -48,10 +47,15 @@ async def test_output_length_uses_server_defaults_or_explicit_provider_parameter
             200, headers={"content-type": "text/event-stream"}, stream=SSE(text_response(mode))
         )
 
-    for params in ({}, {override: 32768}):
+    for params in ({}, {limit: 32768, "custom_option": 7}):
         provider = Provider(
             ModelSettings.model_validate(
-                {"api_mode": mode, "model": "test", "request_params": params}
+                {
+                    "api_mode": mode,
+                    "model": "test",
+                    "anthropic_max_tokens": 4096,
+                    "request_params": params,
+                }
             ),
             http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
         )
@@ -66,8 +70,80 @@ async def test_output_length_uses_server_defaults_or_explicit_provider_parameter
             await provider.close()
     limits = {"max_tokens", "max_completion_tokens", "max_output_tokens"}
     assert not limits.intersection(bodies[0])
-    assert limits.intersection(bodies[1]) == {override}
-    assert bodies[1][override] == 32768
+    assert limits.intersection(bodies[1]) == {limit}
+    assert bodies[1][limit] == 32768
+    assert bodies[1]["custom_option"] == 7
+
+
+@pytest.mark.parametrize(
+    ("explicit", "legacy", "expected"),
+    [(32768, None, 32768), (None, 8192, 8192), (4096, 8192, 4096), (4096, "invalid", 4096)],
+)
+async def test_anthropic_uses_explicit_output_limit_before_legacy_request_parameter(
+    explicit: int | None, legacy: object, expected: int
+) -> None:
+    bodies: list[JSONObject] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=SSE(text_response("anthropic")),
+        )
+
+    config = ModelSettings(
+        api_mode="anthropic",
+        model="test",
+        anthropic_max_tokens=explicit,
+        request_params={"max_tokens": legacy, "custom_option": 7},
+    )
+    provider = Provider(
+        config, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    )
+    try:
+        turn = ModelTurn()
+        async for _ in provider.stream([{"role": "user", "content": "hello"}], [], "system", turn):
+            pass
+        assert turn.content == "Done"
+        assert bodies[0]["max_tokens"] == expected
+        assert bodies[0]["custom_option"] == 7
+        assert config.request_params["max_tokens"] == legacy
+    finally:
+        await provider.close()
+
+
+@pytest.mark.parametrize("legacy", [None, 0, -1, True, 1.5, "private-token", {}])
+async def test_anthropic_requires_output_limit_before_any_network_request(legacy: object) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("An invalid Anthropic configuration must not contact the provider")
+
+    config = ModelSettings(
+        api_mode="anthropic",
+        model="test",
+        request_params={"max_tokens": legacy, "private_key": "private-token"},
+    )
+    assert config.anthropic_max_tokens is None
+    provider = Provider(
+        config, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    )
+    try:
+        with pytest.raises(ModelError, match="model.anthropic_max_tokens") as error:
+            async for _ in provider.stream([], [], "system", ModelTurn()):
+                pass
+        assert "private-token" not in str(error.value)
+        assert requests == []
+    finally:
+        await provider.close()
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "4096"])
+def test_anthropic_output_limit_configuration_requires_a_positive_integer(value: object) -> None:
+    with pytest.raises(ValidationError):
+        ModelSettings.model_validate({"anthropic_max_tokens": value})
 
 
 @pytest.mark.parametrize("mode", ["chat_completions", "responses", "anthropic"])
@@ -92,7 +168,9 @@ async def test_context_usage_includes_cached_input_without_double_counting(mode:
         )
 
     provider = Provider(
-        ModelSettings.model_validate({"api_mode": mode, "model": "test"}),
+        ModelSettings.model_validate(
+            {"api_mode": mode, "model": "test", "anthropic_max_tokens": 4096}
+        ),
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
     try:
@@ -379,6 +457,7 @@ async def test_sdk_stream_tool_result_and_native_reasoning_replay(api: str) -> N
         else "https://upstream.invalid",
         headers={"X-Trace": "test"},
         request_params={"custom_option": 7},
+        anthropic_max_tokens=4096,
     )
     provider = Provider(
         config, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
@@ -472,7 +551,9 @@ async def test_first_display_delta_arrives_before_provider_finishes(api: str) ->
         )
 
     provider = Provider(
-        ModelSettings(api_mode=api, model="test", api_key=SecretStr("test")),
+        ModelSettings(
+            api_mode=api, model="test", api_key=SecretStr("test"), anthropic_max_tokens=4096
+        ),
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
     turn = ModelTurn()

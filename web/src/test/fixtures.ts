@@ -17,6 +17,7 @@ export function platformState(): PlatformState {
         temperature: null,
         reasoning_enabled: false,
         context_window: 200000,
+        anthropic_max_tokens: null,
       },
       supervisor: { mode: "auto" },
       logs: {

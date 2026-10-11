@@ -63,6 +63,14 @@ class Installation:
     supported: bool
 
 
+@dataclass(frozen=True)
+class _ToolReceipt:
+    origin: Path
+    content: bytes
+    tool: dict[str, Any]
+    directory: Path
+
+
 def _notice(message: str, directory: Path | None = None) -> None:
     # MCP stdout is reserved for JSON-RPC, including when startup falls back.
     print(f"Chiliarch 更新：{message}", file=sys.stderr)
@@ -200,7 +208,8 @@ def _command(arguments: list[str], *, timeout: float, cwd: Path) -> None:
     )
 
 
-def _installation() -> Installation | None:
+def _tool_receipt() -> _ToolReceipt | None:
+    """Identify a persistent uv tool, independently of its update eligibility."""
     prefix = Path(sys.prefix).resolve()
     marker_path = prefix / ORIGIN_MARKER
     origin = prefix
@@ -221,19 +230,43 @@ def _installation() -> Installation | None:
     values = tool.get("requirements", [])
     if not isinstance(values, list) or not values:
         return None
-    primary = _requirement(values[0])
-    if primary.name.lower().replace("_", "-") != PACKAGE:
+    # Local/editable sources and custom indexes are still tool installations,
+    # even though the updater must not replace them with a registry release.
+    primary = values[0]
+    name = Requirement(primary).name if isinstance(primary, str) else None
+    if isinstance(primary, dict):
+        name = primary.get("name")
+    if not isinstance(name, str) or name.lower().replace("_", "-") != PACKAGE:
         return None
-    if primary.marker and not primary.marker.evaluate():
-        return None
-    version = _version(origin)
-    if version is None:
-        return None
-    digest = hashlib.sha256(receipt_bytes).hexdigest()
     key = hashlib.sha256(os.fsencode(origin)).hexdigest()[:24]
     directory = default_daemon_directory().parent / "updates" / key
     if marker_path.is_file() and not prefix.is_relative_to(directory.resolve() / "runtimes"):
         return None
+    return _ToolReceipt(origin, receipt_bytes, tool, directory)
+
+
+def uv_tool_origin() -> Path | None:
+    """Return the original uv tool environment without updating or running commands."""
+    try:
+        receipt = _tool_receipt()
+        return receipt.origin if receipt is not None else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _installation() -> Installation | None:
+    receipt = _tool_receipt()
+    if receipt is None:
+        return None
+    values = receipt.tool["requirements"]
+    primary = _requirement(values[0])
+    if primary.marker and not primary.marker.evaluate():
+        return None
+    version = _version(receipt.origin)
+    if version is None:
+        return None
+    digest = hashlib.sha256(receipt.content).hexdigest()
+    tool = receipt.tool
     uv = shutil.which("uv")
     additional: list[str] = []
     supported = _plain_pypi_options(tool.get("options", {}))
@@ -247,7 +280,14 @@ def _installation() -> Installation | None:
         except ValueError:
             supported = False
     return Installation(
-        origin, version, primary, tuple(additional), digest, directory, uv, supported
+        receipt.origin,
+        version,
+        primary,
+        tuple(additional),
+        digest,
+        receipt.directory,
+        uv,
+        supported,
     )
 
 

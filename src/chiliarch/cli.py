@@ -6,11 +6,16 @@ import argparse
 import asyncio
 import getpass
 import json
+import shlex
 import socket
+import sys
 from pathlib import Path
+
+from filelock import FileLock, Timeout
 
 from chiliarch import __version__
 from chiliarch.config import Settings, SettingsManager, atomic_write
+from chiliarch.paths import default_config_path
 
 
 def parser() -> argparse.ArgumentParser:
@@ -18,13 +23,18 @@ def parser() -> argparse.ArgumentParser:
         prog="chiliarch", description="Outbound-only agent orchestration"
     )
     root.add_argument("--version", action="version", version=f"chiliarch {__version__}")
-    root.add_argument("--config", type=Path, default=Path("chiliarch.toml"))
+    root.add_argument("--config", type=Path, default=default_config_path())
     commands = root.add_subparsers(dest="command", required=True)
     initialize = commands.add_parser(
         "init", help="Initialize TOML configuration and a password hash"
     )
     initialize.add_argument(
         "--force", action="store_true", help="Replace an existing configuration"
+    )
+    initialize.add_argument(
+        "--defaults",
+        action="store_true",
+        help="Use default settings; still prompt for the password",
     )
     serve = commands.add_parser("serve", help="Start the single-process HTTP/WS server")
     serve.add_argument("--host")
@@ -58,9 +68,10 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-def initialize(path: Path, *, force: bool = False) -> None:
+def initialize(path: Path, *, force: bool = False, configure: bool = False) -> None:
     from chiliarch.auth import hash_password
 
+    path = path.expanduser().resolve()
     if path.exists() and not force:
         raise ValueError("Configuration exists; use --force only if you intend to replace it")
     password = getpass.getpass("WebUI 密码（至少 8 字符）: ")
@@ -68,8 +79,30 @@ def initialize(path: Path, *, force: bool = False) -> None:
         raise ValueError("两次密码不一致")
     settings = Settings()
     settings.auth.password_hash = hash_password(password)
-    atomic_write(path.resolve(), settings)
-    print(f"已创建配置：{path.resolve()}。运行 chiliarch serve 启动。")
+    if configure:
+        from chiliarch.initialization import prompt_settings
+
+        prompt_settings(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(path.with_name(f".{path.name}.init.lock"), timeout=0):
+            # Another terminal may have initialized while these prompts were open.
+            if path.exists() and not force:
+                raise ValueError(
+                    "Configuration exists; use --force only if you intend to replace it"
+                )
+            atomic_write(path, settings)
+    except Timeout:
+        raise ValueError("另一个初始化正在保存此配置；请等待完成后重试。") from None
+    arguments = ["chiliarch", "--config", str(path), "serve"]
+    if sys.platform == "win32":
+        quoted_path = str(path).replace("'", "''")
+        command = f"chiliarch --config '{quoted_path}' serve"
+    else:
+        command = shlex.join(arguments)
+    print(f"配置文件已保存到：{path}")
+    shell = "PowerShell 启动服务" if sys.platform == "win32" else "启动服务"
+    print(f"{shell}：{command}")
 
 
 async def _agent_command(arguments: argparse.Namespace) -> None:
@@ -102,6 +135,7 @@ async def _agent_command(arguments: argparse.Namespace) -> None:
 
 def main() -> None:
     arguments = parser().parse_args()
+    arguments.config = arguments.config.expanduser().resolve()
     try:
         if arguments.command == "daemon":
             from chiliarch.daemon_cli import main as daemon_main
@@ -112,7 +146,7 @@ def main() -> None:
 
             agent_main(arguments)
         elif arguments.command == "init":
-            initialize(arguments.config, force=arguments.force)
+            initialize(arguments.config, force=arguments.force, configure=not arguments.defaults)
         elif arguments.command == "schema":
             from chiliarch.protocol import export_schema, protocol_schema
 
@@ -164,5 +198,7 @@ def main() -> None:
             asyncio.run(_agent_command(arguments))
     except KeyboardInterrupt:
         pass
+    except EOFError:
+        raise SystemExit("输入已结束，未完成初始化；请在交互终端重试。") from None
     except (ValueError, OSError, RuntimeError) as error:
         raise SystemExit(str(error)) from error

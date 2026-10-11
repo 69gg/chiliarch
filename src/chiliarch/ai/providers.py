@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from anthropic import NOT_GIVEN, AsyncAnthropic
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from chiliarch.config import ModelSettings
@@ -560,6 +560,17 @@ class Provider:
         system: str,
         turn: ModelTurn,
     ) -> AsyncIterator[ModelEvent]:
+        params = self._params()
+        legacy_max_tokens = params.pop("max_tokens", None)
+        max_tokens = self.config.anthropic_max_tokens
+        if max_tokens is None:
+            max_tokens = legacy_max_tokens
+        if type(max_tokens) is not int or max_tokens <= 0:
+            raise ModelError(
+                "Anthropic Messages requires a positive integer output limit. "
+                "Set model.anthropic_max_tokens in the configuration or the WebUI "
+                "Anthropic output limit field before sending a message."
+            )
         history = self._anthropic_history(messages)
         if self.config.system_prompt_as_user:
             history.insert(0, {"role": "user", "content": [{"type": "text", "text": system}]})
@@ -567,11 +578,8 @@ class Provider:
             "model": self.config.model,
             "messages": history,
             "stream": True,
-            # The SDK requires this keyword, but NOT_GIVEN omits it on the wire.
-            # Native Anthropic requires an explicit request_params.max_tokens;
-            # gateways that supply a server default can accept omission.
-            "max_tokens": NOT_GIVEN,
-            "extra_body": self._params(),
+            "max_tokens": max_tokens,
+            "extra_body": params,
         }
         if not self.config.system_prompt_as_user:
             kwargs["system"] = system
