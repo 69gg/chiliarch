@@ -10,9 +10,10 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, InitializeResult, Tool
 from test_client_network import LiveServer, wait_for_task
 
+from chiliarch.adapters.guidance import INBOX_POLLING_GUIDANCE
 from chiliarch.adapters.mailbox import AgentMailbox
 from chiliarch.client import AgentClient, ClientStore
 from chiliarch.protocol import Envelope
@@ -76,6 +77,35 @@ def payload(result: CallToolResult) -> JsonObject:
     return decoded
 
 
+def assert_tool_guidance(initialized: InitializeResult, tools: list[Tool]) -> None:
+    """Check the public MCP metadata rather than the server's source or docstrings."""
+    assert initialized.instructions and initialized.instructions.strip()
+    assert INBOX_POLLING_GUIDANCE in initialized.instructions
+    for tool in tools:
+        assert tool.description and tool.description.strip(), tool.name
+        properties = tool.inputSchema.get("properties", {})
+        assert "ctx" not in properties, tool.name
+        for parameter, schema in properties.items():
+            assert schema.get("description", "").strip(), (tool.name, parameter)
+
+    definitions = {tool.name: tool for tool in tools}
+    read = definitions["read_messages"].inputSchema
+    assert not read.get("required")
+    assert read["properties"]["after"]["default"] == 0
+    assert {item["type"] for item in read["properties"]["after"]["anyOf"]} == {
+        "integer",
+        "null",
+    }
+    assert read["properties"]["limit"]["default"] == 100
+    assert read["properties"]["task_id"]["default"] is None
+    receipts = definitions["acknowledge_peer_message"].inputSchema
+    assert set(receipts["required"]) == {"message_id", "state"}
+    assert receipts["properties"]["state"]["enum"] == ["read", "processed"]
+    send = definitions["send_peer_message"].inputSchema
+    assert send["properties"]["wake"]["default"] is False
+    assert send["properties"]["wait_seconds"]["default"] == 10
+
+
 async def test_standalone_stdio_exposes_full_tools_and_executes_explicitly_claimed_work(
     tmp_path: Path,
 ) -> None:
@@ -96,9 +126,9 @@ async def test_standalone_stdio_exposes_full_tools_and_executes_explicitly_claim
                 async with asyncio.timeout(30):
                     initialized = await session.initialize()
                     assert initialized.serverInfo.name == "chiliarch"
-                    assert {
-                        tool.name for tool in (await session.list_tools()).tools
-                    } == COORDINATION_TOOLS | EXECUTION_TOOLS
+                    tools = (await session.list_tools()).tools
+                    assert_tool_guidance(initialized, tools)
+                    assert {tool.name for tool in tools} == COORDINATION_TOOLS | EXECUTION_TOOLS
                     status = payload(await session.call_tool("status"))
                     assert status["agent_id"] == identity["agent_id"]
                     assert status["mode"] == "standalone"
@@ -219,8 +249,10 @@ async def test_managed_stdio_mailbox_exposes_only_coordination_and_task_bound_re
         ) as streams:
             async with ClientSession(*streams) as session:
                 async with asyncio.timeout(10):
-                    await session.initialize()
-                    tools = {tool.name for tool in (await session.list_tools()).tools}
+                    initialized = await session.initialize()
+                    definitions = (await session.list_tools()).tools
+                    assert_tool_guidance(initialized, definitions)
+                    tools = {tool.name for tool in definitions}
                     assert tools == COORDINATION_TOOLS
                     assert not tools & EXECUTION_TOOLS
                     status = payload(await session.call_tool("status"))

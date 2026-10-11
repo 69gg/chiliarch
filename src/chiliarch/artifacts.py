@@ -49,12 +49,31 @@ class Arguments(BaseModel):
 
 
 class BeginUpload(Arguments):
-    name: str = Field(min_length=1, max_length=255)
-    size: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    members: list[str] = Field(default_factory=list, max_length=100)
-    goal_id: str | None = None
-    task_id: str | None = None
+    name: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Plain filename without directory separators; this is a display name, not a local path.",
+    )
+    size: int = Field(
+        ge=0,
+        description="Exact total file size in bytes, measured before requesting upload authorization.",
+    )
+    sha256: str = Field(
+        pattern=r"^[a-f0-9]{64}$",
+        description="Lowercase SHA-256 hex digest of the complete file; do not invent a digest.",
+    )
+    members: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Registered agent IDs permitted to read the finished artifact, in addition to its owner.",
+    )
+    goal_id: str | None = Field(
+        default=None, description="Optional existing goal ID associated with this file."
+    )
+    task_id: str | None = Field(
+        default=None,
+        description="Optional producing task ID; managed agents must use their bound task ID.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -65,82 +84,110 @@ class BeginUpload(Arguments):
 
 
 class UploadId(Arguments):
-    upload_id: str = Field(min_length=1, max_length=128)
+    upload_id: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Upload ID returned by begin_artifact_upload, representing its immutable authorized manifest.",
+    )
 
 
 class PutChunk(UploadId):
-    index: int = Field(ge=0)
-    data_base64: str
+    index: int = Field(
+        ge=0,
+        description="Zero-based chunk index using the manifest's chunk_bytes size; the last chunk may be shorter.",
+    )
+    data_base64: str = Field(
+        description="Base64-encoded exact chunk bytes; repeated indexes must contain identical bytes. Local transfer only, never model-context file content."
+    )
 
 
 class ArtifactId(Arguments):
-    artifact_id: str = Field(min_length=1, max_length=128)
+    artifact_id: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Artifact ID from list_artifacts/get_artifact, or the ID suffix of a chiliarch:artifact: URI; not a filesystem path.",
+    )
 
 
 class ReadChunk(ArtifactId):
-    index: int = Field(ge=0)
+    index: int = Field(
+        ge=0,
+        description="Zero-based chunk index in a ready artifact; verify the returned chunk digest and final complete-file digest.",
+    )
 
 
 class ListArtifacts(Arguments):
-    goal_id: str | None = None
-    task_id: str | None = None
-    after: int = Field(default=0, ge=0)
-    limit: int = Field(default=100, ge=1, le=200)
+    goal_id: str | None = Field(
+        default=None,
+        description="Filter by an existing goal ID; omit to include other accessible goals.",
+    )
+    task_id: str | None = Field(
+        default=None,
+        description="Filter by the producing task ID; omit to include other accessible tasks.",
+    )
+    after: int = Field(
+        default=0,
+        ge=0,
+        description="Pagination offset; pass the prior returned cursor to continue, or 0 for the first page.",
+    )
+    limit: int = Field(
+        default=100, ge=1, le=200, description="Maximum artifact metadata entries in this page."
+    )
 
 
 SPECS: list[tuple[str, str, type[BaseModel], str, bool]] = [
     (
         "begin_artifact_upload",
-        "Authorize bounded immutable file sharing with explicit members",
+        "Reserve an immutable file upload using its exact size/hash and permitted agent members. Returns upload_id and artifact.chunk_bytes; allocation is not publication. Only the caller owning this upload can supply/finalize bytes. The supervisor should normally ask an agent to use its local upload_artifact tool instead, then inspect the returned ready metadata.",
         BeginUpload,
         "low",
         True,
     ),
     (
         "put_artifact_chunk",
-        "Upload one chunk within a previously authorized immutable manifest",
+        "Local transfer only: supply one chunk under the previously authorized immutable upload manifest. Index and bytes must match the declared size; repeated identical chunks are idempotent. Finish after all chunks are stored.",
         PutChunk,
         "low",
         True,
     ),
     (
         "finish_artifact_upload",
-        "Verify the authorized file hash and publish it to members",
+        "Finalize an upload owned by the caller after all chunks are stored. Verifies exact total size and SHA-256 before publishing state=ready to members; missing or mismatched bytes are rejected. Use the local uploader for byte transfer.",
         UploadId,
         "low",
         True,
     ),
     (
         "list_artifacts",
-        "List accessible file metadata without reading file contents",
+        "List accessible file metadata and configured transfer limits without loading contents into model context. Paginate with cursor; only state=ready files can be downloaded. Share artifact IDs/URIs with permitted agents.",
         ListArtifacts,
         "low",
         False,
     ),
     (
         "get_artifact",
-        "Inspect accessible file metadata and upload progress",
+        "Inspect a shared file's size, SHA-256, members and state; upload owners also see stored chunk indexes. Metadata is not file content; ask a permitted agent to use its local download_artifact tool when inspection is needed.",
         ArtifactId,
         "low",
         False,
     ),
     (
         "read_artifact_chunk",
-        "Read one bounded chunk for local file transfer",
+        "Local transfer only: read a chunk from a ready accessible artifact; returns base64 bytes and a chunk SHA-256. Verify chunks and the complete manifest before using the local file; do not place bytes in model context.",
         ReadChunk,
         "low",
         False,
     ),
     (
         "discard_artifact_upload",
-        "Discard an unfinished upload and release its reserved quota",
+        "Remove an unfinished upload and its stored chunks to release reserved quota. Ready artifacts require delete_artifact; agent callers must own the upload.",
         UploadId,
         "low",
         True,
     ),
     (
         "delete_artifact",
-        "Permanently delete shared file content and revoke member access",
+        "Permanently delete a shared artifact's platform bytes and metadata, revoking future downloads for members. Previously downloaded local copies remain; this cannot undo their use.",
         ArtifactId,
         "high",
         True,

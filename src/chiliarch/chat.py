@@ -215,28 +215,39 @@ class Supervisor:
         register = self.service.register
         object_id = {
             "type": "object",
-            "properties": {"conversation_id": {"type": "string"}},
+            "properties": {
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Supervisor conversation ID from list_conversations or create_conversation; not an agent task or model run ID.",
+                }
+            },
             "required": ["conversation_id"],
             "additionalProperties": False,
         }
         register(
             "list_conversations",
-            "List supervisor conversations and their sources.",
+            "Find supervisor conversation IDs, titles and sources. Agent contacts are queued and processed by the supervisor inbox automatically; this tool lists conversations, not a client mailbox to poll.",
             {"type": "object", "properties": {}, "additionalProperties": False},
             self._tool_list,
         )
         register(
             "get_conversation",
-            "Read a supervisor conversation, messages and execution status.",
+            "Read a supervisor conversation, its messages and runs. Use returned run IDs for cancel_chat_run; wait for an active run to finish or cancel it before starting another message in the same conversation.",
             object_id,
             self._tool_read,
         )
         register(
             "create_conversation",
-            "Create a new supervisor conversation.",
+            "Create an empty supervisor conversation and return its ID. This does not run the model; use send_chat_message to start its first turn.",
             {
                 "type": "object",
-                "properties": {"title": {"type": "string", "maxLength": 256}},
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "description": "Optional initial title; omit to use the default new-conversation title.",
+                    }
+                },
                 "additionalProperties": False,
             },
             self._tool_create,
@@ -244,12 +255,20 @@ class Supervisor:
         )
         register(
             "rename_conversation",
-            "Rename a supervisor conversation.",
+            "Set a supervisor conversation title without changing messages or running the model.",
             {
                 "type": "object",
                 "properties": {
-                    "conversation_id": {"type": "string"},
-                    "title": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "conversation_id": {
+                        "type": "string",
+                        "description": "Supervisor conversation ID from list_conversations or create_conversation; not an agent task or model run ID.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "New human-readable conversation title.",
+                    },
                 },
                 "required": ["conversation_id", "title"],
                 "additionalProperties": False,
@@ -259,7 +278,7 @@ class Supervisor:
         )
         register(
             "delete_conversation",
-            "Delete an inactive conversation and its history; active runs must be cancelled first.",
+            "Permanently delete an inactive supervisor conversation and its history. Cancel active runs first; deleting history does not cancel dispatched agent tasks or undo external effects.",
             object_id,
             self._tool_delete,
             risk="high",
@@ -267,12 +286,20 @@ class Supervisor:
         )
         register(
             "send_chat_message",
-            "Send a message to chiliarch AI in an inactive conversation.",
+            "Start a supervisor model turn in an existing inactive conversation. Inspect get_conversation first: concurrent turns in the same conversation are rejected. Returns run_id and conversation_id; observe get_conversation for completion rather than sending duplicates.",
             {
                 "type": "object",
                 "properties": {
-                    "conversation_id": {"type": "string"},
-                    "content": {"type": "string", "minLength": 1, "maxLength": 100000},
+                    "conversation_id": {
+                        "type": "string",
+                        "description": "Supervisor conversation ID from list_conversations or create_conversation; not an agent task or model run ID.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100000,
+                        "description": "Self-contained message to the supervisor in the selected conversation; do not pass credentials or raw file bytes.",
+                    },
                 },
                 "required": ["conversation_id", "content"],
                 "additionalProperties": False,
@@ -282,10 +309,15 @@ class Supervisor:
         )
         register(
             "cancel_chat_run",
-            "Cancel an active supervisor run. Already delivered external work is not rolled back.",
+            "Stop an active supervisor model run and withdraw its pending continuation. Already dispatched agent tasks and completed external effects are not rolled back; cancel_task is separate. Inspect get_conversation to confirm the run state.",
             {
                 "type": "object",
-                "properties": {"run_id": {"type": "string"}},
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "Supervisor run ID from get_conversation or send_chat_message, not an agent task ID.",
+                    }
+                },
                 "required": ["run_id"],
                 "additionalProperties": False,
             },
@@ -693,16 +725,24 @@ class Supervisor:
             )
 
     def tool_schemas(self) -> list[JSONObject]:
-        schemas: list[JSONObject] = deepcopy(self.service.schemas())
+        schemas: list[JSONObject] = [deepcopy(schema) for schema in self.service.schemas()]
         for schema in schemas:
             if schema.get("mutating"):
                 properties = schema.setdefault("parameters", {}).setdefault("properties", {})
                 properties["_risk"] = {
                     "type": "object",
-                    "description": "Your risk assessment; cannot lower intrinsic high risk. Omit when uncertain.",
+                    "description": "Assess this specific state change and its consequences; cannot lower intrinsic high risk. Omit when uncertain. An awaiting_approval result means wait for the user, not retry or self-approve.",
                     "properties": {
-                        "level": {"type": "string", "enum": ["low", "medium", "high"]},
-                        "reason": {"type": "string", "minLength": 1},
+                        "level": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "description": "Assessed risk of this operation and its current arguments.",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Concrete consequences and evidence supporting this risk assessment.",
+                        },
                     },
                     "required": ["level", "reason"],
                     "additionalProperties": False,

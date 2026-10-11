@@ -35,30 +35,82 @@ class CoordinationArguments(BaseModel):
 
 
 class GoalArguments(CoordinationArguments):
-    goal_id: str = Field(min_length=1)
+    goal_id: str = Field(
+        min_length=1,
+        description="Goal ID returned by create_goal or list_goals; not a task or conversation ID.",
+    )
 
 
 class CreateGoalArguments(CoordinationArguments):
-    title: str = Field(min_length=1, max_length=256)
-    objective: str = Field(min_length=1, max_length=100000)
-    constraints: list[str] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    conversation_id: str | None = None
+    title: str = Field(
+        min_length=1, max_length=256, description="Short name for the durable objective."
+    )
+    objective: str = Field(
+        min_length=1,
+        max_length=100000,
+        description="Concrete desired outcome and scope for all contributing tasks.",
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        description="Requirements and boundaries that every contributing task must respect.",
+    )
+    acceptance_criteria: list[str] = Field(
+        default_factory=list,
+        description="Observable evidence required before the goal may be considered complete.",
+    )
+    conversation_id: str | None = Field(
+        default=None,
+        description="Existing supervisor conversation ID for coordinated progress and follow-up; omit to leave unlinked.",
+    )
 
 
 class UpdateGoalArguments(GoalArguments):
-    title: str | None = Field(default=None, min_length=1, max_length=256)
-    constraints: list[str] | None = None
-    acceptance_criteria: list[str] | None = None
-    summary: str | None = None
-    status: Literal["active", "blocked", "completed", "cancelled"] | None = None
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Replacement goal title; omit to keep the current title.",
+    )
+    constraints: list[str] | None = Field(
+        default=None,
+        description="Replacement constraint list; omit to retain it or pass [] to clear it.",
+    )
+    acceptance_criteria: list[str] | None = Field(
+        default=None,
+        description="Replacement acceptance-criteria list; omit to retain it or pass [] to clear it.",
+    )
+    summary: str | None = Field(
+        default=None,
+        description="Current progress, findings, or reason for blocking/cancelling; omit to retain the prior summary.",
+    )
+    status: Literal["active", "blocked", "completed", "cancelled"] | None = Field(
+        default=None,
+        description="Goal state; completed requires accepted task work, while cancelled requests cancellation of unfinished tasks. Omit to leave unchanged.",
+    )
 
 
 class ArtifactReference(CoordinationArguments):
-    name: str = Field(min_length=1, max_length=256)
-    uri: str = Field(min_length=1, max_length=4096)
-    kind: str = Field(default="reference", min_length=1, max_length=64)
-    digest: str | None = Field(default=None, max_length=256)
+    name: str = Field(
+        min_length=1,
+        max_length=256,
+        description="Human-readable name for the evidence being reviewed.",
+    )
+    uri: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Existing file/repository/web URI or chiliarch:artifact:<id> reference, without embedded credentials. A reference does not upload bytes or grant access.",
+    )
+    kind: str = Field(
+        default="reference",
+        min_length=1,
+        max_length=64,
+        description="Short evidence category, such as reference, report or patch.",
+    )
+    digest: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Optional verified content digest for this evidence; omit if not available rather than inventing one.",
+    )
 
     @field_validator("uri")
     @classmethod
@@ -75,18 +127,49 @@ class ArtifactReference(CoordinationArguments):
 
 
 class ReviewTaskArguments(CoordinationArguments):
-    task_id: str = Field(min_length=1)
-    decision: Literal["accepted", "changes_requested"]
-    note: str = Field(min_length=1, max_length=100000)
-    artifacts: list[ArtifactReference] = Field(default_factory=list)
+    task_id: str = Field(
+        min_length=1,
+        description="Latest execution-completed task attempt ID from get_task/list_tasks.",
+    )
+    decision: Literal["accepted", "changes_requested"] = Field(
+        description="accepted releases dependent tasks; changes_requested allows a corrected retry. Acceptance cannot subsequently be withdrawn."
+    )
+    note: str = Field(
+        min_length=1,
+        max_length=100000,
+        description="Evidence checked against the criteria, and specific remaining corrections if changes are requested.",
+    )
+    artifacts: list[ArtifactReference] = Field(
+        default_factory=list,
+        description="Complete replacement list of reviewed evidence references; this records references only and does not transfer files.",
+    )
 
 
 class RetryTaskArguments(CoordinationArguments):
-    task_id: str = Field(min_length=1)
-    agent_id: str | None = Field(default=None, min_length=1)
-    workdir: TaskWorkdir | None = None
-    instruction: str | None = Field(default=None, min_length=1, max_length=100000)
-    recovery_note: str = Field(min_length=1, max_length=100000)
+    task_id: str = Field(
+        min_length=1,
+        description="Latest failed/interrupted/cancelled/expired task attempt, or completed attempt reviewed as changes_requested.",
+    )
+    agent_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional registered agent ID for a handoff; omission retains the original agent.",
+    )
+    workdir: TaskWorkdir | None = Field(
+        default=None,
+        description="Absolute directory on the selected agent machine. Omission inherits the prior directory only for the same agent; handoffs use the new agent's default.",
+    )
+    instruction: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100000,
+        description="Replacement instruction for the new attempt; omit to retain the prior instruction.",
+    )
+    recovery_note: str = Field(
+        min_length=1,
+        max_length=100000,
+        description="Required explanation of inspected side effects and why another attempt is safe, including work already completed and how duplicates will be avoided.",
+    )
 
     @field_validator("recovery_note")
     @classmethod

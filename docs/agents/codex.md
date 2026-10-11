@@ -62,7 +62,7 @@ enabled = true
 没有任务时告诉我当前状态，不伪造工作或运行完成结果。
 ```
 
-服务工具名包括 `status`、`claim_task`、`report_progress`、`complete_task`、`fail_task`、`send_message`、`list_agents`、`request_operation`、`get_request_result`、`read_messages` 和 `list_tasks`。具体参数、cursor 和业务状态见 [完整工作流](index.md#mcp-工具与完整工作流)。先领取再执行，收到取消停止工作；`queued`、`pending` 都不代表上级已批准。
+服务工具名包括 `status`、`claim_task`、`report_progress`、`complete_task`、`fail_task`、`send_message`、`list_agents`、`request_operation`、`get_request_result`、`read_messages` 和 `list_tasks`。用途、参数、cursor 和业务状态直接写在当前工具定义中；长任务要按工具说明定期主动检查来信，升级后刷新工具列表或重连 MCP。可选参考见 [运行中工具与通信指引](tools.md) 和 [完整工作流](index.md#mcp-工具与完整工作流)。先领取再执行，收到取消停止工作；`queued`、`pending` 都不代表上级已批准。
 
 ## 托管 CLI 执行
 

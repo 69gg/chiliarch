@@ -25,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from chiliarch.adapters.codex import CodexProtocol, CodexProtocolError
+from chiliarch.adapters.guidance import INBOX_POLLING_GUIDANCE
 from chiliarch.adapters.opencode import OpenCodeProtocol, OpenCodeProtocolError
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
@@ -423,8 +424,9 @@ class RunnerHandler:
             f"You are executing a Chiliarch task. Use the {mcp_name} MCP server's tools for this task, "
             "rather than another Chiliarch identity in your existing MCP configuration. Contact "
             "the supervisor for help or permission requests, and use list_agents and "
-            "send_peer_message to coordinate with peers. Read your task's collaboration "
-            "messages at the start and at useful checkpoints. When parameters include "
+            "send_peer_message to coordinate with peers. "
+            f"{INBOX_POLLING_GUIDANCE} "
+            "When parameters include "
             "collaboration_message, address that message and reply using "
             "send_peer_message(reply_to=collaboration_message.id, "
             "recipient_agent_id=collaboration_message.sender_agent_id). Ordinary replies "

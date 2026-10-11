@@ -78,7 +78,7 @@ claude mcp add --transport stdio --scope user chiliarch -- \
 
 manual 身份的 MCP 连接不会保证空闲原生会话持续自动领取。默认 managed 身份使用 runner 执行，原生 Claude Code 保留自己的工具审批边界。
 
-工具包括 `status`、`claim_task`、`report_progress`、`complete_task`、`fail_task`、`send_message`、`list_agents`、`request_operation`、`get_request_result`、`read_messages` 和 `list_tasks`。按 [完整工作流](index.md#mcp-工具与完整工作流) 先领取、再执行、报告与查回信。保存 `read_messages` 返回的 cursor；申请未批准时不要把 `pending` 当作允许执行。
+工具包括 `status`、`claim_task`、`report_progress`、`complete_task`、`fail_task`、`send_message`、`list_agents`、`request_operation`、`get_request_result`、`read_messages` 和 `list_tasks`。用途、参数、cursor 和业务状态直接写在当前工具定义中；长任务要按工具说明定期主动检查来信，升级后刷新工具列表或重连 MCP。可选参考见 [运行中工具与通信指引](tools.md) 和 [完整工作流](index.md#mcp-工具与完整工作流)。保存 `read_messages` 返回的 cursor；申请未批准时不要把 `pending` 当作允许执行。
 
 ## 托管 runner 配置
 

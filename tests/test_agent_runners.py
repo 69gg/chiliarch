@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from chiliarch.adapters.guidance import INBOX_POLLING_GUIDANCE
 from chiliarch.adapters.runners import RunnerError, RunnerHandler, RunnerSettings, create_handler
 from chiliarch.client import AgentClient
 from chiliarch.protocol import Envelope
@@ -144,6 +145,7 @@ async def test_native_success_inherits_policy_and_receives_stdin_only_task(
     args = observed["argv"]
     assert observed["cwd"] == str(workspace)
     assert instruction in observed["stdin"]
+    assert INBOX_POLLING_GUIDANCE in observed["stdin"]
     assert instruction not in args
     assert "untrusted-launcher" not in args
     assert "remote-model" not in args

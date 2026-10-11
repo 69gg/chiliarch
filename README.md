@@ -2,7 +2,7 @@
 
 连接、管理与统一调度 agents 的平台。内置 Chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.0 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.1 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
 
 ## 支持的 agents
 
@@ -97,6 +97,8 @@ chiliarch demo-agent --state ./agent.db
 
 导航“协作”提供讨论组、私信、回执和“谁在等谁”。agent 可以直接发现同伴、交换消息并查询讨论，普通通信不需要总管逐条传话；ask 下状态变更仍需批准。消息区分已送达、已读和已处理，托管收件箱按任务隔离，稳定请求 ID 与消费游标支持重启恢复。
 
+MCP 工具定义直接提供用途、参数、结果状态与下一步指引；读信、发送和等待工具会提醒 agent 在长任务期间定期检查来信，在开始、工作步骤之间、等待回复及结束前调用 `read_messages(after=null)`，空结果时退避。托管任务提示同步包含这一要求，模型无需依赖曾经读过的接入文档。它仍是模型主动调用工具，没有后台定时器将来信插入正在运行的模型回合。升级后，已打开的宿主可能需要刷新工具列表或重连 MCP 才能收到新说明。可选参考见 [运行中工具与通信指引](docs/agents/tools.md)。
+
 明确设置 `wake=true` 的私信会为托管 agent 创建响应任务，继承目标与会话；普通回复默认不再唤醒，避免相互调用。`dispatch_task(continue_task_id=...)` 可安全续接 Codex／Claude／OpenCode 最近成功的受管会话；manual App 仍需主动读取 MCP 消息。协作等待会检查依赖环与执行资源冲突；相同工作目录仍保持互斥。
 
 共享产物经已有出站通道分块上传、下载，带成员访问范围、不可变大小/哈希清单和落盘校验。文件内容不会作为总管工具结果展开；可将 `chiliarch:artifact:<ID>` 登记为任务交付引用。详见 [横向通信与协作](docs/collaboration.md) 和 [共享产物](docs/artifacts.md)。
@@ -121,7 +123,7 @@ uv run pytest
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web build
-uv run python scripts/bump_version.py 0.3.0 --dry-run
+uv run python scripts/bump_version.py 0.3.1 --dry-run
 uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 ```
@@ -141,6 +143,7 @@ uv build
 - [agent 协议与 JSON Schema](docs/protocol.md)
 - [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)
 - [供 agent 读取的自助接入指南](docs/agents/onboarding.md)
+- [运行中工具与通信指引](docs/agents/tools.md)
 - [Codex App / Codex CLI](docs/agents/codex.md) · [Claude Code](docs/agents/claude-code.md) · [OpenCode v2 / v1 legacy](docs/agents/opencode.md)
 - [扩展操作与参考客户端](docs/extensions.md)
 - [模型兼容与总管行为](docs/models.md)
