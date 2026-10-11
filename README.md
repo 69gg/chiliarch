@@ -134,7 +134,7 @@ uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 ```
 
-Python 测试默认使用 8 个独立进程并行运行；资源较少的设备可用 `uv run pytest -n 2`，定位单项问题时可用 `uv run pytest -n 0` 串行执行。CI 保留 Linux、macOS、Windows 与 Python 3.11–3.13 的全部组合，并复用已经构建的 WebUI，详见 [验证与发版](docs/releasing.md)。
+Python 测试默认根据可用 CPU 并行运行，最多 8 个独立进程；可用 `uv run pytest -n 8` 明确指定并发，资源较少的设备可用 `-n 2`，定位单项问题时可用 `-n 0` 串行执行。CI 保留 Linux、macOS、Windows 与 Python 3.11–3.13 的全部组合，并复用已经构建的 WebUI，详见 [验证与发版](docs/releasing.md)。
 
 版本升级脚本同步 pyproject、uv.lock 和前端元数据；CHANGELOG 需要按最终用户行为单独撰写。`v*` tag 流水线验证、构建并通过 PyPI Trusted Publishing 发布，配置步骤见 [发版文档](docs/releasing.md)。
 

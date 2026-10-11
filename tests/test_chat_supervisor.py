@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import aiosqlite
@@ -89,16 +91,20 @@ class Upstream:
 
 async def wait_status(supervisor: Supervisor, run_id: str, status: str) -> JSONObject:
     async with asyncio.timeout(5):
-        while True:
-            result = await supervisor.get_run(run_id)
-            if result["status"] == status:
-                return result
-            if (
-                result["status"] in {"failed", "interrupted", "cancelled"}
-                and status != result["status"]
-            ):
-                raise AssertionError(result)
-            await asyncio.sleep(0.01)
+        # Subscribe before checking the durable state: completion cannot fall
+        # between the read and wait. Only persisted events trigger another read,
+        # avoiding a stream of SQLite sessions competing with the actual run.
+        async with supervisor.condition:
+            while True:
+                result = await supervisor.get_run(run_id)
+                if result["status"] == status:
+                    return result
+                if (
+                    result["status"] in {"failed", "interrupted", "cancelled"}
+                    and status != result["status"]
+                ):
+                    raise AssertionError(result)
+                await supervisor.condition.wait()
 
 
 def manager(mode: str = "ask", model: str = "test") -> SettingsManager:
@@ -277,7 +283,11 @@ async def test_same_clock_tick_and_clock_rollback_keep_messages_and_context_in_o
     def frozen_default(_: Any) -> float:
         return timestamp
 
-    monkeypatch.setattr(chat_module.time, "time", lambda: timestamp)
+    # Exercise this module's timestamp ordering without changing the shared time
+    # module used by storage, logging and unrelated background maintenance.
+    monkeypatch.setattr(
+        chat_module, "time", SimpleNamespace(time=lambda: timestamp, monotonic=time.monotonic)
+    )
     for model in (ChatMessage, ChatRun):
         monkeypatch.setattr(model.__table__.c.created_at.default, "arg", frozen_default)
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")

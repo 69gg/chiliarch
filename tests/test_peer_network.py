@@ -14,36 +14,25 @@ from test_client_network import LiveServer, wait_for_task
 from chiliarch.adapters.mailbox import AgentMailbox
 from chiliarch.adapters.runtime import outbound_client
 from chiliarch.client import AgentClient
-from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
 Progress = Callable[[float, str], Awaitable[None]]
 
 
 @pytest.mark.parametrize(
-    ("transport", "receive_delay"),
+    ("transport", "ack_delay"),
     [("ws", 0), ("sse", 0), ("poll", 0), pytest.param("ws", 0.15, id="ws-slow-ack")],
 )
 async def test_discover_wake_reply_and_receipts_across_outbound_transports(
     tmp_path: Path,
     transport: Literal["ws", "sse", "poll"],
-    receive_delay: float,
-    monkeypatch: pytest.MonkeyPatch,
+    ack_delay: float,
 ) -> None:
     platform = LiveServer(tmp_path)
+    platform.gate.business_ack_delay = ack_delay
     await platform.start()
     try:
         service = platform.app.state.service
-        if receive_delay:
-            receive = service.receive
-
-            async def delayed_receive(agent_id: str, envelope: Envelope) -> JsonObject:
-                # Model a receiver slower than the retry interval, independently of the host OS.
-                await asyncio.sleep(receive_delay)
-                result: JsonObject = await receive(agent_id, envelope)
-                return result
-
-            monkeypatch.setattr(service, "receive", delayed_receive)
         service.settings_manager.current.supervisor.mode = "yolo"
         states = {name: tmp_path / f"{name}.sqlite" for name in ("author", "reviewer")}
         identities: dict[str, str] = {}
@@ -103,6 +92,7 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             discovered = await mailbox.list_agents(wait_seconds=5)
             assert discovered["status"] == "approved"
             assert {row["id"] for row in discovered["result"]["agents"]} == set(identities.values())
+            platform.gate.business_deliveries.clear()
             result = await mailbox.send_peer_message(
                 "Please independently review this result",
                 recipient_agent_id=identities["reviewer"],
@@ -114,9 +104,17 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             task_id = result["result"]["wake_task_id"]
             completed = await wait_for_task(platform, task_id, "completed")
             assert completed["result"]["reviewed"] == result["result"]["message"]["id"]
-            # The bounded-latency assertion above covers the slow receiver.
-            # File transfer below needn't repeat that delay for every chunk.
-            receive_delay = 0
+            if ack_delay:
+                # ACK latency exceeds retry_seconds, so the actual outbound
+                # sockets must redeliver an identical durable envelope.
+                assert any(count > 1 for count in platform.gate.business_deliveries.values())
+                # Allow substantial scheduling/SQLite jitter above the usual
+                # one retry. Fresh mailbox wakeups must still not turn a
+                # 150ms ACK delay into an unbounded flood of the same ID.
+                assert max(platform.gate.business_deliveries.values()) <= 8
+            # The bounded-latency collaboration assertion covers delayed ACKs;
+            # file transfer below needn't repeat injection for every chunk.
+            platform.gate.business_ack_delay = 0
             replay = await mailbox.send_peer_message(
                 "Please independently review this result",
                 recipient_agent_id=identities["reviewer"],
@@ -158,6 +156,10 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             # Generic mailbox reads must continue to expose metadata only.
             for item in (await recipient.read_messages())["messages"]:
                 assert "data_base64" not in (item["payload"].get("result") or {})
+            if ack_delay:
+                async with asyncio.timeout(5):
+                    while await author.store.pending() or await reviewer.store.pending():  # noqa: ASYNC110
+                        await asyncio.sleep(0.01)
             assert not platform.settings.model.model
     finally:
         await platform.stop()

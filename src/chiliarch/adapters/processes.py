@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 _windows_ctypes: Any = ctypes  # Windows-only exports are absent from POSIX type stubs.
+_PROCESS_CONFIRM_SECONDS = 5.0
 
 
 class ProcessLaunchError(OSError):
@@ -152,6 +153,7 @@ class WindowsJob:
 
     def __init__(self) -> None:
         self.handle: int | None = None
+        self.members: dict[int, int] = {}
         if os.name != "nt":
             raise ProcessLaunchError("Windows Job Objects are available only on Windows")
         self.kernel: Any = _windows_ctypes.WinDLL("kernel32", use_last_error=True)
@@ -165,6 +167,11 @@ class WindowsJob:
             "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
             "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
             "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+            "IsProcessInJob": (
+                [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)],
+                wintypes.BOOL,
+            ),
             "QueryInformationJobObject": (
                 [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p],
                 wintypes.BOOL,
@@ -204,8 +211,80 @@ class WindowsJob:
             self.kernel.CloseHandle(process)
 
     def terminate(self) -> None:
-        if self.handle and not self.kernel.TerminateJobObject(self.handle, 1):
+        if self.handle:
+            try:
+                self.capture_members()
+            finally:
+                # Failure to inspect a member must not leave the owned job running.
+                if not self.kernel.TerminateJobObject(self.handle, 1):
+                    self._error()
+
+    def open_process(self, pid: int) -> int | None:
+        handle = self.kernel.OpenProcess(0x00100000 | 0x1000, False, pid)
+        if not handle:
+            if pid > 0 and _windows_ctypes.get_last_error() == 87:
+                return None  # ERROR_INVALID_PARAMETER: the process no longer exists.
             self._error()
+        return int(handle)
+
+    def process_ids(self) -> list[int]:
+        if self.handle is None:
+            return []
+        capacity = 16
+        while True:
+
+            class ProcessIds(ctypes.Structure):
+                _fields_ = [
+                    ("assigned", wintypes.DWORD),
+                    ("count", wintypes.DWORD),
+                    ("pids", ctypes.c_size_t * capacity),
+                ]
+
+            information = ProcessIds()
+            success = self.kernel.QueryInformationJobObject(
+                self.handle, 3, ctypes.byref(information), ctypes.sizeof(information), None
+            )
+            if not success and _windows_ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                self._error()
+            if success and information.count == information.assigned:
+                return [int(pid) for pid in information.pids[: information.count]]
+            capacity = max(capacity * 2, information.assigned)
+
+    def capture_members(self) -> None:
+        for pid in self.process_ids():
+            if pid in self.members:
+                continue
+            handle = self.open_process(pid)
+            if handle is None:
+                continue
+            try:
+                member = wintypes.BOOL()
+                if not self.kernel.IsProcessInJob(handle, self.handle, ctypes.byref(member)):
+                    self._error()
+                if member.value:
+                    self.members[pid] = handle
+                    handle = None
+                # A PID reused between enumeration and opening belongs to a
+                # different job. Never wait for or terminate that new process.
+            finally:
+                if handle is not None:
+                    self.close_process(handle)
+
+    def stopped(self) -> bool:
+        self.capture_members()
+        return not self.active() and all(self.process_exited(h) for h in self.members.values())
+
+    def process_exited(self, handle: int) -> bool:
+        result = self.kernel.WaitForSingleObject(handle, 0)
+        if result == 0:  # WAIT_OBJECT_0
+            return True
+        if result == 258:  # WAIT_TIMEOUT
+            return False
+        self._error()
+        return False
+
+    def close_process(self, handle: int) -> None:
+        self.kernel.CloseHandle(handle)
 
     def active(self) -> bool:
         if self.handle is None:
@@ -221,6 +300,9 @@ class WindowsJob:
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+        for handle in self.members.values():
+            self.close_process(handle)
+        self.members.clear()
 
     def __del__(self) -> None:
         self.close()
@@ -268,8 +350,10 @@ class ProcessTree:
         try:
             if self.job is not None:
                 self.job.terminate()
-                async with asyncio.timeout(max(5.0, grace_seconds)):
-                    while self.job.active():  # noqa: ASYNC110 — kernel state has no asyncio event.
+                async with asyncio.timeout(max(_PROCESS_CONFIRM_SECONDS, grace_seconds)):
+                    # Accounting and launcher exit do not prove that captured
+                    # descendants (including venv interpreters) have stopped.
+                    while not self.job.stopped():  # noqa: ASYNC110 — kernel process state.
                         await asyncio.sleep(0.01)
             else:
                 await self._terminate_group(grace_seconds)
@@ -315,7 +399,7 @@ class ProcessTree:
         # Sending SIGKILL is not confirmation: a descendant with private output
         # can outlive both the leader and its pipes. Do not release its workspace
         # until the group is absent or every remaining member is a zombie.
-        async with asyncio.timeout(max(5.0, grace_seconds)):
+        async with asyncio.timeout(max(_PROCESS_CONFIRM_SECONDS, grace_seconds)):
             while await send_group(0):
                 if await _posix_group_exited(self.process.pid):
                     return

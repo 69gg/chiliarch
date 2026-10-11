@@ -133,7 +133,9 @@ def main(fixture: JsonObject) -> None:
             stdout=subprocess.DEVNULL if fixture["child_has_private_output"] else None,
             stderr=subprocess.DEVNULL if fixture["child_has_private_output"] else None,
         )
-        Path("child.pid").write_text(str(process.pid), encoding="utf-8")
+        child_identity = Path("child.pid.tmp")
+        child_identity.write_text(str(process.pid), encoding="utf-8")
+        child_identity.replace("child.pid")
     if fixture["stderr_bytes"]:
         sys.stderr.write("x" * fixture["stderr_bytes"])
         sys.stderr.flush()

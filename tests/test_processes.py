@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -10,14 +11,232 @@ import signal
 import subprocess
 import sys
 import textwrap
+import venv
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from chiliarch.adapters import processes
 from chiliarch.adapters.processes import ProcessLaunchError, start_process_tree
 from tests.test_agent_runners import process_running
+
+
+def test_job_member_snapshot_expands_and_handles_exit_or_pid_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = 0
+    capacities: list[int] = []
+    closed: list[int] = []
+
+    def query(_: int, kind: int, pointer: Any, size: int, length: Any) -> bool:
+        nonlocal error
+        assert kind == 3
+        information = pointer._obj
+        capacities.append(len(information.pids))
+        information.assigned = 17
+        information.count = min(len(information.pids), 17)
+        for index in range(information.count):
+            information.pids[index] = 100 + index
+        error = 234
+        return len(information.pids) >= 17
+
+    def open_process(access: int, inherit: bool, pid: int) -> int:
+        nonlocal error
+        assert access == 0x00100000 | 0x1000 and not inherit
+        error = 87
+        return 0 if pid == 100 else pid
+
+    def member(handle: int, job: int, pointer: Any) -> bool:
+        pointer._obj.value = handle != 101  # That released PID now belongs elsewhere.
+        return True
+
+    monkeypatch.setattr(processes, "_windows_ctypes", SimpleNamespace(get_last_error=lambda: error))
+    job = processes.WindowsJob.__new__(processes.WindowsJob)
+    job.handle = 1
+    job.members = {}
+    job.kernel = SimpleNamespace(
+        QueryInformationJobObject=query,
+        OpenProcess=open_process,
+        IsProcessInJob=member,
+        CloseHandle=closed.append,
+    )
+    try:
+        job.capture_members()
+        assert capacities == [16, 32]
+        assert job.members == {pid: pid for pid in range(102, 117)}
+        assert closed == [101]
+    finally:
+        job.close()
+    assert set(closed) == {1, *range(101, 117)}
+    assert not job.members
+
+
+async def test_job_member_access_error_still_terminates_and_closes_owned_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leader = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time;time.sleep(60)"
+    )
+    closed: list[int] = []
+    terminated: list[int] = []
+
+    def query(_: int, kind: int, pointer: Any, size: int, length: Any) -> bool:
+        assert kind == 3
+        pointer._obj.assigned = pointer._obj.count = 2
+        pointer._obj.pids[0], pointer._obj.pids[1] = 10, 11
+        return True
+
+    def member(handle: int, job: int, pointer: Any) -> bool:
+        pointer._obj.value = True
+        return True
+
+    def terminate(handle: int, code: int) -> bool:
+        terminated.append(handle)
+        leader.kill()
+        return True
+
+    monkeypatch.setattr(processes, "_windows_ctypes", SimpleNamespace(get_last_error=lambda: 5))
+    job = processes.WindowsJob.__new__(processes.WindowsJob)
+    job.handle = 1
+    job.members = {}
+    job.kernel = SimpleNamespace(
+        QueryInformationJobObject=query,
+        OpenProcess=lambda access, inherit, pid: pid if pid == 10 else 0,
+        IsProcessInJob=member,
+        TerminateJobObject=terminate,
+        CloseHandle=closed.append,
+    )
+    try:
+        with pytest.raises(ProcessLaunchError, match="error 5"):
+            await processes.ProcessTree(leader, job).terminate(0.01)
+        assert terminated == [1]
+        assert closed == [1, 10]
+        assert not job.members and job.handle is None
+        await asyncio.wait_for(leader.wait(), 5)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            leader.kill()
+        await leader.wait()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows venv redirectors require native Windows")
+async def test_windows_venv_interpreter_and_private_descendants_are_signaled(
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / "venv"
+    await asyncio.to_thread(venv.EnvBuilder(with_pip=False).create, environment)
+    executable = environment / "Scripts" / "python.exe"
+    script = tmp_path / "family.py"
+    script.write_text(
+        textwrap.dedent(
+            """\
+            import json, os, subprocess, sys, time
+            from pathlib import Path
+            role = int(sys.argv[1])
+            if role < 2:
+                subprocess.Popen([sys.executable, __file__, str(role + 1)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            temporary = Path(f'process-{role}.tmp')
+            temporary.write_text(json.dumps({'pid': os.getpid(), 'executable': sys.executable}))
+            temporary.replace(f'process-{role}.json')
+            time.sleep(60)
+            """
+        ),
+        encoding="utf-8",
+    )
+    tree = await start_process_tree([str(executable), str(script), "0"], tmp_path, 65536)
+    assert tree.job is not None
+    job = tree.job
+    probes: list[int] = []
+    try:
+        async with asyncio.timeout(10):
+            while not all(  # noqa: ASYNC110 — native subprocess readiness.
+                (tmp_path / f"process-{role}.json").exists() for role in range(3)
+            ):
+                await asyncio.sleep(0.01)
+        observed = [
+            json.loads((tmp_path / f"process-{role}.json").read_text()) for role in range(3)
+        ]
+        actual_pids = {entry["pid"] for entry in observed}
+        assert all(Path(entry["executable"]) == executable for entry in observed)
+        job.capture_members()
+        assert actual_pids <= job.members.keys()
+        assert len(job.members) > len(actual_pids)  # Redirectors are additional job members.
+        for pid in actual_pids:
+            handle = job.open_process(pid)
+            assert handle is not None
+            probes.append(handle)
+        await tree.terminate(0.05)
+        # These handles refer to each actual interpreter, not its venv launcher
+        # or a PID that another parallel test may already have reused.
+        assert all(job.process_exited(handle) for handle in probes)
+        assert not job.members and job.handle is None
+    finally:
+        await tree.terminate(0.05)
+        for handle in probes:
+            job.close_process(handle)
+
+
+async def test_job_accounting_does_not_replace_native_process_exit() -> None:
+    native = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-u",
+        "-c",
+        "import sys;print('ready',flush=True);sys.stdin.buffer.read(1)",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    leader = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+    await leader.wait()
+    assert native.stdout and native.stdin
+    assert await native.stdout.readline() == b"ready\n"
+    requested = asyncio.Event()
+    closed_while_running: list[bool] = []
+
+    class ExitingJob(processes.WindowsJob):
+        def __init__(self) -> None:
+            self.members = {leader.pid: leader.pid, native.pid: native.pid}
+
+        def capture_members(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            requested.set()
+
+        def active(self) -> bool:
+            return False  # Accounting has already removed the exiting process.
+
+        def process_exited(self, handle: int) -> bool:
+            return (leader if handle == leader.pid else native).returncode is not None
+
+        def close_process(self, handle: int) -> None:
+            closed_while_running.append(native.returncode is None)
+
+        def close(self) -> None:
+            if self.members:
+                closed_while_running.append(native.returncode is None)
+                self.members.clear()
+
+    tree = processes.ProcessTree(leader, ExitingJob())
+    cleanup = asyncio.create_task(tree.terminate(0.01))
+    try:
+        await asyncio.wait_for(requested.wait(), 5)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(cleanup), 0.05)
+        assert native.returncode is None
+        native.stdin.close()
+        await asyncio.wait_for(native.communicate(), 5)
+        await asyncio.wait_for(cleanup, 5)
+        assert closed_while_running == [False]
+        assert tree.job is not None and not tree.job.members
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            native.kill()
+        await native.communicate()
+        await asyncio.gather(cleanup, return_exceptions=True)
 
 
 async def test_python_wrapper_preserves_argv_stdin_and_unicode_workspace(tmp_path: Path) -> None:

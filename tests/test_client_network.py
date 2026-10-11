@@ -62,6 +62,8 @@ class TransportGate:
         self.heartbeat_received: asyncio.Queue[str] = asyncio.Queue()
         self.heartbeat_ack_held = asyncio.Event()
         self.held_heartbeat_acks: list[tuple[Send, Message]] = []
+        self.business_ack_delay = 0.0
+        self.business_deliveries: dict[str, int] = {}
         self.lifespan_task: asyncio.Task[None] | None = None
         self.shutdown_started = asyncio.Event()
 
@@ -103,33 +105,85 @@ class TransportGate:
                 )(scope, receive, send)
             return
         if scope["type"] == "websocket":
+            closing = False
+            send_lock = asyncio.Lock()
+            delayed: list[asyncio.Task[None]] = []
+
+            async def deliver(message: Message) -> None:
+                async with send_lock:
+                    if not closing:
+                        await send(message)
+
+            async def delay_ack(message: Message, seconds: float) -> None:
+                # Each packet experiences latency independently: the receiver
+                # remains free to process the following business message.
+                await asyncio.sleep(seconds)
+                await deliver(message)
+
+            async def drain_delayed() -> None:
+                for task in delayed:
+                    task.cancel()
+                await asyncio.gather(*delayed, return_exceptions=True)
+                for task in delayed:
+                    if not task.cancelled():
+                        task.result()
 
             async def filtered_receive() -> Any:
+                nonlocal closing
                 while True:
                     message = await receive()
+                    if message["type"] == "websocket.disconnect":
+                        closing = True
                     if message["type"] == "websocket.receive":
                         body = json.loads(message.get("text", "{}"))
                         if body.get("type") == "heartbeat":
                             self.heartbeat_ids.add(body["id"])
                             self.heartbeat_received.put_nowait(body["id"])
+                        elif body.get("type") != "ack":
+                            identity = body["id"]
+                            self.business_deliveries[identity] = (
+                                self.business_deliveries.get(identity, 0) + 1
+                            )
                         if self.drop_acks and body.get("type") == "ack":
                             self.dropped_acks += 1
                             continue
                     return message
 
             async def filtered_send(message: Message) -> None:
-                if self.hold_heartbeat_acks and message["type"] == "websocket.send":
+                nonlocal closing
+                if message["type"] == "websocket.close":
+                    closing = True
+                    await drain_delayed()
+                    async with send_lock:
+                        await send(message)
+                    return
+                if message["type"] == "websocket.send":
                     body = json.loads(message.get("text", "{}"))
+                    acknowledged = body.get("payload", {}).get("message_id")
                     if (
-                        body.get("type") == "ack"
-                        and body.get("payload", {}).get("message_id") in self.heartbeat_ids
+                        self.hold_heartbeat_acks
+                        and body.get("type") == "ack"
+                        and acknowledged in self.heartbeat_ids
                     ):
-                        self.held_heartbeat_acks.append((send, message))
+                        self.held_heartbeat_acks.append((deliver, message))
                         self.heartbeat_ack_held.set()
                         return
-                await send(message)
+                    if (
+                        self.business_ack_delay
+                        and body.get("type") == "ack"
+                        and acknowledged in self.business_deliveries
+                    ):
+                        delayed.append(
+                            asyncio.create_task(delay_ack(message, self.business_ack_delay))
+                        )
+                        return
+                await deliver(message)
 
-            await self.app(scope, filtered_receive, filtered_send)
+            try:
+                await self.app(scope, filtered_receive, filtered_send)
+            finally:
+                closing = True
+                await drain_delayed()
         else:
             await self.app(scope, receive, send)
 
