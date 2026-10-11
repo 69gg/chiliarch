@@ -19,6 +19,15 @@ JsonObject = dict[str, Any]
 Progress = Callable[[float, str], Awaitable[None]]
 
 
+async def approved_result(mailbox: AgentMailbox, result: JsonObject) -> JsonObject:
+    """Follow the durable request instead of resubmitting after a short wait."""
+    async with asyncio.timeout(8):
+        while result["status"] == "pending":
+            result = await mailbox.get_request_result(result["request_id"], wait_seconds=1)
+    assert result["status"] == "approved", result
+    return result
+
+
 @pytest.mark.parametrize(
     ("transport", "ack_delay"),
     [("ws", 0), ("sse", 0), ("poll", 0), pytest.param("ws", 0.15, id="ws-slow-ack")],
@@ -55,18 +64,20 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             )
             handled.append(payload["task_id"])
             await progress(0.5, "Reviewing peer request")
-            decision = await mailbox.send_peer_message(
-                "Review complete: evidence checked",
-                recipient_agent_id=message["sender_agent_id"],
-                reply_to=message["id"],
-                wait_seconds=5,
-                client_request_id="review-result",
+            await approved_result(
+                mailbox,
+                await mailbox.send_peer_message(
+                    "Review complete: evidence checked",
+                    recipient_agent_id=message["sender_agent_id"],
+                    reply_to=message["id"],
+                    wait_seconds=0,
+                    client_request_id="review-result",
+                ),
             )
-            assert decision["status"] == "approved"
-            acknowledged = await mailbox.acknowledge_peer_message(
-                message["id"], "processed", wait_seconds=5
+            await approved_result(
+                mailbox,
+                await mailbox.acknowledge_peer_message(message["id"], "processed", wait_seconds=0),
             )
-            assert acknowledged["status"] == "approved"
             return {"reviewed": message["id"]}
 
         async with AsyncExitStack() as stack:
@@ -89,18 +100,19 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             # Exercise actual heartbeat generation, rather than inventing metadata shape.
             await service.receive(identities["reviewer"], await reviewer.heartbeat())
             mailbox = AgentMailbox(author.store)
-            discovered = await mailbox.list_agents(wait_seconds=5)
-            assert discovered["status"] == "approved"
+            discovered = await approved_result(mailbox, await mailbox.list_agents(wait_seconds=0))
             assert {row["id"] for row in discovered["result"]["agents"]} == set(identities.values())
             platform.gate.business_deliveries.clear()
-            result = await mailbox.send_peer_message(
-                "Please independently review this result",
-                recipient_agent_id=identities["reviewer"],
-                wake=True,
-                wait_seconds=5,
-                client_request_id="review-request",
+            result = await approved_result(
+                mailbox,
+                await mailbox.send_peer_message(
+                    "Please independently review this result",
+                    recipient_agent_id=identities["reviewer"],
+                    wake=True,
+                    wait_seconds=0,
+                    client_request_id="review-request",
+                ),
             )
-            assert result["status"] == "approved"
             task_id = result["result"]["wake_task_id"]
             completed = await wait_for_task(platform, task_id, "completed")
             assert completed["result"]["reviewed"] == result["result"]["message"]["id"]
@@ -115,12 +127,15 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             # The bounded-latency collaboration assertion covers delayed ACKs;
             # file transfer below needn't repeat injection for every chunk.
             platform.gate.business_ack_delay = 0
-            replay = await mailbox.send_peer_message(
-                "Please independently review this result",
-                recipient_agent_id=identities["reviewer"],
-                wake=True,
-                wait_seconds=5,
-                client_request_id="review-request",
+            replay = await approved_result(
+                mailbox,
+                await mailbox.send_peer_message(
+                    "Please independently review this result",
+                    recipient_agent_id=identities["reviewer"],
+                    wake=True,
+                    wait_seconds=0,
+                    client_request_id="review-request",
+                ),
             )
             assert replay == result
             assert handled == [task_id]
@@ -137,8 +152,9 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
                     await asyncio.sleep(0.01)
             assert replies[0]["payload"]["sender_agent_id"] == identities["reviewer"]
             assert replies[0]["payload"]["reply_to"] == result["result"]["message"]["id"]
-            receipt = await mailbox.get_peer_message(
-                result["result"]["message"]["id"], wait_seconds=5
+            receipt = await approved_result(
+                mailbox,
+                await mailbox.get_peer_message(result["result"]["message"]["id"], wait_seconds=0),
             )
             assert receipt["result"]["receipts"][0]["state"] == "processed"
             # File bytes use this same live outbound connection, including multi-chunk payloads.
