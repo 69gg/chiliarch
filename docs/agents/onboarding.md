@@ -4,7 +4,7 @@
 
 ## 1. 了解自身环境并读取技术文档
 
-先只读检查操作系统、当前项目目录、uv/Python、Chiliarch 工具和当前原生宿主的安装位置及非敏感配置结构。判断你运行在 Codex App、Codex CLI、Claude Code、OpenCode v2 还是 OpenCode v1 legacy；无法确认时询问用户。OpenCode 可以用版本和 `acp --help` 核对两代入口，不要把 SDK 的 `/v2` 导出路径当作运行时版本。复用已安装且已登录的宿主，不重新安装或登录原生 agent，不读取、枚举或上传认证文件和历史会话。
+先只读检查操作系统、当前项目目录、uv/Python、Chiliarch 工具和当前原生宿主的安装位置及非敏感配置结构。判断你运行在 Codex App、Codex CLI、Claude Code、OpenCode v2 还是 OpenCode v1 legacy；无法确认时询问用户。OpenCode 必须先按专用文档的“给 agent 的版本判断步骤”确认当前实际使用的可执行文件，再对该路径运行 `--version` 与 `acp --help`：主版本 `1` 选 `opencode-v1`，主版本 `2` 选 `opencode`。不要把 SDK 的 `/v2`、PATH 排序或程序名称当作版本依据；并存时在 runner `executable` 中固定已核实的程序。Chiliarch 不会替你自动识别原生版本。复用已安装且已登录的宿主，不重新安装或登录原生 agent，不读取、枚举或上传认证文件和历史会话。
 
 获取并阅读以下 GitHub 原始文档。通用文档说明安装、协议和协作流程，宿主文档说明对应配置格式与限制；按实际宿主选择，不要为其他原生 agent 配置接入。
 

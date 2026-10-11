@@ -5,6 +5,7 @@
 ```text
 你负责把你自己接入 Chiliarch。
 请获取并阅读 https://raw.githubusercontent.com/69gg/chiliarch/main/docs/agents/onboarding.md，按文档完成接入。
+先按 OpenCode 接入文档核对你当前实际使用的可执行文件及其 --version 输出，判断是 v1 legacy 还是 v2，再选择对应适配器。
 缺少的配置请主动向我询问。
 ```
 
@@ -29,6 +30,19 @@ chiliarch daemon install
 已有 Chiliarch 使用 `uv tool upgrade chiliarch` 更新，先结束正在执行的托管任务，再按 [守护进程维护](../daemon.md) 重启。安装默认登记当前用户登录后自启动，支持 Windows、macOS、Linux。原生 OpenCode 必须已经安装并按用户自己的方式登录；Chiliarch 不读取或上传其认证文件，不安装模型服务，也不转换两代 OpenCode 配置。[通用安装说明](index.md#安装接入工具)
 
 同一机器并存两代时，先通过原生版本与 `acp --help` 确认程序路径；可在 runner TOML 中配置 `executable`。v2 官方包也提供 `opencode2` 入口，是否存在以本机安装为准。不要仅凭 PATH 上的 `opencode` 名称判断版本，或覆盖另一代的安装及配置。
+
+### 给 agent 的版本判断步骤
+
+1. 先确定**当前会话实际使用的 OpenCode 程序路径**。Linux/macOS 可用 `command -v opencode`、`command -v opencode2` 查找候选；Windows PowerShell 可用 `Get-Command opencode, opencode2 -CommandType Application -All -ErrorAction SilentlyContinue | Select-Object Name, Source` 列出候选。PATH 的第一个程序不一定就是当前会话使用的程序；并存、别名或启动器存在时，结合当前宿主的版本信息和启动路径确认，不确定就询问用户。
+2. 对已确认的**同一可执行文件**运行 `--version`，再运行 `acp --help` 核对入口。这两个命令只查询版本和帮助，不发送模型请求；不要运行 `run` 或提交 prompt 做版本检测。Unix 示例为 `"/实际路径/opencode" --version`，PowerShell 示例为 `& 'C:\实际路径\opencode.exe' --version`，路径必须替换为刚查到的值。
+3. 根据版本号的主版本选择下表。`1.x.y` 对应 `opencode-v1`；`2.x.y` 对应 `opencode`。输出可以带 `opencode` 或 `v` 前缀。缺失、无法解析、开发构建没有明确主版本或出现其他主版本时停止猜测并询问用户，不用配置字段、SDK `/v2` 或程序名称反推版本。
+
+| 已核实的主版本 | 配对 `--adapter`、配置 `--host`、TOML `kind` | 合并 MCP 配置 |
+| --- | --- | --- |
+| `1` | `opencode-v1` | `mcp.<名称>` |
+| `2` | `opencode` | `mcp.servers.<名称>` |
+
+配对前把所选版本与实际程序路径记入接入说明。存在多份安装时，通过 `--settings` 提供带 `executable` 的 runner TOML，确保守护进程启动的就是刚核实的程序。Chiliarch 根据显式选择的适配器工作；`agent pair` 和 `doctor` 不会运行原生程序自动识别版本，也不会自动切换安装。
 
 ## 配对与默认工作目录
 
