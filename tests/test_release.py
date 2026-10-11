@@ -18,6 +18,9 @@ def project_copy(path: Path) -> None:
     for name in ("pyproject.toml", "uv.lock", "CHANGELOG.md"):
         shutil.copy2(ROOT / name, path / name)
     shutil.copy2(ROOT / "web/package.json", path / "web/package.json")
+    # Exercise a real version transition regardless of the checkout's release.
+    # Otherwise reaching 0.2.0 turns the mutation/rollback tests into no-ops.
+    bump_version("0.1.0", path)
 
 
 def test_real_uv_bump_updates_lock_and_recovers_same_version(tmp_path: Path) -> None:
@@ -58,8 +61,6 @@ def test_bump_failure_restores_all_managed_files(tmp_path: Path) -> None:
 
 def test_release_validator_rejects_mismatches_and_extracts_exact_entry(tmp_path: Path) -> None:
     project_copy(tmp_path)
-    # Establish the fixture version instead of depending on the repository's current release.
-    bump_version("0.1.0", tmp_path)
     assert validate(tmp_path, "v0.1.0")["uv.lock"] == "0.1.0"
     with pytest.raises(ValueError):
         validate(tmp_path, "v0.2.0")

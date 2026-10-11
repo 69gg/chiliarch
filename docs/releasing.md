@@ -54,8 +54,8 @@ uv build
 uv run twine check dist/*
 uv run --isolated --no-project --with dist/*.whl scripts/smoke_test.py
 uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_test.py
-uv run python scripts/release_notes.py validate --tag v0.1.1
-uv run python scripts/release_notes.py extract --tag v0.1.1
+uv run python scripts/release_notes.py validate --tag v0.2.0
+uv run python scripts/release_notes.py extract --tag v0.2.0
 ```
 
 隔离 smoke test 从实际分发包导入模块，验证 UI、协议 Schema、密码登录和 API。sdist 同样含已构建 UI，安装它时无需 Node；重新开发 UI 仍需 pnpm。
@@ -91,13 +91,13 @@ build 不拥有 PyPI OIDC 凭证；只有 publish job 有 id-token:write，GitHu
 
 确认版本、CHANGELOG、测试和签名提交后，项目维护者才执行 tag 和 push。代码完成或本地构建成功不等于已经上传 PyPI；未设置 publisher 或未推送 tag 时不会发布。
 
-以 v0.1.1 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
+以 v0.2.0 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
 
 ```bash
 git remote add origin https://github.com/69gg/chiliarch.git
 git push -u origin main
-git tag -s v0.1.1 -m "v0.1.1"
-git push origin v0.1.1
+git tag -s v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
 在 GitHub **Actions → Release** 查看运行结果；若设置了环境审核，批准 `pypi` 部署后继续发布。成功后用户及 agent 均默认使用 `uv tool install chiliarch` 从 PyPI 安装。
