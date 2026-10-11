@@ -8,6 +8,7 @@ import json
 import socket
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from chiliarch.api import create_app
 from chiliarch.auth import hash_password
 from chiliarch.client import AgentClient, ClientStore, CredentialRejected
 from chiliarch.config import Settings
+from chiliarch.database import Task
 from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
@@ -472,11 +474,12 @@ async def test_stalled_listener_cleanup_fails_with_immediate_diagnostics(
 async def wait_for_task(live: LiveServer, task_id: str, status: str) -> JsonObject:
     async with asyncio.timeout(8):
         while True:
-            task: JsonObject = (
-                await live.app.state.service.execute("get_task", {"task_id": task_id})
-            )["task"]
-            if task["status"] == status:
-                return task
+            # Observe durable state without adding audited operations and commits
+            # that compete with the very transport writes this helper awaits.
+            async with live.app.state.database.sessions() as session:
+                task = await session.get(Task, task_id)
+                if task is not None and task.status == status:
+                    return live.app.state.service.task_view(task)
             await asyncio.sleep(0.02)
 
 
@@ -515,10 +518,13 @@ async def test_outbound_client_completes_tasks_through_real_fallback(
         assert completed["result"] == {"answer": 42}
         assert calls == [task["id"]]
         assert client.transport == expected
-        assert (
-            client.transport_history
-            == ["ws", "sse", "poll"][: ["ws", "sse", "poll"].index(expected) + 1]
-        )
+        # Reconnecting on the current transport is valid; changing transport
+        # must still follow the fallback chain without skipping or backtracking.
+        assert [transport for transport, _ in groupby(client.transport_history)] == [
+            "ws",
+            "sse",
+            "poll",
+        ][: ["ws", "sse", "poll"].index(expected) + 1]
         assert set(live.gate.attempts) >= blocked | {expected}
         agent = (await live.app.state.service.execute("get_agent", {"agent_id": agent_id}))["agent"]
         assert agent["transport"] == expected
