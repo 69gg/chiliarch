@@ -455,9 +455,21 @@ async def test_more_than_eight_concurrent_runs_are_accepted_but_one_per_conversa
         assert len(upstream.business) == 10
         with pytest.raises(ValueError, match="already has an active run"):
             await supervisor.send_message(conversations[0]["id"], "不能重入")
+        # All ten runs must enter the provider concurrently. Their completion
+        # order is independent of creation order, especially under SQLite write
+        # contention; watch any progress without adding repeated database reads.
+        executing = {supervisor.tasks[run["run_id"]]: run["run_id"] for run in runs}
+        pending = set(executing)
         upstream.business_gate.set()
-        for run in runs:
-            await wait_status(supervisor, run["run_id"], "completed")
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, timeout=5, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert done, f"No concurrent run completed: {[executing[task] for task in pending]}"
+            for task in done:
+                task.result()
+                result = await supervisor.get_run(executing[task])
+                assert result["status"] == "completed", result
     finally:
         upstream.business_gate.set()
         await supervisor.stop()
