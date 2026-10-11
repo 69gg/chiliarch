@@ -80,7 +80,7 @@ max_line_bytes = 262144
 # executable = "/绝对路径/codex"
 ```
 
-模型和权限在 Codex 原生配置中管理。旧 runner 的 `model`、`codex_sandbox`、`codex_skip_git_repo_check` 等键兼容读取但不再生效；迁移时先核对实际原生权限，再删除旧键，详见 [runner 配置迁移](../configuration.md#本机-runner-与原生配置)。固定 workdir 决定项目配置与指令的发现位置，不会授予额外文件访问权限。[官方配置说明](https://learn.chatgpt.com/docs/config-file/config-basic)
+模型和权限在 Codex 原生配置中管理。runner 的配置字段见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。固定 workdir 决定项目配置与指令的发现位置，不会授予额外文件访问权限。[官方配置说明](https://learn.chatgpt.com/docs/config-file/config-basic)
 
 ```bash
 chiliarch daemon register \
@@ -91,7 +91,7 @@ chiliarch daemon register \
 chiliarch agent doctor --agent codex-worker --settings "/绝对路径/local-agent.toml"
 ```
 
-先按前述方式使用 `--adapter codex` 配对该 runner 的独立状态库，再登记带本地执行设置的身份。守护进程负责后台出站连接和执行；Windows、macOS、Linux 共用登记流程。Windows 使用原生 `.exe`、标准 npm `.cmd` 的实际 Node 入口或明确的 Python wrapper；自定义 `.cmd`/`.bat` 被拒绝时请指定实际入口。旧的 `chiliarch agent run --state ... --settings ...` 保留为独立前台方式，不能与守护进程同时占用相同状态库。
+先按前述方式使用 `--adapter codex` 配对该 runner 的独立状态库，再登记带本地执行设置的身份。守护进程负责后台出站连接和执行；Windows、macOS、Linux 共用登记流程。Windows 使用原生 `.exe`、标准 npm `.cmd` 的实际 Node 入口或明确的 Python wrapper；自定义 `.cmd`/`.bat` 被拒绝时请指定实际入口。`chiliarch agent run --state ... --settings ...` 可用于独立前台运行，不能与守护进程同时占用相同状态库。
 
 每个任务启动独立的本机 `codex app-server` 子进程，以 stdio JSON-RPC 完成 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`。runner 传入固定 cwd、任务文本和任务专用 mailbox MCP，不覆写模型、provider、sandbox、approval policy 或原生指令；已有 MCP 服务继续按原生规则加载。这里的 app-server 是本地程序接口，不是 Codex App 窗口，也不连接用户已有的控制 socket。[App Server 官方说明](https://learn.chatgpt.com/docs/app-server)
 

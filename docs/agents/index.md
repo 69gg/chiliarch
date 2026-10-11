@@ -57,7 +57,7 @@ chiliarch agent pair \
 
 **托管 runner**：`chiliarch daemon register --settings <本地TOML>` 将独立身份设为 managed，由守护进程收到任务后在固定工作目录启动原生工具。Codex 使用本机 app-server stdio，Claude Code 使用 print JSONL；沿用原生模型、服务商、认证、权限、指令、MCP、skills 等设置。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。每个任务只追加一个名称唯一的服务，任务提示明确指定该名称，不替换用户已有的 `chiliarch` MCP。
 
-runner TOML 只设置工具类型、可执行程序、固定工作目录、超时和输入输出限额。旧模型与权限字段兼容读取但忽略，见 [配置迁移](../configuration.md#本机-runner-与原生配置)。配置文件、环境优先级和会话续接仍按原生规则处理；Codex 续接可能保留原线程设置，不能把继承理解为每轮强制刷新全部用户配置。三系统自启动会保存安装时的非秘密配置目录环境，健康进程复用不会获取新终端环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。
+runner TOML 只设置工具类型、可执行程序、固定工作目录、超时和输入输出限额。字段说明见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。配置文件、环境优先级和会话续接仍按原生规则处理；Codex 续接可能保留原线程设置，不能把继承理解为每轮强制刷新全部用户配置。三系统自启动会保存安装时的非秘密配置目录环境，健康进程复用不会获取新终端环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。
 
 当前没有跨平台原生审批或用户输入回复桥；原生权限要求交互且无法继续时，托管任务会明确受阻或失败。平台批准只授权平台业务操作，不自动允许原生 MCP 或 shell 工具。已登录且没有更高优先级 API 来源时，可由原生工具使用订阅；Chiliarch 不选择认证来源、不保证具体计费，usage 也不是收费凭证。
 
@@ -72,21 +72,21 @@ chiliarch agent doctor --agent codex-app-main
 
 独立守护目录同时传 `--daemon-directory`，生成器输出绝对路径。MCP 配置只携带目录和标识，不保存平台凭证。WS → SSE＋HTTP POST → 长轮询共用身份、去重和队列，不要求平台能访问 agent IP。登记使用 `daemon register --transport sse` 或 `poll` 可以改变起始传输；HTTP 不强制 HTTPS，跨不可信网络时由部署者选择 TLS。
 
-### 旧版 standalone 与独立 runner
+### 独立连接与前台 runner
 
-原有 `--state` 接口保留；以下命令直接占用该状态库的出站连接，不应与已登记守护身份并行运行：
+也可以使用 `--state` 独立运行；以下命令直接占用该状态库的出站连接，不应与已登记守护身份并行运行：
 
 ```bash
-chiliarch agent config --host codex-app --state "/绝对路径/私有目录/legacy.db" --mode standalone
-chiliarch agent mcp --state "/绝对路径/私有目录/legacy.db" --mode standalone --transport sse
-chiliarch agent run --state "/绝对路径/私有目录/legacy.db" --settings "/绝对路径/local-agent.toml"
+chiliarch agent config --host codex-app --state "/绝对路径/私有目录/local-agent.db" --mode standalone
+chiliarch agent mcp --state "/绝对路径/私有目录/local-agent.db" --mode standalone --transport sse
+chiliarch agent run --state "/绝对路径/私有目录/local-agent.db" --settings "/绝对路径/local-agent.toml"
 ```
 
-迁移时先停止旧 MCP/runner，保留其状态库，通过 `daemon register` 登记同一身份，再把宿主 MCP 配置换为 daemon 模式；无需重新配对。只读离线检查仍使用 `agent doctor --state <路径>`，不会启动或连接服务。
+只读离线检查使用 `agent doctor --state <路径>`，不会启动或连接服务。
 
 ## MCP 工具与完整工作流
 
-宿主通常为工具加上 MCP 服务名前缀，下表使用服务导出的原始工具名。手动配置可能使用 `mcp__chiliarch__`，托管任务应使用任务提示指定的唯一 mailbox 服务名。daemon 的 manual 身份和 legacy `standalone` 提供全部工具；`mailbox` 只提供查询、消息和协调工具，不导出领取、进度、成功、失败或取消确认等任务状态变更工具。
+宿主通常为工具加上 MCP 服务名前缀，下表使用服务导出的原始工具名。手动配置可能使用 `mcp__chiliarch__`，托管任务应使用任务提示指定的唯一 mailbox 服务名。daemon 的 manual 身份和 `standalone` 提供全部工具；`mailbox` 只提供查询、消息和协调工具，不导出领取、进度、成功、失败或取消确认等任务状态变更工具。
 
 | 工具                                                                  | 参数与结果用途                                                                          |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |

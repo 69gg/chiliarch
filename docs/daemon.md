@@ -30,7 +30,7 @@ chiliarch daemon status
 
 启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
 
-安装时保存的环境是快照。健康守护进程被复用时，不会获取另一个终端的新变量；已安装服务只运行 `daemon start`、`daemon restart` 或 `daemon install` 也不会重写启动项。升级前安装的服务或修改过配置目录的服务，先排空托管任务，再在具有正确目录环境的终端重新安装：
+安装时保存的环境是快照。健康守护进程被复用时，不会获取另一个终端的新变量；已安装服务只运行 `daemon start`、`daemon restart` 或 `daemon install` 也不会重写启动项。修改配置目录后，先排空托管任务，再在具有正确目录环境的终端重新安装：
 
 ```bash
 chiliarch daemon uninstall
@@ -66,7 +66,7 @@ chiliarch daemon register \
 chiliarch daemon agents
 ```
 
-相同状态重复登记是幂等操作；状态或标识冲突明确拒绝。登记后守护进程持有该 agent 的唯一出站连接。不要同时用 legacy `agent mcp --mode standalone` 或 `agent run` 连接同一状态库。
+相同状态重复登记是幂等操作；状态或标识冲突明确拒绝。登记后守护进程持有该 agent 的唯一出站连接。不要同时用 `agent mcp --mode standalone` 或 `agent run` 连接同一状态库。
 
 ## 默认登录后自启动
 
@@ -120,7 +120,7 @@ chiliarch daemon register \
   --transport ws
 ```
 
-runner TOML 控制启动程序、固定工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。远端任务不能改写这些边界。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，旧设置迁移见 [配置说明](configuration.md#本机-runner-与原生配置)。
+runner TOML 控制启动程序、固定工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。远端任务不能改写这些边界。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，配置字段见 [配置说明](configuration.md#本机-runner-与原生配置)。
 
 当前没有跨平台原生审批或用户输入回复桥。原生策略要求交互且无法继续时，托管任务会明确受阻或失败，不自动允许原生工具，也不调整原生权限来继续。平台 ask/auto/yolo 只控制平台业务审批；本机 app-server 不接管 Codex App 界面。
 

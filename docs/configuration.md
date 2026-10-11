@@ -63,7 +63,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 客户端出站和服务端 WS/SSE 下行对每条未确认消息独立指数退避，首次间隔为 `retry_seconds`，封顶为 `max(retry_seconds, offline_after_seconds)`。这使接收与持久化较慢时不会持续堆积相同消息；新消息仍可及时发送，重连后使用原消息 ID 立即恢复投递。退避不改变离线判定、消息有效期或 ACK 的含义。
 
-真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。原有 standalone MCP 和独立 `agent run` 保留兼容，不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
+真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。standalone MCP 和独立 `agent run` 不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
 
 ### artifacts
 
@@ -101,9 +101,9 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 `model.context_window` 为正整数，默认 **200000 tokens**；填写服务商模型实际支持的上下文窗口。达到 **90%** 时，总管自动将历史压缩成接续摘要，保留最近的完整调用与结果，并继续当前工作。页面展示上下文占用，估算值标注“约”；压缩不会删除完整聊天记录。优先使用服务商当前轮次的输入和输出用量，缓存输入同样计入窗口；没有 usage 时采用本地估算。修改窗口热重载，后续新运行使用新值，已运行或等待审批的执行仍使用自己的模型配置快照。
 
-平台不再设置最大工具轮次、上下文消息条数或全局并行运行上限；同一会话仍只能有一个活跃运行，运行超时与审批规则继续生效。并行能力受机器资源及模型服务的限流约束。
+平台不设置最大工具轮次、上下文消息条数或全局并行运行上限；同一会话仍只能有一个活跃运行，运行超时与审批规则继续生效。并行能力受机器资源及模型服务的限流约束。
 
-不再自动发送最大输出 token 参数，使用服务端默认输出长度。需要服务商特有上限时，在 `model.request_params` 显式配置；**原生 Anthropic Messages 要求 `max_tokens`，须在该参数表中填写对应模型支持的值**。兼容网关若支持省略，可保持参数表为空。初始化产生的旧 `model.max_tokens`、`supervisor.max_tool_rounds/max_context_messages/max_active_runs` 会被忽略，不阻止启动；下一次保存配置会移除这些键。旧输出上限不会自动迁移成显式请求参数。
+默认不发送最大输出 token 参数，使用服务端默认输出长度。需要服务商特有上限时，在 `model.request_params` 显式配置；**原生 Anthropic Messages 要求 `max_tokens`，须在该参数表中填写对应模型支持的值**。兼容网关若支持省略，可保持参数表为空。
 
 模型字段的 API 映射、压缩过程与失败处理见 [模型文档](models.md#上下文窗口与自动压缩)。
 
@@ -122,9 +122,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | max_output_bytes | 524288 | 输出总量上限，字节 |
 | max_line_bytes | 262144 | 单行输出上限，字节，不得大于输出总量上限 |
 
-这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不再提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。固定 workdir 只决定启动目录及项目配置发现位置，不构成额外操作系统沙盒。
-
-旧 TOML 中的 `model`、`codex_sandbox`、`codex_skip_git_repo_check`、`claude_permission_mode`、`claude_allowed_tools` 兼容读取但全部忽略。迁移时先核对 Codex／Claude 当前原生配置中的模型与权限；若仍需要旧行为，由机器所有者在原生工具内明确配置，再从 runner TOML 删除这些键。旧 `read-only`、`plan` 或工具白名单不能再作为有效限制来判断任务权限。其他未知字段仍视为配置错误。
+这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。固定 workdir 只决定启动目录及项目配置发现位置，不构成额外操作系统沙盒。
 
 Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL，保留原生配置加载。两者只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
 
@@ -144,4 +142,4 @@ SQLite 审计事件、会话消息、任务和操作记录是业务历史，不�
 
 日志包含操作信息，聊天数据库包含用户发送给模型的内容；保护目录权限与备份。秘密参数掩码依据敏感字段名，扩展开发者必须对自定义秘密字段自行脱敏。
 
-共享守护进程与 daemon MCP 默认在守护目录下的 `logs` 写同样的结构化轮换日志；legacy MCP/runner 默认在状态库旁的 `logs`，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。POSIX 上状态库权限为 0600；Windows 使用当前用户私有目录及继承的 ACL，`chmod` 不替代 Windows 权限配置；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。
+共享守护进程与 daemon MCP 默认在守护目录下的 `logs` 写同样的结构化轮换日志；独立 MCP/runner 默认在状态库旁的 `logs`，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。POSIX 上状态库权限为 0600；Windows 使用当前用户私有目录及继承的 ACL，`chmod` 不替代 Windows 权限配置；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。

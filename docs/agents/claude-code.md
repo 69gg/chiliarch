@@ -107,7 +107,7 @@ chiliarch daemon register \
 chiliarch agent doctor --agent claude-worker --settings "/绝对路径/local-agent.toml"
 ```
 
-模型、服务商、权限和工具允许规则由 Claude Code 的原生配置管理。runner 不传 `--model`、`--permission-mode` 或 `--allowedTools`，也不自动允许 Chiliarch MCP 工具。旧 runner 的 `model`、`claude_permission_mode`、`claude_allowed_tools` 等键兼容读取但不再生效；迁移时先核对原生设置，再删除旧键，见 [runner 配置迁移](../configuration.md#本机-runner-与原生配置)。[Claude CLI 参数](https://code.claude.com/docs/en/cli-reference)
+模型、服务商、权限和工具允许规则由 Claude Code 的原生配置管理。runner 不传 `--model`、`--permission-mode` 或 `--allowedTools`，也不自动允许 Chiliarch MCP 工具。runner 的配置字段见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。[Claude CLI 参数](https://code.claude.com/docs/en/cli-reference)
 
 原生权限、项目信任与组织策略继续生效。当前 Chiliarch 尚无跨平台原生审批或用户输入回复桥；print 模式中需要交互的操作可能被原生拒绝。Claude 可以在已有权限内换一种方法继续，单个工具被拒绝不等于整个任务失败；runner 记录拒绝次数，最终按原生终态判断任务成功或失败。平台 ask/auto/yolo 只管理平台业务操作，不替你批准原生工具，也不改为跳过权限检查。需要人工交互的工作可以使用当前会话 MCP，在 Claude Code 内处理。
 

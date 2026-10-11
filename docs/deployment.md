@@ -42,7 +42,7 @@ uv run chiliarch --config ./chiliarch.toml serve
 
 Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时默认执行 `uv tool install chiliarch` 从 PyPI 安装，再执行 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
 
-Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、旧 standalone 迁移和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
+Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、独立运行和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
 
 服务健康后，在平台创建注册码，再在 agent 机器执行：
 

@@ -73,8 +73,8 @@
 - Codex CLI 使用 `kind="codex"`，通过本地 `codex app-server` stdio 运行；模型、provider、沙箱、审批、原生指令与 MCP 沿用原生配置。续接遵循原生 resume 语义，可能保留之前的线程设置，不承诺每轮重新应用所有用户配置。
 - Claude Code 使用 `kind="claude-code"`，保留 print JSONL；模型、权限、工具规则、MCP、skills、hooks 和 `CLAUDE.md` 按原生配置加载。不添加 `--permission-mode`、`--allowedTools`、`--model`、`--strict-mcp-config` 或 `--bare`。
 
-runner TOML 只填写工具类型、固定工作目录、可选可执行程序、超时及输入输出限额。旧 `model`、`codex_sandbox`、`codex_skip_git_repo_check`、`claude_permission_mode`、`claude_allowed_tools` 兼容读取但忽略；需要迁移时核对原生设置，不把旧值当成仍在生效的权限保障。每个任务动态追加一个名称唯一的 Chiliarch mailbox MCP，任务提示指定该名称；保留用户已有的 `chiliarch` 及其他服务。
+runner TOML 只填写工具类型、固定工作目录、可选可执行程序、超时及输入输出限额。每个任务动态追加一个名称唯一的 Chiliarch mailbox MCP，任务提示指定该名称；保留用户已有的 `chiliarch` 及其他服务。
 
 明确告知用户：平台 ask/auto/yolo 不改变原生权限，当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，不自动批准或放宽权限。已原生登录且没有更高优先级 API 来源时，可由原生工具使用订阅，否则按原生配置选择；不承诺具体计费，不把 usage 或费用估算当作扣费凭证。
 
-不要让远端任务改写本地启动策略或权限。无人值守 runner 的网络连接由守护进程持有，任务内 MCP 使用 mailbox 模式；同一状态库不能再由 legacy standalone MCP 或独立 runner 并发连接。
+不要让远端任务改写本地启动策略或权限。无人值守 runner 的网络连接由守护进程持有，任务内 MCP 使用 mailbox 模式；同一状态库不能再由 standalone MCP 或独立 runner 并发连接。
