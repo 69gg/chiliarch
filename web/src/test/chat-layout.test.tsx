@@ -14,6 +14,7 @@ import type {
   Approval,
   ChatEvent,
   ConversationDetail,
+  JsonObject,
   PlatformState,
 } from "../types";
 import { platformState } from "./fixtures";
@@ -102,13 +103,14 @@ function deferred<T>(): {
 }
 
 describe("总管模式默认值与已有选择", () => {
-  it.each([
+  const cases: { supervisor: JsonObject | undefined; expected: string }[] = [
     { supervisor: undefined, expected: "auto" },
     { supervisor: {}, expected: "auto" },
     { supervisor: { mode: "ask" }, expected: "ask" },
     { supervisor: { mode: "auto" }, expected: "auto" },
     { supervisor: { mode: "yolo" }, expected: "yolo" },
-  ])(
+  ];
+  it.each(cases)(
     "配置 $supervisor 显示 $expected 且不自动保存",
     async ({ supervisor, expected }) => {
       const state = platformState();
