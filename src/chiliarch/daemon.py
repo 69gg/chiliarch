@@ -369,7 +369,12 @@ async def run_daemon(directory: Path) -> None:
         listener.bind(("127.0.0.1", runtime.configuration.port))
         listener.setblocking(False)
         server = uvicorn.Server(
-            uvicorn.Config(create_daemon_app(runtime), log_config=None, access_log=False)
+            uvicorn.Config(
+                create_daemon_app(runtime),
+                log_config=None,
+                access_log=False,
+                timeout_graceful_shutdown=runtime.configuration.graceful_shutdown_seconds,
+            )
         )
         private_write(
             runtime_file,

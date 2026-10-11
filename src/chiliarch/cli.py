@@ -158,6 +158,7 @@ def main() -> None:
                 port=manager.current.server.port,
                 workers=1,
                 log_config=None,
+                timeout_graceful_shutdown=manager.current.server.graceful_shutdown_seconds,
             )
         else:
             asyncio.run(_agent_command(arguments))

@@ -65,6 +65,7 @@ const LABELS: Record<string, string> = {
   port: "监听端口",
   public_url: "平台公开地址",
   config_poll_seconds: "配置文件检查间隔（秒）",
+  graceful_shutdown_seconds: "关闭时等待请求结束（秒）",
   session_ttl_seconds: "会话有效期（秒）",
   max_login_attempts: "登录尝试上限",
   login_window_seconds: "登录限流窗口（秒）",

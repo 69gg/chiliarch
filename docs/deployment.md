@@ -24,6 +24,8 @@ CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加�
 
 启动未完成或被取消时，平台会释放已创建的数据库连接、后台任务和日志资源，并保留原始启动错误。关闭某个组件失败时，其他组件仍继续关闭。
 
+停止平台时，HTTP/SSE 连接与请求的结束等待默认上限为 15 秒，超过后取消尚未结束的请求并继续应用资源清理。通过 `[server]` 中的 `graceful_shutdown_seconds` 设置正整数秒，或在 WebUI 修改“关闭时等待请求结束（秒）”，重启后生效。长驻 SSE 不会因此无限阻塞这一阶段；该值不是整个进程退出的总时限，后续数据库、后台任务与 agent 进程树仍按各自生命周期清理，不因该期限被强行跳过。
+
 ## 源码开发运行
 
 修改或开发 Chiliarch 源码时，准备 uv、Node.js 24 LTS 和项目指定的 pnpm 版本。进入检出的仓库目录后：
@@ -43,6 +45,8 @@ uv run chiliarch --config ./chiliarch.toml serve
 Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时默认执行 `uv tool install chiliarch` 从 PyPI 安装，再执行 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
 
 Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、独立运行和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
+
+本机守护进程的 `daemon.json` 顶层也提供 `graceful_shutdown_seconds`，默认 15 秒，修改后重启生效。它控制本地 HTTP 请求的关闭等待，不改变停止托管 agent 时等待任务及子进程清理的规则。
 
 服务健康后，在平台创建注册码，再在 agent 机器执行：
 

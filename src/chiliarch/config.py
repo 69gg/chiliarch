@@ -60,6 +60,7 @@ class ServerSettings(ConfigModel):
     port: int = Field(default=8000, ge=1, le=65535)
     public_url: str = ""
     config_poll_seconds: float = Field(default=2, gt=0)
+    graceful_shutdown_seconds: int = Field(default=15, gt=0)
 
 
 class AuthSettings(ConfigModel):
@@ -315,7 +316,10 @@ class SettingsManager:
     def _apply(self, candidate: Settings) -> None:
         effective = self._effective(candidate)
         self.pending_restart = []
-        for section, fields in {"server": ("host", "port"), "database": ("url",)}.items():
+        for section, fields in {
+            "server": ("host", "port", "graceful_shutdown_seconds"),
+            "database": ("url",),
+        }.items():
             proposed = getattr(effective, section)
             active = getattr(self.current, section)
             for field in fields:

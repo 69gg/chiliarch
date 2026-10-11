@@ -16,7 +16,7 @@ WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子�
 
 有效更新增加配置 revision。新任务/模型调用使用新快照；运行中调用保留原快照。模式与审批仍在统一操作服务实际执行时检查，不能通过修改配置把已发起的待审批操作自动批准。
 
-`server.host`、`server.port`、`database.url` 保存后需要重启。WebUI 表单显示当前有效配置，保存时提示哪些修改需要重启；配置版本与待重启值可通过 `/api/state` 的 runtime 查询。配置页面保留校验失败和保存结果提示，不常驻展示热重载状态面板。`server.public_url`、模型、模式、投递时间参数、日志策略等支持热重载。
+`server.host`、`server.port`、`server.graceful_shutdown_seconds`、`database.url` 保存后需要重启。WebUI 表单显示当前有效配置，保存时提示哪些修改需要重启；配置版本与待重启值可通过 `/api/state` 的 runtime 查询。配置页面保留校验失败和保存结果提示，不常驻展示热重载状态面板。`server.public_url`、模型、模式、投递时间参数、日志策略等支持热重载。
 
 配置表单在工作区内居中，长表单可以滚动。左侧导航支持收起为图标栏，收起后仍可切换页面、主题和退出登录；展开偏好保存在当前浏览器。小屏幕用同一按钮收起或展开导航。
 
@@ -31,6 +31,7 @@ WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子�
 | server.host / port                             | 监听地址和端口，需重启                                   |
 | server.public_url                              | 浏览器公开 origin，用于反向代理后的 Origin 校验          |
 | server.config_poll_seconds                     | 文件配置检查间隔                                         |
+| server.graceful_shutdown_seconds               | 关闭时等待 HTTP/SSE 连接与请求结束的上限，正整数秒，默认 15，需重启 |
 | auth.password_hash                             | init/密码修改生成的 scrypt 哈希，不手填明文              |
 | auth.session_ttl_seconds                       | 登录会话有效期；新会话采用新值                           |
 | auth.max_login_attempts / login_window_seconds | 同来源登录限流                                           |
@@ -79,7 +80,9 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 ### 本机 daemon 配置
 
-共享守护目录中的 `daemon.json` 是独立私有配置，不属于平台 `chiliarch.toml`。它保存格式版本、agent 登记、本地调用凭证、监听端口、启动超时和日志/传输策略；`port=0` 让系统选择可用回环端口，发现信息供本机客户端读取。不要把该文件、运行时发现信息或每个 agent 的 SQLite 状态库写入仓库或共享给其他用户。
+共享守护目录中的 `daemon.json` 是独立私有配置，不属于平台 `chiliarch.toml`。它保存格式版本、agent 登记、本地调用凭证、监听端口、启动超时、HTTP 关闭等待和日志/传输策略；`port=0` 让系统选择可用回环端口，发现信息供本机客户端读取。不要把该文件、运行时发现信息或每个 agent 的 SQLite 状态库写入仓库或共享给其他用户。
+
+顶层 `graceful_shutdown_seconds` 为正整数秒，默认 15，修改后重启守护进程生效。它与平台同名设置均只限制停止时等待连接与 HTTP 请求结束的阶段：超时后取消剩余请求，再继续应用资源清理。这不是整个退出过程的总时限，也不会跳过或缩短 agent 任务和子进程的清理。
 
 新增或更新单个身份使用 `daemon register`，设置独立状态路径、可选 runner TOML、并发和起始传输，登记后即时生效。直接修改 `daemon.json` 需重启该守护进程；它没有平台配置的文件热重载功能。重启会取消本机托管工作并等待进程树清理，未知结果不会自动再次执行。具体管理命令见 [本机守护进程](daemon.md)。
 

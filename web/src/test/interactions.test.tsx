@@ -464,28 +464,36 @@ describe("模型配置", () => {
     });
   });
 
-  it("保存监听端口后提示重启，表单保持当前生效端口", async () => {
+  it.each([
+    { field: "port", label: "监听端口", current: 8000, next: 9000 },
+    {
+      field: "graceful_shutdown_seconds",
+      label: "关闭时等待请求结束（秒）",
+      current: 15,
+      next: 8,
+    },
+  ])("保存 $label 后提示重启，表单保持当前生效值", async ({ field, label, current, next }) => {
     const state = platformState();
-    state.config.server = { port: 8000 };
+    state.config.server = { [field]: current };
     const operate = vi.spyOn(api, "operate").mockResolvedValue({
       config: state.config,
       revision: 2,
-      pending_restart: ["server.port"],
+      pending_restart: [`server.${field}`],
     });
     render(<ConfigPage state={state} refresh={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("监听端口"), {
-      target: { value: "9000" },
+    fireEvent.change(screen.getByLabelText(label), {
+      target: { value: String(next) },
     });
     await userEvent
       .setup()
       .click(screen.getByRole("button", { name: "保存配置" }));
     expect(operate).toHaveBeenCalledWith("update_config", {
-      patch: { server: { port: 9000 } },
+      patch: { server: { [field]: next } },
     });
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "监听端口需重启后生效",
+      `${label}需重启后生效`,
     );
-    expect(screen.getByLabelText("监听端口")).toHaveValue(8000);
+    expect(screen.getByLabelText(label)).toHaveValue(current);
   });
 
   it("删去掩码请求头会提交完整空对象，以真正移除旧请求头", async () => {

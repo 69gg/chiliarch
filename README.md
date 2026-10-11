@@ -32,6 +32,8 @@ chiliarch serve
 
 `init` 交互设置单用户登录密码并创建 `chiliarch.toml`；POSIX 权限为 0600，Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。配置保存支持三系统的原子替换与热重载。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
 
+停止平台或本机守护进程时，默认等待 HTTP/SSE 请求结束最多 15 秒，随后进入资源清理，避免长连接无限阻塞关闭。平台使用 `server.graceful_shutdown_seconds`，守护进程使用 `daemon.json` 中的同名字段；修改后重启生效。该期限不限制后续 agent 任务及进程树清理，详见 [部署文档](docs/deployment.md)。
+
 源码开发与本地构建见 [开发、测试与发版](docs/releasing.md)；用户部署见 [部署文档](docs/deployment.md)。
 
 在线备份可运行 `chiliarch backup --output ./backups/platform.db`，命令校验并保存包含已提交 WAL 数据的独立 SQLite 快照，不覆盖已有文件。数据库存在待重启配置变更时，使用 `--database` 指定实际运行的数据库；配置、密钥环境和 agent 状态库需另行保管。详见 [备份与恢复](docs/deployment.md#备份与恢复)。

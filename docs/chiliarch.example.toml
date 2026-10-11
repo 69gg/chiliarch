@@ -3,6 +3,7 @@ host = "127.0.0.1"
 port = 8000
 public_url = ""
 config_poll_seconds = 2.0
+graceful_shutdown_seconds = 15
 
 [auth]
 password_hash = ""

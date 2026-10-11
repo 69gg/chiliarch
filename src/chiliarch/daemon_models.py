@@ -34,6 +34,7 @@ class DaemonConfiguration(BaseModel):
     format_version: Literal[1] = 1
     port: int = Field(default=0, ge=0, le=65535)
     startup_timeout_seconds: float = Field(default=20, ge=1, le=120)
+    graceful_shutdown_seconds: int = Field(default=15, gt=0)
     logs: LogSettings = Field(default_factory=LogSettings)
     transport: TransportSettings = Field(default_factory=TransportSettings)
     agents: list[AgentRegistration] = Field(default_factory=list)
