@@ -17,7 +17,7 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from websockets.asyncio.client import connect
 
 from chiliarch.api import create_app
@@ -57,12 +57,20 @@ class TransportGate:
         self.drop_acks = False
         self.dropped_acks = 0
         self.lifespan_task: asyncio.Task[None] | None = None
+        self.shutdown_started = asyncio.Event()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
             self.lifespan_task = asyncio.current_task()
+
+            async def receive_lifespan() -> Message:
+                message = await receive()
+                if message["type"] == "lifespan.shutdown":
+                    self.shutdown_started.set()
+                return message
+
             try:
-                await self.app(scope, receive, send)
+                await self.app(scope, receive_lifespan, send)
             finally:
                 self.lifespan_task = None
             return
@@ -162,7 +170,7 @@ class LiveServer:
             self.task = None
             raise
 
-    async def stop(self) -> None:
+    async def stop(self, *, request_timeout: float = 5, resource_timeout: float = 20) -> None:
         if self.server and self.task:
             server = self.server
             server_task = self.task
@@ -187,14 +195,28 @@ class LiveServer:
                 print(diagnostic, file=sys.__stderr__, flush=True)
                 return TimeoutError(diagnostic)
 
+            drained = asyncio.create_task(self.gate.shutdown_started.wait())
             try:
                 # wait() leaves the blocked task intact long enough to capture
                 # its actual cleanup phase, rather than only a CancelledError.
-                done, _ = await asyncio.wait([server_task], timeout=5)
+                done, _ = await asyncio.wait(
+                    [server_task, drained],
+                    timeout=request_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 if not done:
                     raise stalled("graceful shutdown")
+                # Lifespan starts only after Uvicorn drains requests/listeners.
+                # SQLite's configured busy wait alone is 10s. Closing its pool
+                # and checkpointing WAL is not a transport-latency assertion.
+                if not server_task.done():
+                    done, _ = await asyncio.wait([server_task], timeout=resource_timeout)
+                    if not done:
+                        raise stalled("application cleanup")
                 await server_task
             finally:
+                drained.cancel()
+                await asyncio.gather(drained, return_exceptions=True)
                 deadline = asyncio.get_running_loop().time() + 5
                 phase = "request cleanup"
                 owned: set[asyncio.Task[Any]] = {server_task}
@@ -329,6 +351,53 @@ async def test_cancelled_platform_startup_releases_lifespan_and_listener(
     finally:
         startup.cancel()
         await asyncio.gather(startup, return_exceptions=True)
+
+
+@pytest.mark.parametrize("stalled", [False, True], ids=["slow-close", "stalled-close"])
+async def test_platform_shutdown_separates_network_and_application_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stalled: bool
+) -> None:
+    platform = LiveServer(tmp_path)
+    entered, released, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_close = platform.app.state.database.close
+
+    async def close() -> None:
+        entered.set()
+        try:
+            await released.wait()
+        finally:
+            await original_close()
+            closed.set()
+
+    monkeypatch.setattr(platform.app.state.database, "close", close)
+    await platform.start()
+    stopping = asyncio.create_task(
+        platform.stop(request_timeout=1, resource_timeout=0.05 if stalled else 5)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert platform.gate.shutdown_started.is_set()
+        assert platform.server is not None
+        assert not platform.server.server_state.connections
+        assert not platform.server.server_state.tasks
+        if stalled:
+            with pytest.raises(TimeoutError, match="application cleanup"):
+                await asyncio.wait_for(stopping, 5)
+        else:
+            # Resource cleanup can outlast the entire network deadline without
+            # being cancelled, but it must finish before its own separate limit.
+            done, _ = await asyncio.wait([stopping], timeout=1.1)
+            assert not done
+            assert not closed.is_set()
+            released.set()
+            await asyncio.wait_for(stopping, 5)
+        assert closed.is_set()
+        assert platform.task is None
+        assert platform.gate.lifespan_task is None
+    finally:
+        released.set()
+        stopping.cancel()
+        await asyncio.gather(stopping, return_exceptions=True)
 
 
 @pytest.mark.parametrize("cancel_stop", [True, False], ids=["cancelled", "timed-out"])
