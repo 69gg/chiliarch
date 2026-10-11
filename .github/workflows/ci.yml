@@ -40,6 +40,8 @@ jobs:
       - run: uv run mypy
         if: matrix.python == '3.13'
       - run: uv run pytest -vv --durations=20 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: ${{ runner.os == 'Windows' && '8' || '' }}
 
   web:
     runs-on: ubuntu-latest

@@ -184,15 +184,13 @@ async def test_job_accounting_does_not_replace_native_process_exit() -> None:
         sys.executable,
         "-u",
         "-c",
-        "import sys;print('ready',flush=True);sys.stdin.buffer.read(1)",
+        "import sys;sys.stdout.buffer.write(b'ready\\n');"
+        "sys.stdout.buffer.flush();sys.stdin.buffer.read(1)",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     leader = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
-    await leader.wait()
-    assert native.stdout and native.stdin
-    assert await native.stdout.readline() == b"ready\n"
     requested = asyncio.Event()
     closed_while_running: list[bool] = []
 
@@ -220,9 +218,13 @@ async def test_job_accounting_does_not_replace_native_process_exit() -> None:
                 closed_while_running.append(native.returncode is None)
                 self.members.clear()
 
-    tree = processes.ProcessTree(leader, ExitingJob())
-    cleanup = asyncio.create_task(tree.terminate(0.01))
+    cleanup: asyncio.Task[None] | None = None
     try:
+        await leader.wait()
+        assert native.stdout and native.stdin
+        assert await native.stdout.readline() == b"ready\n"
+        tree = processes.ProcessTree(leader, ExitingJob())
+        cleanup = asyncio.create_task(tree.terminate(0.01))
         await asyncio.wait_for(requested.wait(), 5)
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(cleanup), 0.05)
@@ -236,7 +238,11 @@ async def test_job_accounting_does_not_replace_native_process_exit() -> None:
         with contextlib.suppress(ProcessLookupError):
             native.kill()
         await native.communicate()
-        await asyncio.gather(cleanup, return_exceptions=True)
+        with contextlib.suppress(ProcessLookupError):
+            leader.kill()
+        await leader.communicate()
+        if cleanup is not None:
+            await asyncio.gather(cleanup, return_exceptions=True)
 
 
 async def test_python_wrapper_preserves_argv_stdin_and_unicode_workspace(tmp_path: Path) -> None:
