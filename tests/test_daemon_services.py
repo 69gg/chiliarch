@@ -239,6 +239,9 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
         for key in (
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
+            "OPENCODE_CONFIG",
+            "OPENCODE_CONFIG_DIR",
+            "OPENCODE_GIT_BASH_PATH",
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",
@@ -254,6 +257,8 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
             "OPENAI_API_KEY": "secret-openai",
             "ANTHROPIC_API_KEY": "secret-anthropic",
             "CLAUDE_CODE_OAUTH_TOKEN": "secret-oauth",
+            "OPENCODE_API_KEY": "secret-opencode",
+            "OPENCODE_CONFIG_CONTENT": '{"provider":{"options":{"apiKey":"secret"}}}',
             "HTTPS_PROXY": "https://user:password@proxy.invalid",
             "UNRELATED_CONFIG_DIR": "/unrelated",
         }
@@ -273,7 +278,14 @@ def test_windows_startup_applies_environment_in_same_process_without_shell(
     service, _ = manager(tmp_path, "win32")
     literal = "C:\\用户 data\\%PATH%\\$value\\`value`\\'single'\\\"double\"\\"
     service.environment.update(
-        {"CODEX_HOME": literal, "CLAUDE_CONFIG_DIR": literal, "XDG_CONFIG_HOME": literal}
+        {
+            "CODEX_HOME": literal,
+            "CLAUDE_CONFIG_DIR": literal,
+            "OPENCODE_CONFIG": literal,
+            "OPENCODE_CONFIG_DIR": literal,
+            "OPENCODE_GIT_BASH_PATH": literal,
+            "XDG_CONFIG_HOME": literal,
+        }
     )
     # A harmless package stands in for the CLI; no daemon or agent is started.
     package = tmp_path / "chiliarch"

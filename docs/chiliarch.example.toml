@@ -27,7 +27,7 @@ reconnect_base_seconds = 1.0
 reconnect_max_seconds = 30.0
 upgrade_interval_seconds = 300.0
 
-# 以下模型设置只用于 Chiliarch AI 总管；托管 Codex／Claude 使用本机原生配置。
+# 以下模型设置只用于 Chiliarch AI 总管；托管 Codex／Claude／OpenCode 使用本机原生配置。
 [model]
 api_mode = "chat_completions"
 model = ""

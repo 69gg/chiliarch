@@ -25,7 +25,7 @@ def command(arguments: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     cli.main()
 
 
-@pytest.mark.parametrize("host", ["codex-app", "codex", "claude-code"])
+@pytest.mark.parametrize("host", ["codex-app", "codex", "claude-code", "opencode", "opencode-v1"])
 def test_daemon_configuration_is_native_parseable_uses_handle_and_leaves_disk_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -42,11 +42,24 @@ def test_daemon_configuration_is_native_parseable_uses_handle_and_leaves_disk_un
     )
     output = capsys.readouterr()
     configuration: JsonObject = (
-        json.loads(output.out) if host == "claude-code" else tomllib.loads(output.out)
+        tomllib.loads(output.out) if host in {"codex-app", "codex"} else json.loads(output.out)
     )
-    entry = configuration["mcpServers" if host == "claude-code" else "mcp_servers"]["chiliarch"]
-    assert entry["command"] == python
-    parsed = cli.parser().parse_args(entry["args"])
+    if host in {"opencode", "opencode-v1"}:
+        servers = configuration["mcp"]["servers"] if host == "opencode" else configuration["mcp"]
+        entry = servers["chiliarch"]
+        assert entry["command"][0] == python
+        arguments = entry["command"][1:]
+        assert entry["type"] == "local"
+        if host == "opencode":
+            assert entry["disabled"] is False
+            assert entry["codemode"] is False
+        else:
+            assert entry["enabled"] is True
+    else:
+        entry = configuration["mcpServers" if host == "claude-code" else "mcp_servers"]["chiliarch"]
+        assert entry["command"] == python
+        arguments = entry["args"]
+    parsed = cli.parser().parse_args(arguments)
     assert parsed.command == "agent" and parsed.agent_command == "mcp"
     assert parsed.mode == "daemon"
     assert parsed.agent == "worker-one"
@@ -123,7 +136,9 @@ def pair_arguments(state_path: Path, directory: Path) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("adapter", ["codex-app", "codex", "claude-code"])
+@pytest.mark.parametrize(
+    "adapter", ["codex-app", "codex", "claude-code", "opencode", "opencode-v1"]
+)
 @pytest.mark.parametrize("mode", ["managed", "prompt", "settings", "manual"])
 def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_durable(
     tmp_path: Path,
@@ -137,7 +152,7 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
     order: list[str] = []
     existing: str | None = None
     if mode == "settings":
-        kind = "claude-code" if adapter == "claude-code" else "codex"
+        kind = "codex" if adapter == "codex-app" else adapter
         existing = f'kind = "{kind}"\nworkdir = "."\ntimeout_seconds = 60\n'
         state_path.with_suffix(".runner.toml").write_text(existing, encoding="utf-8")
 
@@ -158,6 +173,7 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
         assert order == ["health", "prompt"]
         assert code == "private-one-time-code"
         assert ("chiliarch.task_workdir" in kwargs["capabilities"]) == (mode != "manual")
+        assert f"adapter.{adapter}" in kwargs["capabilities"]
         order.append("pair")
         store = ClientStore(path)
         await store.open()
@@ -194,7 +210,7 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
                 assert runner_settings == state_path.with_suffix(".runner.toml")
                 raw = await asyncio.to_thread(runner_settings.read_text, encoding="utf-8")
                 settings = tomllib.loads(raw)
-                assert settings["kind"] == ("claude-code" if adapter == "claude-code" else "codex")
+                assert settings["kind"] == ("codex" if adapter == "codex-app" else adapter)
                 if mode == "settings":
                     assert raw == existing
                     assert settings["timeout_seconds"] == 60
@@ -242,13 +258,16 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
 
 
 @pytest.mark.parametrize("failure", ["missing_directory", "wrong_kind", "existing_settings"])
+@pytest.mark.parametrize("adapter", ["codex-app", "opencode", "opencode-v1"])
 def test_invalid_managed_setup_does_not_consume_pairing_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, adapter: str
 ) -> None:
     state_path = tmp_path / "identity.db"
     arguments = pair_arguments(state_path, tmp_path / "daemon")
+    arguments[arguments.index("--adapter") + 1] = adapter
     settings_path = state_path.with_suffix(".runner.toml")
-    original = 'kind = "claude-code"\nworkdir = "."\n'
+    other_kind = {"opencode": "opencode-v1", "opencode-v1": "opencode"}.get(adapter, "claude-code")
+    original = f'kind = "{other_kind}"\nworkdir = "."\n'
     if failure == "missing_directory":
         arguments[arguments.index("--workdir") + 1] = str(tmp_path / "absent")
     else:

@@ -39,7 +39,7 @@ def command(arguments: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     cli.main()
 
 
-@pytest.mark.parametrize("host", ["codex-app", "codex", "claude-code"])
+@pytest.mark.parametrize("host", ["codex-app", "codex", "claude-code", "opencode", "opencode-v1"])
 @pytest.mark.parametrize("installed_entrypoint", [False, True])
 def test_config_stdout_is_native_parseable_and_points_at_standalone_bridge(
     tmp_path: Path,
@@ -60,13 +60,28 @@ def test_config_stdout_is_native_parseable_and_points_at_standalone_bridge(
     captured = capsys.readouterr()
     assert not captured.err
     configuration: dict[str, Any] = (
-        json.loads(captured.out) if host == "claude-code" else tomllib.loads(captured.out)
+        tomllib.loads(captured.out) if host in {"codex-app", "codex"} else json.loads(captured.out)
     )
-    servers = configuration["mcpServers" if host == "claude-code" else "mcp_servers"]
+    if host == "opencode":
+        servers = configuration["mcp"]["servers"]
+    elif host == "opencode-v1":
+        servers = configuration["mcp"]
+    else:
+        servers = configuration["mcpServers" if host == "claude-code" else "mcp_servers"]
     assert set(servers) == {"chiliarch"}
     entry = servers["chiliarch"]
-    assert entry["command"] == (executable if installed_entrypoint else sys.executable)
-    arguments = entry["args"]
+    if host in {"opencode", "opencode-v1"}:
+        assert entry["command"][0] == (executable if installed_entrypoint else sys.executable)
+        arguments = entry["command"][1:]
+        assert entry["type"] == "local"
+        if host == "opencode":
+            assert entry["disabled"] is False
+            assert entry["codemode"] is False
+        else:
+            assert entry["enabled"] is True
+    else:
+        assert entry["command"] == (executable if installed_entrypoint else sys.executable)
+        arguments = entry["args"]
     if not installed_entrypoint:
         assert arguments[:2] == ["-m", "chiliarch"]
         arguments = arguments[2:]
@@ -79,7 +94,7 @@ def test_config_stdout_is_native_parseable_and_points_at_standalone_bridge(
     assert parsed.managed_task is None
     if host == "claude-code":
         assert entry["type"] == "stdio"
-    else:
+    elif host in {"codex-app", "codex"}:
         assert entry["startup_timeout_sec"] >= 1
         assert entry["tool_timeout_sec"] >= 30
     assert "fixture-credential-never-public" not in captured.out
@@ -87,7 +102,7 @@ def test_config_stdout_is_native_parseable_and_points_at_standalone_bridge(
     which.assert_called_once_with("chiliarch")
 
 
-@pytest.mark.parametrize("kind", ["codex", "claude-code"])
+@pytest.mark.parametrize("kind", ["codex", "claude-code", "opencode", "opencode-v1"])
 def test_relative_workdir_is_bound_to_local_settings_file_not_launch_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
@@ -110,7 +125,7 @@ def test_relative_workdir_is_bound_to_local_settings_file_not_launch_cwd(
     assert first.timeout_seconds == 40
 
 
-@pytest.mark.parametrize("kind", ["codex", "claude-code"])
+@pytest.mark.parametrize("kind", ["codex", "claude-code", "opencode", "opencode-v1"])
 @pytest.mark.parametrize(
     "legacy_settings",
     [
@@ -146,12 +161,14 @@ def test_legacy_native_overrides_are_ignored_when_loading_local_settings(
     assert settings_path.read_text(encoding="utf-8") == legacy_content
 
 
-@pytest.mark.parametrize("kind", ["codex", "claude-code"])
+@pytest.mark.parametrize("kind", ["codex", "claude-code", "opencode", "opencode-v1"])
+@pytest.mark.parametrize("custom_executable", [False, True])
 def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     kind: str,
+    custom_executable: bool,
 ) -> None:
     state_path = tmp_path / "agent.sqlite"
     identity = asyncio.run(create_identity(state_path))
@@ -159,12 +176,13 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     workspace.mkdir()
     settings_path = tmp_path / "local-agent.toml"
     settings_path.write_text(
-        f'kind = "{kind}"\nworkdir = "workspace"\nexecutable = "fixture-native"\n'
+        f'kind = "{kind}"\nworkdir = "workspace"\n'
         'model = "legacy-model-never-reported"\n'
         'codex_sandbox = "read-only"\n'
         "codex_skip_git_repo_check = true\n"
         'claude_permission_mode = "plan"\n'
-        'claude_allowed_tools = ["Read"]\n',
+        'claude_allowed_tools = ["Read"]\n'
+        + ('executable = "fixture-native"\n' if custom_executable else ""),
         encoding="utf-8",
     )
     which = Mock(side_effect=lambda executable: str(tmp_path / executable))
@@ -185,6 +203,7 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
 
     captured = capsys.readouterr()
     report = json.loads(captured.out)
+    assert report["opencode_executable"] == str(tmp_path / "opencode")
     assert report["paired"] is True
     assert report["identity"] == {
         key: identity[key] for key in ("agent_id", "name", "machine", "server_url")
@@ -192,7 +211,14 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     assert report["runner"] == {
         "kind": kind,
         "workdir": str(workspace),
-        "executable": str(tmp_path / "fixture-native"),
+        "executable": str(
+            tmp_path
+            / (
+                "fixture-native"
+                if custom_executable
+                else {"codex": "codex", "claude-code": "claude"}.get(kind, "opencode")
+            )
+        ),
         "permission": "native",
         "configuration_source": "native_user_and_project",
     }

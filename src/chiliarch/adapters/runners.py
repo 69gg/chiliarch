@@ -25,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from chiliarch.adapters.codex import CodexProtocol, CodexProtocolError
+from chiliarch.adapters.opencode import OpenCodeProtocol, OpenCodeProtocolError
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
 from chiliarch.client import TaskExecutionError, TaskHandler
@@ -32,6 +33,7 @@ from chiliarch.config import mask_sensitive
 
 JsonObject = dict[str, Any]
 Progress = Callable[[float, str], Awaitable[None]]
+RunnerKind = Literal["codex", "claude-code", "opencode", "opencode-v1"]
 
 
 class RunnerError(TaskExecutionError):
@@ -47,7 +49,7 @@ class RunnerSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal["codex", "claude-code"]
+    kind: RunnerKind
     workdir: Path
     executable: str | None = Field(default=None, min_length=1, max_length=4096)
     timeout_seconds: float = Field(default=1800, gt=0, le=86400)
@@ -55,6 +57,10 @@ class RunnerSettings(BaseModel):
     max_input_bytes: int = Field(default=1048576, ge=1024)
     max_output_bytes: int = Field(default=524288, ge=1024)
     max_line_bytes: int = Field(default=262144, ge=1024)
+
+    @property
+    def default_executable(self) -> str:
+        return {"codex": "codex", "claude-code": "claude"}.get(self.kind, "opencode")
 
     @model_validator(mode="before")
     @classmethod
@@ -119,7 +125,7 @@ def _numeric_usage(value: Any) -> JsonObject:
 
 @dataclass
 class _Output:
-    kind: Literal["codex", "claude-code"]
+    kind: RunnerKind
     session_id: str | None = None
     answers: dict[str, str] = field(default_factory=dict)
     answer: str | None = None
@@ -133,15 +139,15 @@ class _Output:
         event_type = event.get("type")
         if not isinstance(event_type, str) or not event_type:
             raise RunnerError("Native CLI emitted an invalid JSONL event")
-        if self.kind == "codex":
-            return self._codex(event, event_type)
-        return self._claude(event, event_type)
+        if self.kind == "claude-code":
+            return self._claude(event, event_type)
+        return self._turn(event, event_type)
 
     def _session(self, value: Any) -> None:
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,255}", value):
             self.session_id = value
 
-    def _codex(self, event: JsonObject, event_type: str) -> str | None:
+    def _turn(self, event: JsonObject, event_type: str) -> str | None:
         if event_type == "thread.started":
             self._session(event.get("thread_id"))
             return "原生会话已启动"
@@ -158,6 +164,8 @@ class _Output:
             return "原生运行已结束，正在确认退出状态"
         item = event.get("item")
         if event_type == "item.completed" and isinstance(item, dict):
+            if item.get("type") == "message_progress":
+                return "已收到原生回复"
             if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
                 key = str(item.get("id", len(self.answers)))
                 self.answers[key] = item["text"]
@@ -454,11 +462,17 @@ class RunnerHandler:
         self, temporary: Path, task_id: str, mcp_name: str, session_id: str | None = None
     ) -> list[str]:
         settings = self.settings
-        executable = settings.executable or ("codex" if settings.kind == "codex" else "claude")
+        executable = settings.executable or settings.default_executable
         if settings.kind == "codex":
             # exec forces its own approval policy even without CLI overrides.
             # App Server resolves the native configuration and exposes turn events.
             return [executable, "app-server"]
+        if settings.kind == "opencode":
+            return [executable, "acp"]
+        if settings.kind == "opencode-v1":
+            # Legacy ACP's internal HTTP server otherwise inherits public bind/mDNS
+            # settings. Only the local stdio client needs access to this server.
+            return [executable, "acp", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"]
         config_path = temporary / "mcp.json"
         config_path.write_text(
             json.dumps({"mcpServers": {mcp_name: {"type": "stdio", **self._mcp(task_id)}}}),
@@ -558,17 +572,23 @@ class RunnerHandler:
     ) -> JsonObject:
         with tempfile.TemporaryDirectory(prefix="chiliarch-runner-") as directory:
             command = self._command(Path(directory), payload["task_id"], mcp_name, session_id)
-            protocol = (
-                CodexProtocol(
+            protocol: CodexProtocol | OpenCodeProtocol | None = None
+            if self.settings.kind == "codex":
+                protocol = CodexProtocol(
                     prompt=prompt.decode(),
                     cwd=lease.workdir,
                     mcp_name=mcp_name,
                     mcp={**self._mcp(payload["task_id"]), "enabled": True, "required": True},
                     session_id=session_id,
                 )
-                if self.settings.kind == "codex"
-                else None
-            )
+            elif self.settings.kind in {"opencode", "opencode-v1"}:
+                protocol = OpenCodeProtocol(
+                    prompt=prompt.decode(),
+                    cwd=lease.workdir,
+                    mcp_name=mcp_name,
+                    mcp=self._mcp(payload["task_id"]),
+                    session_id=session_id,
+                )
             await lease.begin_execution(payload["task_id"])
             try:
                 tree = await start_process_tree(
@@ -665,7 +685,7 @@ class RunnerHandler:
                     return output.result(returncode)
             except TimeoutError:
                 raise RunnerError("Native CLI exceeded the local task timeout") from None
-            except CodexProtocolError as error:
+            except (CodexProtocolError, OpenCodeProtocolError) as error:
                 raise RunnerError(str(error)) from None
             finally:
 

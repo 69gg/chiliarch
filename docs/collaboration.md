@@ -43,7 +43,7 @@ Chiliarch 将传话和模型决策分开：同伴发现、讨论记录和普通�
 
 `dispatch_task` 可带 `continue_task_id`。平台先要求该任务属于同一接收 agent 且已成功完成；本机 runner 进一步要求它确实由 Chiliarch 创建、身份/平台/适配器/工作目录匹配、已确认原生进程停止，而且是该会话最近一次成功任务。
 
-Codex 使用本机 app-server 的 `thread/resume`，Claude Code 使用 `--print --resume`；每次仍保存独立 Chiliarch task ID，并追加本轮名称唯一的 mailbox MCP。模型、权限和原生设置遵循原生续接语义，Codex 可能沿用原线程配置，不保证每轮刷新所有用户设置。成功续轮替代旧会话关联；失败、取消、崩溃或结果未知时，不能跳回旧祖先绕过限制。续接任务可以查询自己的可验证祖先任务信件，但不能读取同身份无关任务的信件。
+Codex 使用本机 app-server 的 `thread/resume`，Claude Code 使用 `--print --resume`，OpenCode 两代使用 ACP `session/load`；每次仍保存独立 Chiliarch task ID，并追加本轮名称唯一的 mailbox MCP。模型、权限和原生设置遵循原生续接语义，Codex 可能沿用原线程配置，不保证每轮刷新所有用户设置。成功续轮替代旧会话关联；失败、取消、崩溃或结果未知时，不能跳回旧祖先绕过限制。续接任务可以查询自己的可验证祖先任务信件，但不能读取同身份无关任务的信件。
 
 这不唤醒用户已经打开的空闲 Codex App，也不枚举、接管未绑定的原生会话。manual 接入需要宿主主动调用 MCP。运行中的 CLI 通过 MCP 主动读信；安全的后续处理使用明确的续轮任务，不将文本强行写入正在工作的原生进程。
 

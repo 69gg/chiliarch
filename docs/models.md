@@ -2,7 +2,7 @@
 
 兼容层参考 Undefined 的请求转换、工具生命周期和原生推理回放设计，独立于其机器人上下文。三种 API 通过相同的 Provider 流事件和操作服务驱动总管。
 
-本文的模型配置用于 Chiliarch AI 总管。托管 Codex／Claude 直接沿用本机原生模型、服务商、认证和其他设置，平台不把此处的模型或 API Key 下发给它们；原生订阅与 API 来源按各工具自身优先级选择，用量统计不等于实际收费凭证。见 [runner 与原生配置](configuration.md#本机-runner-与原生配置)。
+本文的模型配置用于 Chiliarch AI 总管。托管 Codex／Claude／OpenCode 直接沿用本机原生模型、服务商、认证和其他设置，平台不把此处的模型或 API Key 下发给它们；原生订阅与 API 来源按各工具自身优先级选择，用量统计不等于实际收费凭证。见 [runner 与原生配置](configuration.md#本机-runner-与原生配置)。
 
 ## 配置模型
 
@@ -108,4 +108,4 @@ agent.contact 和需要总管决策的 agent.request 持久进入下级 inbox；
 
 目标相关运行在服务重启后仍记录为 interrupted，另创建一次核对待办，提供当前目标、任务和已知操作结果。只恢复会话最新的中断；后来的用户停止、失败或已完成运行会阻止旧中断再次唤醒。总管据此决定等待、检查或明确重试，不重放旧工具调用；中断的核对本身可再次恢复，整批事件以及恢复期间新加入的任务关联保持完整，已处理的同一中断不会反复唤醒。等待审批仍按原有审批 ID 继续。目标未完成或取消前不能删除它的关联会话。完整工具和限制见 [目标与验收](coordination.md)。
 
-初版 agent 接入支持 [Codex App/CLI 与 Claude Code](agents/index.md)，尚不包含 OpenCode/Undefined 厂商插件、模型池、RAG、多模态或文本工具封包恢复。不同网关的扩展不可能只凭名称保证兼容；请使用对应模式和实际行为测试验收。
+agent 接入支持 [Codex App/CLI、Claude Code、OpenCode v2 与 v1 legacy](agents/index.md)，尚不包含 Undefined 厂商适配、模型池、RAG、多模态或文本工具封包恢复。不同网关的扩展不可能只凭名称保证兼容；请使用对应模式和实际行为测试验收。

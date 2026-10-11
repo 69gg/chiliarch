@@ -11,10 +11,12 @@
 | Codex App   | stdio MCP，当前会话主动领取任务 | 使用同机独立 Codex CLI runner | [Codex App / CLI](docs/agents/codex.md)   |
 | Codex CLI   | stdio MCP                       | 本机 `codex app-server` stdio | [Codex App / CLI](docs/agents/codex.md)   |
 | Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
+| OpenCode v2 | stdio MCP                       | 本机 `opencode acp` stdio     | [OpenCode v2 / v1](docs/agents/opencode.md) |
+| OpenCode v1（legacy） | stdio MCP              | 本机 legacy `opencode acp` stdio | [OpenCode v2 / v1](docs/agents/opencode.md) |
 
-接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 默认创建新会话，也可明确续接 Chiliarch 创建的最近成功会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 默认创建新会话，也可明确续接 Chiliarch 创建的最近成功会话。Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
-托管执行沿用本机 Codex／Claude 的模型、服务商、认证、原生权限、项目指令、MCP 和其他原生配置；只为当前任务额外添加一个名称唯一的 Chiliarch mailbox MCP。runner TOML 负责程序、默认工作目录、超时和输入输出限额。Codex 的 app-server 是本地子进程，不控制桌面 App。当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，平台 ask/auto/yolo 不会改写原生权限。runner 配置字段见 [配置说明](docs/configuration.md#本机-runner-与原生配置)。
+托管执行沿用本机 Codex／Claude／OpenCode 的模型、服务商、认证、原生权限、项目指令、MCP 和其他原生配置；只为当前任务额外添加一个名称唯一的 Chiliarch mailbox MCP。runner TOML 负责程序、默认工作目录、超时和输入输出限额。Codex 的 app-server 是本地子进程，不控制桌面 App。当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，平台 ask/auto/yolo 不会改写原生权限。runner 配置字段见 [配置说明](docs/configuration.md#本机-runner-与原生配置)。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
@@ -62,7 +64,7 @@ chiliarch agent config --host codex-app --agent codex-main
 chiliarch agent doctor --agent codex-main
 ```
 
-默认无人值守：`agent pair` 校验默认目录、自动生成状态库旁的 `.runner.toml` 并登记 runner，收到调度后启动本机原生工具。省略 `--workdir` 时询问目录；已有设置可改用 `--settings`。Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`；Codex App 的托管任务使用同机 Codex CLI。将生成的 MCP 配置合并到原生配置中后，当前会话可查询和协调。仅需手动领取时，配对改用 `--mode manual` 并省略目录参数。
+默认无人值守：`agent pair` 校验默认目录、自动生成状态库旁的 `.runner.toml` 并登记 runner，收到调度后启动本机原生工具。省略 `--workdir` 时询问目录；已有设置可改用 `--settings`。Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`，OpenCode v2 使用 `opencode`，v1 legacy 使用 `opencode-v1`；Codex App 的托管任务使用同机 Codex CLI。将生成的 MCP 配置合并到原生配置中后，当前会话可查询和协调。仅需手动领取时，配对改用 `--mode manual` 并省略目录参数。
 
 Agents 管理、目标任务下发和重试表单均可填写“工作目录”；总管及下级调度使用 `dispatch_task.workdir`。填写 agent 机器上的已有绝对路径，留空使用该身份默认目录；同身份重试和会话续接默认保留原任务目录。目录选择遵循平台审批，并继续继承原生权限，不自动放宽沙箱或工具规则。默认目录的修改和 Windows 示例见 [目录配置](docs/agents/index.md#默认目录与任务目录)。
 
@@ -93,7 +95,7 @@ chiliarch demo-agent --state ./agent.db
 
 导航“协作”提供讨论组、私信、回执和“谁在等谁”。agent 可以直接发现同伴、交换消息并查询讨论，普通通信不需要总管逐条传话；ask 下状态变更仍需批准。消息区分已送达、已读和已处理，托管收件箱按任务隔离，稳定请求 ID 与消费游标支持重启恢复。
 
-明确设置 `wake=true` 的私信会为托管 agent 创建响应任务，继承目标与会话；普通回复默认不再唤醒，避免相互调用。`dispatch_task(continue_task_id=...)` 可安全续接 Codex／Claude 最近成功的受管会话；manual App 仍需主动读取 MCP 消息。协作等待会检查依赖环与执行资源冲突；相同工作目录仍保持互斥。
+明确设置 `wake=true` 的私信会为托管 agent 创建响应任务，继承目标与会话；普通回复默认不再唤醒，避免相互调用。`dispatch_task(continue_task_id=...)` 可安全续接 Codex／Claude／OpenCode 最近成功的受管会话；manual App 仍需主动读取 MCP 消息。协作等待会检查依赖环与执行资源冲突；相同工作目录仍保持互斥。
 
 共享产物经已有出站通道分块上传、下载，带成员访问范围、不可变大小/哈希清单和落盘校验。文件内容不会作为总管工具结果展开；可将 `chiliarch:artifact:<ID>` 登记为任务交付引用。详见 [横向通信与协作](docs/collaboration.md) 和 [共享产物](docs/artifacts.md)。
 
@@ -136,7 +138,7 @@ uv build
 - [agent 协议与 JSON Schema](docs/protocol.md)
 - [Agent 接入、安装提示词与协作工作流](docs/agents/index.md)
 - [供 agent 读取的自助接入指南](docs/agents/onboarding.md)
-- [Codex App / Codex CLI](docs/agents/codex.md) · [Claude Code](docs/agents/claude-code.md)
+- [Codex App / Codex CLI](docs/agents/codex.md) · [Claude Code](docs/agents/claude-code.md) · [OpenCode v2 / v1 legacy](docs/agents/opencode.md)
 - [扩展操作与参考客户端](docs/extensions.md)
 - [模型兼容与总管行为](docs/models.md)
 - [开发、测试与发版](docs/releasing.md)

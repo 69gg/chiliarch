@@ -80,7 +80,7 @@ HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设�
 4. 手动派发测试任务；parameters 可设 `{"steps":5,"delay":0.2}`，观察进度和完成结果中的 `simulated:true`。
 5. 停止客户端后派发任务，重新启动验证离线交付；吊销凭证后该客户端应停止，不能继续收发。
 
-模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。真实 Codex App、Codex CLI、Claude Code 使用上述守护进程接入；其他工具可实现参考客户端 handler 或同协议插件。
+模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。真实 Codex App、Codex CLI、Claude Code、OpenCode v2 与 v1 legacy 使用上述守护进程接入；其他工具可实现参考客户端 handler 或同协议插件。OpenCode v2 的 `--adapter` 与 `--host` 使用 `opencode`，v1 legacy 使用 `opencode-v1`，两代配置格式与并存安装见 [OpenCode 接入](agents/opencode.md)。
 
 Agents 管理列表以机器卡片展示实际连接状态、任务和待处理数；待处理徽标统计仍需处理的请求和审批。点击卡片进入详情，上方查看连接、心跳、能力与任务状态，下方派发指令、处理请求、查看任务或管理凭证。CPU、内存等机器遥测仅在 agent 实际上报时显示。
 

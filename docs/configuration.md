@@ -112,11 +112,11 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 ## 本机 runner 与原生配置
 
-托管 agent 的本地 runner TOML 独立于平台 `chiliarch.toml`。平台 `[model]` 配置只供 Chiliarch AI 总管使用，不会下发给 Codex／Claude，也不会覆盖它们的模型、服务商或认证。runner 字段如下：
+托管 agent 的本地 runner TOML 独立于平台 `chiliarch.toml`。平台 `[model]` 配置只供 Chiliarch AI 总管使用，不会下发给 Codex／Claude／OpenCode，也不会覆盖它们的模型、服务商或认证。runner 字段如下：
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| kind | 必填 | `codex` 或 `claude-code` |
+| kind | 必填 | `codex`、`claude-code`、`opencode`（v2）或 `opencode-v1`（legacy） |
 | workdir | 必填 | 已存在的默认项目目录；相对路径按 runner TOML 所在目录解析；任务可显式指定其他已有绝对目录 |
 | executable | 未指定 | 可选的本机程序路径；否则查找对应原生工具 |
 | timeout_seconds | 1800 | 一次托管任务最长运行秒数 |
@@ -129,11 +129,11 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 `agent pair` 默认 `--mode managed`，`--workdir <已有目录>` 自动生成 runner TOML 并登记；也可用 `--settings <TOML>`，都省略时交互询问目录。仅当前会话手动领取时选择 `--mode manual`。修改默认目录后重新 `daemon register --settings` 生效，不受平台热重载影响。调度 `dispatch_task` 与 `retry_task` 的可选 `workdir` 是 agent 机器上的绝对路径，保存到任务并经过统一审批；客户端校验目录存在，不自动创建或回退。具体续接、重试和重新登记步骤见 [目录配置](agents/index.md#默认目录与任务目录)。
 
-Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL，保留原生配置加载。两者只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
+Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL；OpenCode 两代 runner 使用 `opencode acp`，通过 `session/new` 或 `session/load` 传入本轮目录和 mailbox。各工具保留原生配置加载，只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
 
 平台 ask/auto/yolo 只管理平台业务审批，不调整原生权限。当前没有跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，不自动批准、不偷偷变更审批模式。配置目录与原生认证的可见性取决于守护进程环境；安装时保存的非秘密目录变量、已有服务的刷新步骤见 [守护进程环境](daemon.md#原生配置目录与环境)。用量统计不是收费凭证，订阅与 API 来源由原生工具选择。
 
-完整 TOML 和运行流程见 [Codex](agents/codex.md#托管-cli-执行) 与 [Claude Code](agents/claude-code.md#托管-runner-配置)。修改本地 TOML 后重新执行 `daemon register --settings <路径>` 更新对应身份；先确认正在执行的工作已结束，避免更新时中断托管任务。
+完整 TOML 和运行流程见 [Codex](agents/codex.md#托管-cli-执行)、[Claude Code](agents/claude-code.md#托管-runner-配置) 与 [OpenCode](agents/opencode.md#托管-runner-配置)。修改本地 TOML 后重新执行 `daemon register --settings <路径>` 更新对应身份；先确认正在执行的工作已结束，避免更新时中断托管任务。
 
 ## 日志存储与轮换
 

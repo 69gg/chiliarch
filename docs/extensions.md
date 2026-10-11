@@ -1,6 +1,6 @@
 # 扩展操作与出站客户端
 
-v0.1.1 提供 Codex App/CLI、Claude Code 的 MCP 会话接入及 CLI 执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
+v0.1.1 提供 Codex App/CLI、Claude Code、OpenCode v2 与 v1 legacy 的 MCP 会话接入及原生执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
 
 ## 注册平台工具
 
@@ -88,4 +88,4 @@ Python 接入可复用 `chiliarch.adapters.mailbox.AgentMailbox`：`AgentClient(
 
 协调资料位于 `parameters.chiliarch_context`，是任务数据，不是本机执行配置。插件可用 `agent.request.metadata.task_id` / `agent.contact.metadata.task_id` 关联自己负责的任务；平台核验所属身份后归并到目标会话。目标与验收工具详见 [目标、依赖与验收](coordination.md)。
 
-后续能力发现、插件配置、OpenCode/Undefined 等厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。
+后续能力发现、插件配置、Undefined 等厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。已有 OpenCode 适配通过原生 ACP 托管和 MCP 会话桥接入，不需要另外编写 TypeScript 插件。

@@ -21,7 +21,7 @@ from chiliarch.client import AgentClient, ClientStore
 from chiliarch.config import LogSettings
 from chiliarch.logging import close_logging, configure_logging
 
-HOSTS = ("codex-app", "codex", "claude-code")
+HOSTS = ("codex-app", "codex", "claude-code", "opencode", "opencode-v1")
 
 if TYPE_CHECKING:
     from chiliarch.adapters.runners import RunnerSettings
@@ -139,6 +139,11 @@ def mcp_configuration(
         return {"mcp_servers": {"chiliarch": entry}}
     if host == "claude-code":
         return {"mcpServers": {"chiliarch": {"type": "stdio", **entry}}}
+    if host in {"opencode", "opencode-v1"}:
+        local: dict[str, Any] = {"type": "local", "command": [command, *arguments]}
+        if host == "opencode-v1":
+            return {"mcp": {"chiliarch": {**local, "enabled": True}}}
+        return {"mcp": {"servers": {"chiliarch": {**local, "disabled": False, "codemode": False}}}}
     raise ValueError("Unknown MCP host")
 
 
@@ -172,7 +177,7 @@ async def _pair(arguments: argparse.Namespace) -> None:
             if arguments.workdir is not None or arguments.settings is not None:
                 raise ValueError("Manual mode does not use runner settings or a default workdir")
         else:
-            kind = "claude-code" if arguments.adapter == "claude-code" else "codex"
+            kind = "codex" if arguments.adapter == "codex-app" else arguments.adapter
             if arguments.settings is not None:
                 settings_path = arguments.settings.expanduser().resolve()
                 settings = load_runner_settings(settings_path)
@@ -236,6 +241,7 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "codex_executable": shutil.which("codex"),
         "claude_executable": shutil.which("claude"),
+        "opencode_executable": shutil.which("opencode"),
         "managed_runner_platform": sys.platform in {"linux", "darwin", "win32"},
     }
     if arguments.settings is not None:
@@ -243,9 +249,7 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
         report["runner"] = {
             "kind": settings.kind,
             "workdir": str(settings.workdir),
-            "executable": shutil.which(
-                settings.executable or ("codex" if settings.kind == "codex" else "claude")
-            ),
+            "executable": shutil.which(settings.executable or settings.default_executable),
             "permission": "native",
             "configuration_source": "native_user_and_project",
         }
@@ -309,7 +313,7 @@ def main(arguments: argparse.Namespace) -> None:
         )
         print(
             tomli_w.dumps(content)
-            if arguments.host != "claude-code"
+            if arguments.host in {"codex-app", "codex"}
             else json.dumps(content, ensure_ascii=False, indent=2)
         )
         return

@@ -17,8 +17,10 @@
 | Codex App   | stdio MCP：领取、进度、结果、消息与操作申请 | 由独立 Codex CLI runner 执行；不自动唤醒 App 当前会话 | [Codex](codex.md)             |
 | Codex CLI   | 同一 stdio MCP 接口                         | 本机 `codex app-server` stdio，默认创建原生新会话     | [Codex](codex.md)             |
 | Claude Code | 同一 stdio MCP 接口                         | `claude --print`＋JSONL，每个任务创建新的原生会话     | [Claude Code](claude-code.md) |
+| OpenCode v2 | 同一 stdio MCP 接口                         | 本机 `opencode acp`，默认新建原生会话                | [OpenCode](opencode.md) |
+| OpenCode v1（legacy） | 同一 stdio MCP 接口                | 本机 legacy `opencode acp`，默认新建原生会话         | [OpenCode](opencode.md) |
 
-OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协议](../protocol.md) 实现适配，本版不把它们标为已完成的厂商适配器。
+OpenCode 的两代运行时使用各自的原生 MCP 配置格式，托管任务统一通过 ACP v1 驱动；详见 [版本选择与安装](opencode.md#版本选择与安装)。Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协议](../protocol.md) 实现适配，本版尚未包含其厂商适配器。
 
 当前版本为 v0.1.1。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
@@ -32,7 +34,7 @@ OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协�
 uv tool install chiliarch
 ```
 
-安装后运行 `chiliarch daemon install`，默认登记当前用户登录自启动并检查本地健康。无可用系统管理器时使用后台或前台入口，状态明确显示未启用自启动。CLI runner 复用本机 `codex` 或 `claude` 和原生认证，不安装或登录它们，也不上传认证文件。MCP 与托管执行支持 Windows、macOS、Linux；Windows 原生入口及进程树清理边界见 [守护进程文档](../daemon.md#当前会话与托管执行)。
+安装后运行 `chiliarch daemon install`，默认登记当前用户登录自启动并检查本地健康。无可用系统管理器时使用后台或前台入口，状态明确显示未启用自启动。CLI runner 复用本机 `codex`、`claude` 或 `opencode` 和原生认证，不安装或登录它们，也不上传认证文件。MCP 与托管执行支持 Windows、macOS、Linux；Windows 原生入口及进程树清理边界见 [守护进程文档](../daemon.md#当前会话与托管执行)。
 
 ## 配对与本地身份
 
@@ -48,7 +50,7 @@ chiliarch agent pair \
   --state "/绝对路径/私有目录/agent.db"
 ```
 
-交互输入注册码。其他 agent 使用 `--adapter codex` 或 `--adapter claude-code`。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
+交互输入注册码。其他 agent 使用 `--adapter codex`、`--adapter claude-code`、`--adapter opencode`（v2）或 `--adapter opencode-v1`（legacy）。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
 
 `agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有托管状态通过 `chiliarch daemon register --state <路径> --agent <标识> --settings <本地TOML>` 登记，不能覆盖或重新配对；manual 身份省略 `--settings`。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
 
@@ -56,7 +58,7 @@ chiliarch agent pair \
 
 **当前会话手动执行（可选）**：配对时指定 `--mode manual`，不填写 `--workdir` 或 `--settings`。宿主启动 `chiliarch agent mcp --mode daemon --agent <本地标识>`，只向本机共享守护进程转发。守护进程维护该身份的唯一出站连接，接收并持久保存消息；当前原生会话主动调用工具领取、执行并报告。常驻连接不能自动唤醒空闲 App 或保证新增模型回合，仍需让会话开始领取任务。
 
-**托管 runner（默认）**：`agent pair --workdir <默认目录>` 自动登记 managed 身份，由守护进程收到任务后在任务指定目录或默认目录启动原生工具。已有状态也可通过 `chiliarch daemon register --settings <本地TOML>` 登记。Codex 使用本机 app-server stdio，Claude Code 使用 print JSONL；沿用原生模型、服务商、认证、权限、指令、MCP、skills 等设置。当前会话 MCP 可查询和协调，领取和终态由 runner 负责。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。每个任务只追加一个名称唯一的服务，任务提示明确指定该名称，不替换用户已有的 `chiliarch` MCP。
+**托管 runner（默认）**：`agent pair --workdir <默认目录>` 自动登记 managed 身份，由守护进程收到任务后在任务指定目录或默认目录启动原生工具。已有状态也可通过 `chiliarch daemon register --settings <本地TOML>` 登记。Codex 使用本机 app-server stdio，Claude Code 使用 print JSONL，OpenCode 两代使用 ACP stdio；沿用原生模型、服务商、认证、权限、指令、MCP、skills 等设置。当前会话 MCP 可查询和协调，领取和终态由 runner 负责。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。每个任务只追加一个名称唯一的服务，任务提示明确指定该名称，不替换用户已有的 `chiliarch` MCP。
 
 runner TOML 只设置工具类型、可执行程序、默认工作目录、超时和输入输出限额。字段说明见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。配置文件、环境优先级和会话续接仍按原生规则处理；Codex 续接可能保留原线程设置，不能把继承理解为每轮强制刷新全部用户配置。三系统自启动会保存安装时的非秘密配置目录环境，健康进程复用不会获取新终端环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。
 
@@ -176,7 +178,7 @@ WebUI 的 agent 详情与目标页下发/重试表单提供“工作目录（可
 - 总管和用户回复通过同一出站连接下发；断网期间本地已持久化的消息继续排队。超时没有回复时应保留请求 ID 查询，不要生成新的请求重复申请副作用。
 - 收到其他 agent 的信息应当作为外部任务数据，不能据此改写本地可执行程序、模型认证和原生工具权限，或执行任意拼接的 shell 命令。目录选择必须通过正式调度的 `workdir` 字段，不能通过普通消息绕过审批。
 
-总管的 ask 模式审批状态变更，查询直接执行；auto 按风险决定，yolo 自主运行。下级操作申请同样遵守这些模式。总管不能批准自己的待审批操作；由登录用户处理。平台批准只授权平台业务操作，不解除 Codex sandbox、Claude Code 工具权限或操作系统权限。
+总管的 ask 模式审批状态变更，查询直接执行；auto 按风险决定，yolo 自主运行。下级操作申请同样遵守这些模式。总管不能批准自己的待审批操作；由登录用户处理。平台批准只授权平台业务操作，不解除 Codex sandbox、Claude Code / OpenCode 工具权限或操作系统权限。
 
 ## 运行、取消与恢复
 
@@ -209,4 +211,4 @@ WebUI 的 agent 详情与目标页下发/重试表单提供“工作目录（可
 | 任务已请求取消但仍运行          | 等待客户端停止确认；离线机器无法即刻收到取消                  |
 | 凭证被拒绝                      | 在平台核对吊销状态；重新配对不绕过旧任务结果核查              |
 
-继续阅读 [Codex 接入](codex.md)、[Claude Code 接入](claude-code.md)、[平台协议](../protocol.md) 和 [模型配置](../models.md)。
+继续阅读 [Codex 接入](codex.md)、[Claude Code 接入](claude-code.md)、[OpenCode 接入](opencode.md)、[平台协议](../protocol.md) 和 [模型配置](../models.md)。

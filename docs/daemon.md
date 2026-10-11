@@ -26,9 +26,9 @@ chiliarch daemon status
 
 ## 原生配置目录与环境
 
-托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由本轮实际 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
+托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude／OpenCode 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`OPENCODE_CONFIG_DIR`、`OPENCODE_GIT_BASH_PATH`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由本轮实际 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
 
-启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
+启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。`OPENCODE_CONFIG_CONTENT` 可能包含秘密，不自动写入自启动项；需要跨登录保留配置时，使用原生私有配置文件与 `OPENCODE_CONFIG` 路径。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
 
 安装时保存的环境是快照。健康守护进程被复用时，不会获取另一个终端的新变量；已安装服务只运行 `daemon start`、`daemon restart` 或 `daemon install` 也不会重写启动项。修改配置目录后，先排空托管任务，再在具有正确目录环境的终端重新安装：
 
@@ -109,7 +109,7 @@ chiliarch agent config --host codex --agent worker \
 
 ## 当前会话与托管执行
 
-当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入，可以查询工作、联系总管和读取回复。`agent pair` 默认登记无人值守 managed 身份并自动处理调度；仅在配对时明确指定 `--mode manual` 的身份由当前会话主动领取、执行并报告。守护进程不唤醒或接管空闲 Codex App 或 Claude Code 会话。
+当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入，可以查询工作、联系总管和读取回复。`agent pair` 默认登记无人值守 managed 身份并自动处理调度；仅在配对时明确指定 `--mode manual` 的身份由当前会话主动领取、执行并报告。守护进程不唤醒或接管空闲 Codex App、Claude Code 或 OpenCode 会话。
 
 首次 `agent pair --workdir <默认目录>` 自动生成状态库旁的 `.runner.toml` 并登记，无需再执行 register；也可用 `--settings` 复用已有 TOML。以下命令用于更新已有身份设置或将 manual 身份改为 managed。先结束该身份正在运行的任务，再编辑 TOML 和重新登记，并保留原有自定义并发与传输选项：
 
@@ -122,11 +122,11 @@ chiliarch daemon register \
   --transport ws
 ```
 
-runner TOML 控制启动程序、默认工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。`dispatch_task.workdir` 可以选择本轮启动目录，留空使用默认值；它不改变原生权限或其他本地启动设置。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，目录、续接与重试规则见 [默认目录与任务目录](agents/index.md#默认目录与任务目录)。
+runner TOML 控制启动程序、默认工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude／OpenCode 自身设置。`dispatch_task.workdir` 可以选择本轮启动目录，留空使用默认值；它不改变原生权限或其他本地启动设置。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL，OpenCode 两代使用 ACP stdio。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md)、[Claude Code](agents/claude-code.md) 与 [OpenCode](agents/opencode.md)，目录、续接与重试规则见 [默认目录与任务目录](agents/index.md#默认目录与任务目录)。
 
 当前没有跨平台原生审批或用户输入回复桥。原生策略要求交互且无法继续时，托管任务会明确受阻或失败，不自动允许原生工具，也不调整原生权限来继续。平台 ask/auto/yolo 只控制平台业务审批；本机 app-server 不接管 Codex App 界面。
 
-托管续轮使用平台 `dispatch_task.continue_task_id`，指向同身份最近成功完成的托管任务。`parameters.chiliarch_context` 是平台注入的关联信息，普通任务参数不能代替本地会话所有权校验。runner 把自己启动的原生会话与任务关系保存在身份状态库 `runner_sessions` 表；核对平台身份、服务地址、适配器、工作目录、本地任务完成状态后，才使用 Codex app-server 的 `thread/resume` 或 Claude `--print --resume`。续接遵循原生语义，Codex 可能沿用原线程的配置，不保证刷新所有当前用户设置。新的任务有独立 ID；开始续轮后旧任务关联失效，须引用最新成功任务继续。运行中、失败、取消、结果未知，以及来自其他身份或用户手动启动的会话均不可续接。原生历史被删除时报告失败，不另开会话冒充恢复。
+托管续轮使用平台 `dispatch_task.continue_task_id`，指向同身份最近成功完成的托管任务。`parameters.chiliarch_context` 是平台注入的关联信息，普通任务参数不能代替本地会话所有权校验。runner 把自己启动的原生会话与任务关系保存在身份状态库 `runner_sessions` 表；核对平台身份、服务地址、适配器、工作目录、本地任务完成状态后，才使用 Codex app-server 的 `thread/resume`、Claude `--print --resume` 或 OpenCode ACP `session/load`。续接遵循原生语义，Codex 可能沿用原线程的配置，不保证刷新所有当前用户设置。新的任务有独立 ID；开始续轮后旧任务关联失效，须引用最新成功任务继续。运行中、失败、取消、结果未知，以及来自其他身份或用户手动启动的会话均不可续接。原生历史被删除时报告失败，不另开会话冒充恢复。
 
 `send_peer_message` 普通来信由 daemon 持久接收，运行中的模型在适当时机主动读信。显式唤醒走正式任务调度，已完成托管任务可续轮；不向仍运行的原生 stdin 注入信息，也不代表当前 App 的手动会话能被自动唤醒。普通回信默认不唤醒，防止双方无限自动回复。任务若在等待另一个需要相同执行槽或工作目录的任务，应保存依赖并结束本轮，之后再续接，而不是一边占锁一边等。
 
@@ -172,7 +172,7 @@ chiliarch daemon uninstall
 
 `status` 区分本地健康与系统服务状态；`agents` 展示独立身份、manual/managed 模式、连接、传输及可公开的错误。健康接口报告实际守护进程 PID；Windows 虚拟环境可能先启动解释器启动器，该启动器 PID 可以不同。`doctor --agent` 是只读检查，不隐式安装、启动或登录原生宿主；本地健康和登记成功不代替平台在线、凭证有效或任务成功的确认。
 
-每个 agent 的 `execution` 状态与发给平台的心跳元数据一致，包含执行模式、状态、活动任务 ID、排队数量、容量，以及已知的适配器和工作目录。托管 runner 额外提供物理目录对应的 `workspace_id`、`supports_resume=true`、`notification_mode=followup_task`，表示能在停止后通过独立平台任务续接；同机相同 `workspace_id` 共享目录锁。manual 模式未领取任务时为 `waiting_for_claim`，领取后为 `busy`；managed 空闲时为 `idle`，运行时为 `busy`，等待工作区时为 `blocked`，并提供 `blocked_reason=workspace_busy` 和 `blocked_task_ids`。托管工作区一次只执行一项任务，报告容量为 1；手动会话的容量无法从连接推断，显示为未知。心跳只报告这些可观察状态，不检查或承诺 Codex／Claude 的登录、额度、原生权限或未来任务一定成功。
+每个 agent 的 `execution` 状态与发给平台的心跳元数据一致，包含执行模式、状态、活动任务 ID、排队数量、容量，以及已知的适配器和工作目录。托管 runner 额外提供物理目录对应的 `workspace_id`、`supports_resume=true`、`notification_mode=followup_task`，表示能在停止后通过独立平台任务续接；同机相同 `workspace_id` 共享目录锁。manual 模式未领取任务时为 `waiting_for_claim`，领取后为 `busy`；managed 空闲时为 `idle`，运行时为 `busy`，等待工作区时为 `blocked`，并提供 `blocked_reason=workspace_busy` 和 `blocked_task_ids`。托管工作区一次只执行一项任务，报告容量为 1；手动会话的容量无法从连接推断，显示为未知。心跳只报告这些可观察状态，不检查或承诺 Codex／Claude／OpenCode 的登录、额度、原生权限或未来任务一定成功。
 
 WebUI 将目录不可访问、目录占用、旧执行未确认及缺少执行器显示为中文原因，并给出对应的本机检查或恢复指引。扩展执行器上报的未知原因保留原文。离线和取消待确认不会被解释为进程已经停止。
 
