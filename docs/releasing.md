@@ -20,7 +20,7 @@ pnpm --dir web build
 
 `uv run pytest` 默认通过 pytest-xdist 的 `-n auto --maxprocesses=8` 按 CPU 数量启动**最多 8 个 worker**，按 `worksteal` 调度独立测试，让空闲进程接手较慢进程尚未开始的工作。macOS 等少核心的 CI runner 默认不强制启动 8 个进程，避免冷启动和数据库争用；高核心设备也不会无限创建 worker。可用 `uv run pytest -n 8` 明确指定并发，资源较少的设备用 `-n 2`，串行调试用 `-n 0`。测试使用独立临时状态库、目录与动态端口；新增用例同样不能读写开发者真实配置或依赖执行顺序。worker 意外退出会直接失败，不自动重启或重跑来掩盖错误。
 
-Windows CI 使用 `PYTEST_XDIST_AUTO_NUM_WORKERS=8` 单独提高并发，让 SQLite 和原生进程等待能够重叠；本地及其他系统仍采用上述 CPU 自适应规则。这个设置只影响测试调度，不改变测试数量、超时或生产运行配置。
+Windows 同样按 CPU 数量选择并发：在 4 核 runner 强制 8 个 worker 虽能缩短部分运行，但会显著增加 SQLite 与 HTTP 请求争用，可能触发正常的传输超时。需要比较更高并发时显式使用 `-n 8`，同时核对完整结果和最慢用例，不能只比较总时长或放宽业务超时。
 
 调试单项或对比同一代码的串行耗时时，可以显式覆盖并行设置：
 
