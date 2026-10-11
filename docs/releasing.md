@@ -18,6 +18,19 @@ pnpm --dir web build
 
 测试验证数据库事务、实际 SDK 请求、工具副作用、审批、真实 TCP 长连接与故障恢复，前端测试驱动真实 DOM 交互。不通过搜索源码是否包含某个字符串判断功能。
 
+`uv run pytest` 默认通过 pytest-xdist 使用 **2 个 worker**，按 `worksteal` 调度独立测试，让空闲进程接手较慢进程尚未开始的工作。固定为 2 个进程，避免按机器全部逻辑核心启动大量数据库与原生测试子进程。测试使用独立临时状态库、目录与动态端口；新增用例同样不能读写开发者真实配置或依赖执行顺序。worker 意外退出会直接失败，不自动重启或重跑来掩盖错误。
+
+调试单项或对比同一代码的串行耗时时，可以显式覆盖并行设置：
+
+```bash
+uv run pytest -n 0 --durations=20
+uv run pytest --durations=20
+```
+
+比较两轮耗时时保持源码、依赖和机器负载一致，并核对测试总数与结果。CI 保留全部 9 个系统/Python 组合的行为测试，Ruff 在 Linux/Python 3.13 执行一次，mypy 在每种系统的 Python 3.13 各执行一次，继续检查平台分支；mypy 的目标语法版本仍为项目配置的 Python 3.11。标签发布的静态检查在 Python 3.13 执行，三个 Python 版本均执行完整行为测试。
+
+CI 的 `web` job 构建一次 WebUI 并上传 `web-dist`；所有矩阵和前端检查通过后，`distributions` 下载同一次运行的产物用于打包，省去重复安装 Node/pnpm 与构建。wheel 和 sdist 的实际隔离安装验证继续分别执行；正式 tag 发布仍由发布流水线构建自己的 WebUI 与分发包。
+
 跨平台测试将业务网络调用与事件循环内部通信分开检查；Windows 虚拟环境启动器的 PID 可能不同于实际 Python 进程，执行身份应在解释器内验证。测试子进程的运行记录完整写入后才发布，轮询等待本次运行的记录，避免读取半写入数据。
 
 多轮工具测试按每轮执行进展等待，最终核对完成状态与持久化的幂等记录，不将整段任务的总耗时当成存储性能要求。测试服务器退出超时时保留未完成协程的位置，并清理服务与 lifespan 任务，避免将资源泄漏带入后续测试。
@@ -39,13 +52,13 @@ SSE 离线检测测试持续消费服务端事件，但不发送 agent 心跳，
 ## 升级版本
 
 ```bash
-uv run python scripts/bump_version.py 0.3.1 --dry-run
-uv run python scripts/bump_version.py 0.3.1
+uv run python scripts/bump_version.py 0.3.2 --dry-run
+uv run python scripts/bump_version.py 0.3.2
 ```
 
 脚本使用 uv version 同步 pyproject 与 uv.lock，再同步 web/package.json；JSON 报告中的仓库相对路径在各系统统一使用 `/`。包 `__version__` 来自安装元数据，不再维护第二个源码版本字符串。同版本重跑可以修复前端版本不一致；失败时恢复受管理文件。脚本不自动提交、打 tag 或推送。
 
-支持公开三段 PEP 440 版本，例如 0.3.1、0.3.1rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
+支持公开三段 PEP 440 版本，例如 0.3.2、0.3.2rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
 
 预发布标签会生成 GitHub prerelease，并且不更新 latest。wheel 与 sdist 明确使用 Core Metadata 2.4，兼容当前 Twine 校验器，同时保留 MIT SPDX 许可证信息。
 
@@ -58,8 +71,8 @@ uv build
 uv run twine check dist/*
 uv run --isolated --no-project --with dist/*.whl scripts/smoke_test.py
 uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_test.py
-uv run python scripts/release_notes.py validate --tag v0.3.1
-uv run python scripts/release_notes.py extract --tag v0.3.1
+uv run python scripts/release_notes.py validate --tag v0.3.2
+uv run python scripts/release_notes.py extract --tag v0.3.2
 ```
 
 隔离 smoke test 从实际分发包导入模块，验证 UI、协议 Schema、密码登录和 API。sdist 同样含已构建 UI，安装它时无需 Node；重新开发 UI 仍需 pnpm。
@@ -95,13 +108,13 @@ build 不拥有 PyPI OIDC 凭证；只有 publish job 有 id-token:write，GitHu
 
 确认版本、CHANGELOG、测试和签名提交后，项目维护者才执行 tag 和 push。代码完成或本地构建成功不等于已经上传 PyPI；未设置 publisher 或未推送 tag 时不会发布。
 
-以 v0.3.1 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
+以 v0.3.2 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
 
 ```bash
 git remote add origin https://github.com/69gg/chiliarch.git
 git push -u origin main
-git tag -s v0.3.1 -m "v0.3.1"
-git push origin v0.3.1
+git tag -s v0.3.2 -m "v0.3.2"
+git push origin v0.3.2
 ```
 
 在 GitHub **Actions → Release** 查看运行结果；若设置了环境审核，批准 `pypi` 部署后继续发布。成功后用户及 agent 均默认使用 `uv tool install chiliarch` 从 PyPI 安装。

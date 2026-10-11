@@ -55,6 +55,7 @@ dev = [
   "types-jsonschema>=4.23",
   "build>=1.2,<2",
   "twine>=6,<7",
+  "pytest-xdist>=3.8,<4",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -90,5 +91,6 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = ["-n", "2", "--dist=worksteal", "--max-worker-restart=0"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

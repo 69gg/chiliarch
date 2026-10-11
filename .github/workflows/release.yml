@@ -29,8 +29,11 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --group dev
       - run: uv run ruff check .
+        if: matrix.python == '3.13'
       - run: uv run ruff format --check .
+        if: matrix.python == '3.13'
       - run: uv run mypy
+        if: matrix.python == '3.13'
       - run: uv run pytest -vv --durations=20 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
       - name: Validate tag, version and changelog
         env:

@@ -2,7 +2,7 @@
 
 连接、管理与统一调度 agents 的平台。内置 Chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.1 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.2 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
 
 ## 支持的 agents
 
@@ -125,10 +125,12 @@ uv run pytest
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web build
-uv run python scripts/bump_version.py 0.3.1 --dry-run
+uv run python scripts/bump_version.py 0.3.2 --dry-run
 uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 ```
+
+Python 测试默认使用 2 个独立进程并行运行；定位单项问题时可用 `uv run pytest -n 0` 串行执行。CI 保留 Linux、macOS、Windows 与 Python 3.11–3.13 的全部组合，并复用已经构建的 WebUI，详见 [验证与发版](docs/releasing.md)。
 
 版本升级脚本同步 pyproject、uv.lock 和前端元数据；CHANGELOG 需要按最终用户行为单独撰写。`v*` tag 流水线验证、构建并通过 PyPI Trusted Publishing 发布，配置步骤见 [发版文档](docs/releasing.md)。
 
