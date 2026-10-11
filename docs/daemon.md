@@ -26,7 +26,7 @@ chiliarch daemon status
 
 ## 原生配置目录与环境
 
-托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由固定 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
+托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由本轮实际 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
 
 启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
 
@@ -50,6 +50,7 @@ chiliarch agent pair \
   --name "机器名 / Codex App" \
   --adapter codex-app \
   --agent codex-app-main \
+  --workdir "/绝对路径/已有项目目录" \
   --state "/绝对路径/私有目录/codex-app.db"
 chiliarch agent config --host codex-app --agent codex-app-main
 chiliarch agent doctor --agent codex-app-main
@@ -62,11 +63,12 @@ chiliarch agent doctor --agent codex-app-main
 ```bash
 chiliarch daemon register \
   --state "/绝对路径/私有目录/codex-app.db" \
-  --agent codex-app-main
+  --agent codex-app-main \
+  --settings "/绝对路径/私有目录/codex-app.runner.toml"
 chiliarch daemon agents
 ```
 
-相同状态重复登记是幂等操作；状态或标识冲突明确拒绝。登记后守护进程持有该 agent 的唯一出站连接。不要同时用 `agent mcp --mode standalone` 或 `agent run` 连接同一状态库。
+相同状态和设置重复登记是幂等操作；状态或标识冲突明确拒绝。托管身份重新登记要保留 `--settings`，省略它会登记为 manual。登记后守护进程持有该 agent 的唯一出站连接。不要同时用 `agent mcp --mode standalone` 或 `agent run` 连接同一状态库。
 
 ## 默认登录后自启动
 
@@ -96,7 +98,7 @@ chiliarch daemon autostart enable
 chiliarch daemon install --directory "/绝对路径/私有目录/daemon"
 chiliarch agent pair --daemon-directory "/绝对路径/私有目录/daemon" \
   --server "http://平台主机:8000" --name "工作机" --adapter codex \
-  --agent worker --state "/绝对路径/私有目录/worker.db"
+  --agent worker --state "/绝对路径/私有目录/worker.db" --workdir "/绝对路径/已有项目目录"
 chiliarch agent config --host codex --agent worker \
   --daemon-directory "/绝对路径/私有目录/daemon"
 ```
@@ -107,9 +109,9 @@ chiliarch agent config --host codex --agent worker \
 
 ## 当前会话与托管执行
 
-当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入。你可以主动领取工作、汇报进度与结果、联系总管和查询上级回复；守护进程常驻并不意味着它能自动唤醒空闲 Codex App 或 Claude Code 会话。
+当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入，可以查询工作、联系总管和读取回复。`agent pair` 默认登记无人值守 managed 身份并自动处理调度；仅在配对时明确指定 `--mode manual` 的身份由当前会话主动领取、执行并报告。守护进程不唤醒或接管空闲 Codex App 或 Claude Code 会话。
 
-只有明确需要无人值守时，为独立身份配置固定工作目录和执行策略，将本地 TOML 交给守护进程：
+首次 `agent pair --workdir <默认目录>` 自动生成状态库旁的 `.runner.toml` 并登记，无需再执行 register；也可用 `--settings` 复用已有 TOML。以下命令用于更新已有身份设置或将 manual 身份改为 managed。先结束该身份正在运行的任务，再编辑 TOML 和重新登记，并保留原有自定义并发与传输选项：
 
 ```bash
 chiliarch daemon register \
@@ -120,7 +122,7 @@ chiliarch daemon register \
   --transport ws
 ```
 
-runner TOML 控制启动程序、固定工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。远端任务不能改写这些边界。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，配置字段见 [配置说明](configuration.md#本机-runner-与原生配置)。
+runner TOML 控制启动程序、默认工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。`dispatch_task.workdir` 可以选择本轮启动目录，留空使用默认值；它不改变原生权限或其他本地启动设置。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，目录、续接与重试规则见 [默认目录与任务目录](agents/index.md#默认目录与任务目录)。
 
 当前没有跨平台原生审批或用户输入回复桥。原生策略要求交互且无法继续时，托管任务会明确受阻或失败，不自动允许原生工具，也不调整原生权限来继续。平台 ask/auto/yolo 只控制平台业务审批；本机 app-server 不接管 Codex App 界面。
 

@@ -43,6 +43,10 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--agent", help="Stable local handle; defaults to the paired platform identity"
     )
     pair.add_argument("--daemon-directory", type=Path)
+    pair.add_argument("--mode", choices=("managed", "manual"), default="managed")
+    local = pair.add_mutually_exclusive_group()
+    local.add_argument("--workdir", type=Path, help="Default local workspace for unattended tasks")
+    local.add_argument("--settings", type=Path, help="Existing local runner TOML")
     mcp = actions.add_parser("mcp", help="Serve the stdio MCP bridge; never opens a listening port")
     target = mcp.add_mutually_exclusive_group(required=True)
     target.add_argument("--state", type=Path, help="Legacy standalone/mailbox state")
@@ -152,14 +156,39 @@ def load_runner_settings(path: Path) -> RunnerSettings:
 
 
 async def _pair(arguments: argparse.Namespace) -> None:
+    from chiliarch.adapters.runners import RunnerSettings
+    from chiliarch.config import atomic_write_toml
     from chiliarch.daemon_client import DaemonClient, ensure_daemon
 
     state_path = arguments.state.expanduser().resolve()
+    settings_path: Path | None = None
+    generated: RunnerSettings | None = None
     async with connection_owner(state_path):
         if await asyncio.to_thread(state_path.exists):
             # Never overwrite a credential/task ledger, even if the platform is unreachable.
             raise ValueError("State already exists; use another path for a new paired identity")
         await ensure_daemon(arguments.daemon_directory)
+        if arguments.mode == "manual":
+            if arguments.workdir is not None or arguments.settings is not None:
+                raise ValueError("Manual mode does not use runner settings or a default workdir")
+        else:
+            kind = "claude-code" if arguments.adapter == "claude-code" else "codex"
+            if arguments.settings is not None:
+                settings_path = arguments.settings.expanduser().resolve()
+                settings = load_runner_settings(settings_path)
+                if settings.kind != kind:
+                    raise ValueError("Runner kind must match the paired adapter")
+            else:
+                workdir = arguments.workdir
+                if workdir is None:
+                    entered = (await asyncio.to_thread(input, "默认工作目录（已有目录）: ")).strip()
+                    if not entered:
+                        raise ValueError("A default workdir is required for managed mode")
+                    workdir = Path(entered)
+                generated = RunnerSettings(kind=kind, workdir=workdir)
+                settings_path = state_path.with_suffix(".runner.toml")
+                if settings_path.exists():
+                    raise ValueError("Runner settings already exist; pass --settings to reuse them")
         await AgentClient.pair(
             arguments.server,
             arguments.code or getpass.getpass("一次性注册码: "),
@@ -171,11 +200,19 @@ async def _pair(arguments: argparse.Namespace) -> None:
                 "chiliarch.contacts",
                 "chiliarch.requests",
                 f"adapter.{arguments.adapter}",
+                *(["chiliarch.task_workdir"] if settings_path is not None else []),
             ],
         )
+        if generated is not None:
+            assert settings_path is not None
+            atomic_write_toml(settings_path, generated.model_dump(mode="json", exclude_none=True))
     async with DaemonClient(arguments.daemon_directory) as daemon:
-        registration = await daemon.register(state_path, handle=arguments.agent)
+        registration = await daemon.register(
+            state_path, handle=arguments.agent, runner_settings=settings_path
+        )
     print(f"配对完成，本地标识 {registration['handle']}；凭证保存在 {state_path}，不在终端显示。")
+    if settings_path is not None:
+        print(f"无人值守已登记；默认工作目录配置：{settings_path}")
 
 
 async def _run(arguments: argparse.Namespace) -> None:

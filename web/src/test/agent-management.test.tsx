@@ -318,11 +318,16 @@ describe("详情操作与授权", () => {
     );
     expect(operate).not.toHaveBeenCalled();
     fireEvent.change(params, { target: { value: '{"priority":2}' } });
+    await user.type(
+      screen.getByLabelText("工作目录（可选）"),
+      "C:\\Projects\\demo",
+    );
     await user.click(send);
     expect(operate).toHaveBeenCalledWith("dispatch_task", {
       agent_id: "agent-one",
       instruction: "分析测试结果",
       parameters: { priority: 2 },
+      workdir: "C:\\Projects\\demo",
     });
     expect(refresh).toHaveBeenCalledOnce();
     expect(screen.getByLabelText("任务说明")).toHaveValue("");

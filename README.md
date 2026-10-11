@@ -14,7 +14,7 @@
 
 接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 默认创建新会话，也可明确续接 Chiliarch 创建的最近成功会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
 
-托管执行沿用本机 Codex／Claude 的模型、服务商、认证、原生权限、项目指令、MCP 和其他原生配置；只为当前任务额外添加一个名称唯一的 Chiliarch mailbox MCP。runner TOML 负责程序、固定工作目录、超时和输入输出限额。Codex 的 app-server 是本地子进程，不控制桌面 App。当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，平台 ask/auto/yolo 不会改写原生权限。runner 配置字段见 [配置说明](docs/configuration.md#本机-runner-与原生配置)。
+托管执行沿用本机 Codex／Claude 的模型、服务商、认证、原生权限、项目指令、MCP 和其他原生配置；只为当前任务额外添加一个名称唯一的 Chiliarch mailbox MCP。runner TOML 负责程序、默认工作目录、超时和输入输出限额。Codex 的 app-server 是本地子进程，不控制桌面 App。当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，平台 ask/auto/yolo 不会改写原生权限。runner 配置字段见 [配置说明](docs/configuration.md#本机-runner-与原生配置)。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
@@ -57,12 +57,16 @@ chiliarch serve
 ```bash
 chiliarch daemon status
 # 首次接入：chiliarch daemon install；已安装但未运行：chiliarch daemon start
-chiliarch agent pair --server <平台HTTP或HTTPS地址> --name <agent名称> --adapter codex-app --agent codex-main --state /绝对路径/私有目录/agent.db
+chiliarch agent pair --server <平台HTTP或HTTPS地址> --name <agent名称> --adapter codex-app --agent codex-main --state /绝对路径/私有目录/agent.db --workdir /绝对路径/已有项目目录
 chiliarch agent config --host codex-app --agent codex-main
 chiliarch agent doctor --agent codex-main
 ```
 
-将生成的 MCP 配置合并到原生 agent 配置中；Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。当前会话通过 MCP 主动领取任务，自动执行则按接入文档配置本地 runner。客户端复用原生 agent 的安装与登录，不上传原生认证文件；注册码交互输入，长期凭证保存在本地状态库。默认不覆盖已配对状态。`agent pair` 先确认本机守护进程健康，再配对并登记；多个 agent 保留独立身份与队列。MCP 配置只携带本机标识，不携带平台凭证。管理、自启动和独立运行方式见 [本机守护进程](docs/daemon.md)。
+默认无人值守：`agent pair` 校验默认目录、自动生成状态库旁的 `.runner.toml` 并登记 runner，收到调度后启动本机原生工具。省略 `--workdir` 时询问目录；已有设置可改用 `--settings`。Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`；Codex App 的托管任务使用同机 Codex CLI。将生成的 MCP 配置合并到原生配置中后，当前会话可查询和协调。仅需手动领取时，配对改用 `--mode manual` 并省略目录参数。
+
+Agents 管理、目标任务下发和重试表单均可填写“工作目录”；总管及下级调度使用 `dispatch_task.workdir`。填写 agent 机器上的已有绝对路径，留空使用该身份默认目录；同身份重试和会话续接默认保留原任务目录。目录选择遵循平台审批，并继续继承原生权限，不自动放宽沙箱或工具规则。默认目录的修改和 Windows 示例见 [目录配置](docs/agents/index.md#默认目录与任务目录)。
+
+客户端复用原生 agent 的安装与登录，不上传原生认证文件；注册码交互输入，长期凭证保存在本地状态库。默认不覆盖已配对状态。`agent pair` 先确认本机守护进程健康，再配对并登记；多个 agent 保留独立身份与队列。MCP 配置只携带本机标识，不携带平台凭证。管理、自启动和独立运行方式见 [本机守护进程](docs/daemon.md)。
 
 只想验证协议、不运行真实厂商 agent 时，可使用原有模拟客户端：
 

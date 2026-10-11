@@ -1,4 +1,4 @@
-"""Local CLI workers: task data reaches stdin, never the process launch policy.
+"""Local CLI workers with task-selected workspaces and inherited native settings.
 
 Dispatches create a native session or explicitly continue a completed managed task.
 The attached stdio MCP server uses the worker's local mailbox; the AgentClient
@@ -39,7 +39,7 @@ class RunnerError(TaskExecutionError):
 
 
 class RunnerSettings(BaseModel):
-    """Trusted machine-local settings; dispatched parameters cannot override them.
+    """Trusted machine-local settings with a default workspace.
 
     Native permissions and Chiliarch approval are separate boundaries. This
     worker delegates model selection and permissions to the native user's settings.
@@ -222,7 +222,7 @@ class _Output:
 
 
 class RunnerHandler:
-    """Execute a task in a fixed workspace and bound its entire process lifetime.
+    """Execute a task in its selected workspace and bound its entire process lifetime.
 
     POSIX process groups and Windows Job Objects cover descendants, including
     the temporary MCP server. Launch policy never contains task instructions.
@@ -234,12 +234,24 @@ class RunnerHandler:
         self.state_path = state_path.expanduser().resolve()
         self._waiting_tasks: set[str] = set()
         self._running_tasks: set[str] = set()
+        self._task_workspaces: dict[str, Path] = {}
 
     def runtime_metadata(self) -> JsonObject:
         """Describe this local runner without invoking or probing the native agent."""
+        workspaces: JsonObject = {}
+        for task_id, directory in self._task_workspaces.items():
+            workspaces[task_id] = {"workspace": str(directory)}
+            try:
+                workspaces[task_id]["workspace_id"] = workspace_lock_path(directory).stem
+            except OSError:
+                # A project can disappear while a task waits; heartbeat must still work.
+                pass
         metadata: JsonObject = {
             "adapter": self.settings.kind,
             "workspace": str(self.settings.workdir),
+            "default_workdir": str(self.settings.workdir),
+            "supports_task_workdir": True,
+            "task_workspaces": workspaces,
             "capacity": 1,
             "blocked_task_ids": sorted(self._waiting_tasks),
             "blocked_reason": None,
@@ -286,7 +298,7 @@ class RunnerHandler:
             raise
 
     def _prepare_session(
-        self, task_id: str, parent_task_id: str | None, *, reserve: bool = True
+        self, task_id: str, parent_task_id: str | None, *, workdir: Path, reserve: bool = True
     ) -> str | None:
         connection = self._session_database()
         try:
@@ -307,7 +319,7 @@ class RunnerHandler:
                     identity.get("agent_id", ""),
                     identity.get("server_url", ""),
                     self.settings.kind,
-                    str(self.settings.workdir),
+                    str(workdir),
                 )
                 session_id: str | None = None
                 if parent_task_id is not None:
@@ -472,25 +484,28 @@ class RunnerHandler:
     async def __call__(self, payload: JsonObject, progress: Progress) -> JsonObject:
         mcp_name = "chiliarch_" + uuid4().hex
         prompt = self._prompt(payload, mcp_name)
-        # Verify again: a configured directory can disappear between dispatches.
-        if not self.settings.workdir.is_dir():
-            raise RunnerError("Configured local workspace is no longer available")
         task_id: str = payload["task_id"]
         parent_task_id = self._continued_task(payload)
+        workdir = await asyncio.to_thread(self._workdir, payload.get("workdir"), parent_task_id)
         if parent_task_id is not None:
             # Reject active/unknown parents now; do not silently wait for them to
             # become eligible. Ownership is checked again when the workspace is held.
-            await asyncio.to_thread(self._prepare_session, task_id, parent_task_id, reserve=False)
+            await asyncio.to_thread(
+                self._prepare_session, task_id, parent_task_id, workdir=workdir, reserve=False
+            )
 
         async def waiting() -> None:
             self._waiting_tasks.add(task_id)
             await progress(0.0, "等待其他任务释放工作区")
 
         try:
-            async with workspace_owner(self.settings.workdir, on_wait=waiting) as lease:
+            self._task_workspaces[task_id] = workdir
+            async with workspace_owner(workdir, on_wait=waiting) as lease:
                 self._waiting_tasks.discard(task_id)
                 self._running_tasks.add(task_id)
-                session_id = await asyncio.to_thread(self._prepare_session, task_id, parent_task_id)
+                session_id = await asyncio.to_thread(
+                    self._prepare_session, task_id, parent_task_id, workdir=workdir
+                )
                 result = await self._run_owned(
                     payload, prompt, progress, lease, mcp_name, session_id
                 )
@@ -499,10 +514,38 @@ class RunnerHandler:
                 await asyncio.to_thread(self._complete_session, task_id, result["session_id"])
                 if parent_task_id is not None:
                     result["continued_task_id"] = parent_task_id
+                result["workdir"] = str(workdir)
                 return result
         finally:
             self._waiting_tasks.discard(task_id)
             self._running_tasks.discard(task_id)
+            self._task_workspaces.pop(task_id, None)
+
+    def _workdir(self, requested: Any, parent_task_id: str | None) -> Path:
+        if requested is None and parent_task_id is not None:
+            connection = self._session_database()
+            try:
+                row = connection.execute(
+                    "SELECT workspace FROM runner_sessions WHERE task_id=?", (parent_task_id,)
+                ).fetchone()
+                if row:
+                    requested = row[0]
+            finally:
+                connection.close()
+        if requested is None:
+            directory = self.settings.workdir
+        else:
+            if (
+                not isinstance(requested, str)
+                or len(requested) > 4096
+                or any(ord(character) < 32 for character in requested)
+                or not Path(requested).is_absolute()
+            ):
+                raise RunnerError("Task workdir must be an absolute path on this agent machine")
+            directory = Path(requested).resolve()
+        if not directory.is_dir():
+            raise RunnerError("Selected local workspace is no longer available")
+        return directory
 
     async def _run_owned(
         self,
@@ -518,7 +561,7 @@ class RunnerHandler:
             protocol = (
                 CodexProtocol(
                     prompt=prompt.decode(),
-                    cwd=self.settings.workdir,
+                    cwd=lease.workdir,
                     mcp_name=mcp_name,
                     mcp={**self._mcp(payload["task_id"]), "enabled": True, "required": True},
                     session_id=session_id,
@@ -529,7 +572,7 @@ class RunnerHandler:
             await lease.begin_execution(payload["task_id"])
             try:
                 tree = await start_process_tree(
-                    command, self.settings.workdir, self.settings.max_line_bytes + 1
+                    command, lease.workdir, self.settings.max_line_bytes + 1
                 )
             except OSError:
                 raise RunnerError("Could not start the configured native CLI executable") from None

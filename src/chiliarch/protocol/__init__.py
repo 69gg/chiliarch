@@ -8,13 +8,22 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PROTOCOL_VERSION: Literal["1.0"] = "1.0"
 JsonObject = dict[str, Any]
+TaskWorkdir = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=4096,
+        pattern=r"^(?:/|[a-zA-Z]:[\\/]|\\\\)[^\x00-\x1f]*$",
+        description="Absolute directory on the agent machine; omitted uses its local default.",
+    ),
+]
 
 
 class Payload(BaseModel):
@@ -34,6 +43,7 @@ class DispatchPayload(Payload):
     task_id: str = Field(min_length=1)
     instruction: str = Field(min_length=1)
     parameters: JsonObject = Field(default_factory=dict)
+    workdir: TaskWorkdir | None = None
 
 
 class CancelPayload(Payload):
@@ -131,6 +141,9 @@ class Envelope(BaseModel):
         if payload_type is not None:
             legacy_request = self.type == "agent.request" and "metadata" not in self.payload
             self.payload = payload_type.model_validate(self.payload).model_dump(mode="json")
+            if self.type == "task.dispatch" and self.payload.get("workdir") is None:
+                # Preserve old durable message fingerprints and old-client compatibility.
+                self.payload.pop("workdir", None)
             if legacy_request:
                 # Keep pre-upgrade request fingerprints stable across redelivery.
                 self.payload.pop("metadata", None)
@@ -191,6 +204,7 @@ __all__ = [
     "HeartbeatPayload",
     "AckPayload",
     "DispatchPayload",
+    "TaskWorkdir",
     "CancelPayload",
     "TaskStatusPayload",
     "AgentRequestPayload",

@@ -52,12 +52,17 @@ Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用
 
 ```bash
 chiliarch agent pair --server "http://平台主机:8000" --name "工作机 / Codex App" \
-  --adapter codex-app --agent codex-main --state "/绝对路径/私有目录/agent.db"
+  --adapter codex-app --agent codex-main --state "/绝对路径/私有目录/agent.db" \
+  --workdir "/绝对路径/已有项目目录"
 chiliarch agent config --host codex-app --agent codex-main
 chiliarch agent doctor --agent codex-main
 ```
 
-`agent pair` 先确认守护进程健康再配对、登记；注册码交互输入。每个身份保留独立状态库，多个宿主 MCP 复用本机守护进程连接；MCP 配置携带本机标识，不携带长期平台凭证。Codex CLI/Claude Code 的宿主参数、安装提示词和固定 runner 配置见 [Agent 接入文档](agents/index.md)。当前会话不会自动被唤醒，明确需要无人值守时登记独立 runner。
+`agent pair` 先确认守护进程健康，校验默认目录，再配对、自动生成本地 runner TOML 并登记无人值守执行；注册码交互输入。Windows 示例目录可写 `--workdir "C:\Projects\app"`。已有 TOML 改用 `--settings`，两者都省略时交互询问默认目录。每个身份保留独立状态库，多个宿主 MCP 复用本机守护进程连接；MCP 配置携带本机标识，不携带长期平台凭证。仅手动领取时指定 `--mode manual`，不带目录参数。
+
+任务表单可填写 agent 机器上的已有绝对目录，留空使用本机默认值；总管和下级请求同样支持 `workdir`。默认无人值守保持原生权限，Codex App 的自动工作由本机 CLI 执行，不唤醒当前 App 会话。默认目录调整、任务续接与重试规则见 [Agent 目录配置](agents/index.md#默认目录与任务目录)，安装提示词见 [自助接入指南](agents/onboarding.md)。
+
+已安装用户先结束正在执行的任务，再运行 `uv tool upgrade chiliarch`；更新平台后重启平台进程，更新 agent 机器后运行 `chiliarch daemon restart`。若 uv 更新改变了服务记录的解释器路径，按 [重新安装服务](daemon.md#原生配置目录与环境) 先 `daemon uninstall` 再 `daemon install` 刷新启动项；保留登记和状态库。已有 manual 登记保持原状，需要转为托管时准备 runner TOML 并使用 `daemon register --settings` 更新，不必重新配对。
 
 ## HTTP、HTTPS 与反向代理
 

@@ -72,7 +72,7 @@ from chiliarch.database import (
     UserSession,
     new_id,
 )
-from chiliarch.protocol import AGENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, Envelope
+from chiliarch.protocol import AGENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, Envelope, TaskWorkdir
 
 if TYPE_CHECKING:
     from chiliarch.config import SettingsManager
@@ -117,6 +117,7 @@ class DispatchArguments(AgentArguments):
     depends_on: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
     continue_task_id: str | None = None
+    workdir: TaskWorkdir | None = None
 
 
 class TaskArguments(Arguments):
@@ -420,6 +421,8 @@ class OperationService:
                     validated.pop("agent_id", None)
                 if name == "dispatch_task" and validated.get("continue_task_id") is None:
                     validated.pop("continue_task_id", None)
+                if name in {"dispatch_task", "retry_task"} and validated.get("workdir") is None:
+                    validated.pop("workdir", None)
                 return validated
             except ValidationError as exc:
                 error = exc.errors(include_input=False, include_url=False)[0]
@@ -804,21 +807,24 @@ class OperationService:
     @staticmethod
     def task_view(task: Task) -> JsonObject:
         return {
-            field: getattr(task, field)
-            for field in (
-                "id",
-                "agent_id",
-                "instruction",
-                "parameters",
-                "status",
-                "progress",
-                "result",
-                "error",
-                "message",
-                "created_at",
-                "updated_at",
-                "requested_by",
-            )
+            "workdir": task.parameters.get("chiliarch_context", {}).get("workdir"),
+            **{
+                field: getattr(task, field)
+                for field in (
+                    "id",
+                    "agent_id",
+                    "instruction",
+                    "parameters",
+                    "status",
+                    "progress",
+                    "result",
+                    "error",
+                    "message",
+                    "created_at",
+                    "updated_at",
+                    "requested_by",
+                )
+            },
         }
 
     @staticmethod

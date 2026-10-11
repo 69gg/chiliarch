@@ -352,6 +352,11 @@ export default function GoalsPage({
                                 : task.agent_id}
                               <span>{reviewNames[link.review_status]}</span>
                             </p>
+                            {task.workdir && (
+                              <p className="small muted mono">
+                                工作目录：{task.workdir}
+                              </p>
+                            )}
                             {agent &&
                               ![
                                 "completed",
@@ -681,6 +686,7 @@ function GoalDialog({
           agent_id: field("agent"),
           instruction: field("instruction"),
           parameters: {},
+          ...(field("workdir") ? { workdir: field("workdir") } : {}),
           depends_on: data.getAll("dependency").map(String),
           acceptance_criteria: lines(data.get("criteria")),
         };
@@ -717,6 +723,7 @@ function GoalDialog({
           ...(field("instruction")
             ? { instruction: field("instruction") }
             : {}),
+          ...(field("workdir") ? { workdir: field("workdir") } : {}),
         };
       } else if (action.kind === "status") {
         operation = "update_goal";
@@ -834,6 +841,13 @@ function GoalDialog({
             <label>
               任务说明
               <textarea name="instruction" rows={4} required />
+            </label>
+            <label>
+              工作目录（可选）
+              <input
+                name="workdir"
+                placeholder="agent 机器上的绝对路径；留空使用默认目录"
+              />
             </label>
             {eligibleTasks.length > 0 && (
               <fieldset className="goal-dependency-select">
@@ -993,6 +1007,13 @@ function GoalDialog({
                 name="instruction"
                 rows={3}
                 placeholder={action.task.instruction}
+              />
+            </label>
+            <label>
+              工作目录（可选）
+              <input
+                name="workdir"
+                placeholder="同一 agent 留空沿用原目录，换 agent 留空使用它的默认目录"
               />
             </label>
           </>

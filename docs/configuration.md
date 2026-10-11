@@ -64,7 +64,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 客户端出站和服务端 WS/SSE 下行对每条未确认消息独立指数退避，首次间隔为 `retry_seconds`，封顶为 `max(retry_seconds, offline_after_seconds)`。这使接收与持久化较慢时不会持续堆积相同消息；新消息仍可及时发送，重连后使用原消息 ID 立即恢复投递。退避不改变离线判定、消息有效期或 ACK 的含义。
 
-真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，远端任务参数不能修改启动程序、目录或权限。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。standalone MCP 和独立 `agent run` 不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
+真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，普通任务参数不能修改启动程序或权限；只有正式调度的 `workdir` 字段可以覆盖本轮目录。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。standalone MCP 和独立 `agent run` 不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
 
 ### artifacts
 
@@ -117,7 +117,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
 | kind | 必填 | `codex` 或 `claude-code` |
-| workdir | 必填 | 已存在的固定项目目录；相对路径按 runner TOML 所在目录解析 |
+| workdir | 必填 | 已存在的默认项目目录；相对路径按 runner TOML 所在目录解析；任务可显式指定其他已有绝对目录 |
 | executable | 未指定 | 可选的本机程序路径；否则查找对应原生工具 |
 | timeout_seconds | 1800 | 一次托管任务最长运行秒数 |
 | terminate_grace_seconds | 2 | 终止原生进程树时的宽限秒数 |
@@ -125,7 +125,9 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | max_output_bytes | 524288 | 输出总量上限，字节 |
 | max_line_bytes | 262144 | 单行输出上限，字节，不得大于输出总量上限 |
 
-这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。固定 workdir 只决定启动目录及项目配置发现位置，不构成额外操作系统沙盒。
+这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。默认 `workdir` 在任务未指定目录时使用；本轮目录决定启动位置及项目配置发现位置，不构成额外操作系统沙盒。
+
+`agent pair` 默认 `--mode managed`，`--workdir <已有目录>` 自动生成 runner TOML 并登记；也可用 `--settings <TOML>`，都省略时交互询问目录。仅当前会话手动领取时选择 `--mode manual`。修改默认目录后重新 `daemon register --settings` 生效，不受平台热重载影响。调度 `dispatch_task` 与 `retry_task` 的可选 `workdir` 是 agent 机器上的绝对路径，保存到任务并经过统一审批；客户端校验目录存在，不自动创建或回退。具体续接、重试和重新登记步骤见 [目录配置](agents/index.md#默认目录与任务目录)。
 
 Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL，保留原生配置加载。两者只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
 

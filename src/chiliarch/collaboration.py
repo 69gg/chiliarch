@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,6 +18,35 @@ if TYPE_CHECKING:
     from chiliarch.service import OperationService
 
 JsonObject = dict[str, Any]
+
+
+def task_workspace(agent: Agent, task: Task) -> tuple[str | None, str | None]:
+    """Prefer a task's canonical runtime directory over the agent's default."""
+    metadata = agent.metadata_json
+    runtime = metadata.get("task_workspaces", {})
+    runtime = runtime.get(task.id, {}) if isinstance(runtime, dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    requested = task.parameters.get("chiliarch_context", {}).get("workdir")
+    workspace = runtime.get("workspace") or requested or metadata.get("workspace")
+    identity = runtime.get("workspace_id") or (
+        metadata.get("workspace_id") if not requested else None
+    )
+    if isinstance(workspace, str) and PureWindowsPath(workspace).is_absolute():
+        workspace = str(PureWindowsPath(workspace)).casefold()
+    return (
+        identity if isinstance(identity, str) else None,
+        workspace if isinstance(workspace, str) else None,
+    )
+
+
+def shares_workspace(first: Agent, task: Task, second: Agent, other: Task) -> bool:
+    if first.machine != second.machine:
+        return False
+    first_id, first_path = task_workspace(first, task)
+    second_id, second_path = task_workspace(second, other)
+    if first_id and second_id:
+        return first_id == second_id
+    return bool(first_path and first_path == second_path)
 
 
 class Channel(Base):
@@ -514,15 +544,7 @@ class CollaborationService:
             peer = await self.service._agent(session, other.agent_id)
             if other.id == task.id:
                 raise OperationError("A task cannot wait on itself", 409)
-            source_execution = owner.metadata_json
-            target_execution = peer.metadata_json
-            workspace = source_execution.get("workspace_id") or source_execution.get("workspace")
-            target_workspace = target_execution.get("workspace_id") or target_execution.get(
-                "workspace"
-            )
-            if owner.id == peer.id or (
-                owner.machine == peer.machine and workspace and workspace == target_workspace
-            ):
+            if owner.id == peer.id or shares_workspace(owner, task, peer, other):
                 raise OperationError(
                     "Collaboration wait conflicts with the agent or workspace held by this task; use another workspace or finish this phase",
                     409,
@@ -560,14 +582,7 @@ class CollaborationService:
                     continue
                 if active.id in holder.metadata_json.get("blocked_task_ids", []):
                     continue
-                workspace = metadata.get("workspace_id") or metadata.get("workspace")
-                holder_workspace = holder.metadata_json.get(
-                    "workspace_id"
-                ) or holder.metadata_json.get("workspace")
-                same_workspace = (
-                    worker.machine == holder.machine and workspace and workspace == holder_workspace
-                )
-                if worker.id == holder.id or same_workspace:
+                if worker.id == holder.id or shares_workspace(worker, queued, holder, active):
                     edges.setdefault(queued.id, []).append(active.id)
         remaining, visited = list(pending), set()
         while remaining:

@@ -155,7 +155,10 @@ async def test_continuation_refuses_other_identity_adapter_workspace_or_unfinish
         else:
             await client.store.state("original", "running")
         client.handler = RunnerHandler(configuration, client.store.path)
-        result = await run(client, task("forbidden-follow-up", "original"))
+        follow_up = task("forbidden-follow-up", "original")
+        if changed == "workspace":
+            follow_up.payload["workdir"] = str(configuration.workdir)
+        result = await run(client, follow_up)
         assert result["status"] == "failed"
         assert "Continuation requires" in result["error"]
         assert observed(tmp_path) == before

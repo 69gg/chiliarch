@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tomllib
@@ -113,6 +114,8 @@ def pair_arguments(state_path: Path, directory: Path) -> list[str]:
         "codex-app",
         "--state",
         str(state_path),
+        "--workdir",
+        str(state_path.parent),
         "--agent",
         "app-main",
         "--daemon-directory",
@@ -120,14 +123,23 @@ def pair_arguments(state_path: Path, directory: Path) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize("adapter", ["codex-app", "codex", "claude-code"])
+@pytest.mark.parametrize("mode", ["managed", "prompt", "settings", "manual"])
 def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_durable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    adapter: str,
+    mode: str,
 ) -> None:
     state_path = tmp_path / "identity.db"
     directory = tmp_path / "daemon"
     order: list[str] = []
+    existing: str | None = None
+    if mode == "settings":
+        kind = "claude-code" if adapter == "claude-code" else "codex"
+        existing = f'kind = "{kind}"\nworkdir = "."\ntimeout_seconds = 60\n'
+        state_path.with_suffix(".runner.toml").write_text(existing, encoding="utf-8")
 
     async def ensure(path: Path | None = None) -> JsonObject:
         assert path == directory
@@ -140,9 +152,12 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
         order.append("prompt")
         return "private-one-time-code"
 
-    async def pair(server: str, code: str, name: str, machine: str, path: Path, **_: Any) -> None:
+    async def pair(
+        server: str, code: str, name: str, machine: str, path: Path, **kwargs: Any
+    ) -> None:
         assert order == ["health", "prompt"]
         assert code == "private-one-time-code"
+        assert ("chiliarch.task_workdir" in kwargs["capabilities"]) == (mode != "manual")
         order.append("pair")
         store = ClientStore(path)
         await store.open()
@@ -169,10 +184,25 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
         async def __aexit__(self, *_: object) -> None:
             pass
 
-        async def register(self, path: Path, *, handle: str | None = None) -> JsonObject:
+        async def register(
+            self, path: Path, *, handle: str | None = None, runner_settings: Path | None = None
+        ) -> JsonObject:
             assert order == ["health", "prompt", "pair"]
             assert path == state_path.resolve()
             assert handle == "app-main"
+            if mode != "manual":
+                assert runner_settings == state_path.with_suffix(".runner.toml")
+                raw = await asyncio.to_thread(runner_settings.read_text, encoding="utf-8")
+                settings = tomllib.loads(raw)
+                assert settings["kind"] == ("claude-code" if adapter == "claude-code" else "codex")
+                if mode == "settings":
+                    assert raw == existing
+                    assert settings["timeout_seconds"] == 60
+                else:
+                    assert settings["workdir"] == str(await asyncio.to_thread(tmp_path.resolve))
+            else:
+                assert runner_settings is None
+                assert not state_path.with_suffix(".runner.toml").exists()
             # The connection ownership lock must be released before the daemon
             # begins owning this identity; pairing must also have closed its DB.
             async with connection_owner(path):
@@ -190,12 +220,54 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
     monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", LocalDaemon)
     monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", prompt)
     monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
-    command(pair_arguments(state_path, directory), monkeypatch)
+    directory_prompt = Mock(return_value=str(tmp_path))
+    monkeypatch.setattr("builtins.input", directory_prompt)
+    arguments = pair_arguments(state_path, directory)
+    arguments[arguments.index("--adapter") + 1] = adapter
+    if mode in {"manual", "prompt"}:
+        index = arguments.index("--workdir")
+        del arguments[index : index + 2]
+    if mode == "manual":
+        arguments.extend(["--mode", "manual"])
+    if mode == "settings":
+        index = arguments.index("--workdir")
+        arguments[index : index + 2] = ["--settings", str(state_path.with_suffix(".runner.toml"))]
+    command(arguments, monkeypatch)
+    assert directory_prompt.call_count == (1 if mode == "prompt" else 0)
     output = capsys.readouterr()
     assert order == ["health", "prompt", "pair", "register"]
     assert "app-main" in output.out
     assert "private-one-time-code" not in output.out + output.err
     assert "private-long-term-credential" not in output.out + output.err
+
+
+@pytest.mark.parametrize("failure", ["missing_directory", "wrong_kind", "existing_settings"])
+def test_invalid_managed_setup_does_not_consume_pairing_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    state_path = tmp_path / "identity.db"
+    arguments = pair_arguments(state_path, tmp_path / "daemon")
+    settings_path = state_path.with_suffix(".runner.toml")
+    original = 'kind = "claude-code"\nworkdir = "."\n'
+    if failure == "missing_directory":
+        arguments[arguments.index("--workdir") + 1] = str(tmp_path / "absent")
+    else:
+        settings_path.write_text(original, encoding="utf-8")
+        if failure == "wrong_kind":
+            index = arguments.index("--workdir")
+            arguments[index : index + 2] = ["--settings", str(settings_path)]
+    pair = AsyncMock()
+    prompt = Mock(side_effect=AssertionError("Must validate local setup before asking for a code"))
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", AsyncMock())
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", prompt)
+    with pytest.raises(SystemExit):
+        command(arguments, monkeypatch)
+    pair.assert_not_awaited()
+    prompt.assert_not_called()
+    assert not state_path.exists()
+    if failure != "missing_directory":
+        assert settings_path.read_text(encoding="utf-8") == original
 
 
 def test_unhealthy_daemon_blocks_pair_before_consuming_registration_code(

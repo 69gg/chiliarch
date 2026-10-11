@@ -20,6 +20,7 @@ export interface Task {
   id: string;
   agent_id: string;
   instruction: string;
+  workdir?: string | null;
   parameters: JsonObject;
   status: string;
   progress: Json;

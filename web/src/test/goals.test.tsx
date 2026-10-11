@@ -157,6 +157,10 @@ describe("目标管理", () => {
       agent.id,
     );
     await user.type(within(dialog).getByLabelText("任务说明"), "发布前测试");
+    await user.type(
+      within(dialog).getByLabelText("工作目录（可选）"),
+      "/projects/release",
+    );
     await user.click(
       within(dialog).getByRole("checkbox", { name: "评审登录" }),
     );
@@ -169,6 +173,7 @@ describe("目标管理", () => {
       goal_id: goal.id,
       agent_id: agent.id,
       instruction: "发布前测试",
+      workdir: "/projects/release",
       parameters: {},
       depends_on: ["task-two"],
       acceptance_criteria: ["测试无失败"],
@@ -258,11 +263,16 @@ describe("目标管理", () => {
       "补上错误密码测试",
     );
     operate.mockRejectedValueOnce(new ApiError("任务已被新尝试替代", 409));
+    await user.type(
+      within(dialog).getByLabelText("工作目录（可选）"),
+      "/projects/retry",
+    );
     await user.click(within(dialog).getByRole("button", { name: "确认重试" }));
     expect(operate).toHaveBeenLastCalledWith("retry_task", {
       task_id: task.id,
       recovery_note: "已核对提交，登录功能已实现，仅补测试",
       instruction: "补上错误密码测试",
+      workdir: "/projects/retry",
     });
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "任务已被新尝试替代",

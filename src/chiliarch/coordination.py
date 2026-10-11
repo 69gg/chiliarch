@@ -7,7 +7,7 @@ from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,13 +20,14 @@ from chiliarch.database import (
     TaskLink,
     new_id,
 )
-from chiliarch.protocol import Envelope
+from chiliarch.protocol import Envelope, TaskWorkdir
 
 if TYPE_CHECKING:
     from chiliarch.service import OperationService
 
 JsonObject = dict[str, Any]
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "expired", "interrupted"})
+TASK_WORKDIR = TypeAdapter(TaskWorkdir)
 
 
 class CoordinationArguments(BaseModel):
@@ -83,6 +84,7 @@ class ReviewTaskArguments(CoordinationArguments):
 class RetryTaskArguments(CoordinationArguments):
     task_id: str = Field(min_length=1)
     agent_id: str | None = Field(default=None, min_length=1)
+    workdir: TaskWorkdir | None = None
     instruction: str | None = Field(default=None, min_length=1, max_length=100000)
     recovery_note: str = Field(min_length=1, max_length=100000)
 
@@ -317,6 +319,7 @@ class CoordinationService:
                     "task_id": task.id,
                     "instruction": task.instruction,
                     "parameters": task.parameters,
+                    **({"workdir": context["workdir"]} if context.get("workdir") else {}),
                 },
             ),
         )
@@ -350,14 +353,38 @@ class CoordinationService:
         from chiliarch.collaboration import TaskContext
         from chiliarch.service import OperationError
 
-        await self.service._agent(session, args["agent_id"])
+        agent = await self.service._agent(session, args["agent_id"])
         if "chiliarch_context" in args["parameters"]:
             raise OperationError("chiliarch_context is reserved for platform coordination", 422)
         continuation = args.get("continue_task_id")
+        workdir = args.get("workdir")
         if continuation:
             previous = await self.task(session, continuation)
             if previous.agent_id != args["agent_id"] or previous.status != "completed":
                 raise OperationError("Continue only completed work owned by the same agent", 409)
+            if workdir is None:
+                workdir = (
+                    previous.result.get("workdir") if isinstance(previous.result, dict) else None
+                ) or self.service.task_view(previous)["workdir"]
+        if workdir is not None:
+            try:
+                workdir = TASK_WORKDIR.validate_python(workdir)
+            except ValidationError as exc:
+                raise OperationError(
+                    "Task workdir must be an absolute path on the agent machine", 422
+                ) from exc
+            if not (
+                "chiliarch.task_workdir" in agent.capabilities
+                or agent.metadata_json.get("supports_task_workdir") is True
+            ):
+                raise OperationError(
+                    "Agent must support task workdirs; upgrade its Chiliarch runner", 409
+                )
+        context: JsonObject = {}
+        if continuation:
+            context["continue_task_id"] = continuation
+        if workdir is not None:
+            context["workdir"] = workdir
         goal = await self.goal(session, args["goal_id"]) if args.get("goal_id") else None
         if goal and goal.status in {"completed", "cancelled"}:
             raise OperationError("Cannot dispatch into a closed goal", 409)
@@ -372,7 +399,10 @@ class CoordinationService:
             id=new_id(),
             agent_id=args["agent_id"],
             instruction=args["instruction"],
-            parameters=args["parameters"],
+            parameters={
+                **args["parameters"],
+                **({"chiliarch_context": context} if context else {}),
+            },
             requested_by=actor,
             status="blocked",
             created_at=time.time(),
@@ -380,8 +410,8 @@ class CoordinationService:
         )
         session.add(task)
         await session.flush()
-        if continuation:
-            session.add(TaskContext(task_id=task.id, context={"continue_task_id": continuation}))
+        if context:
+            session.add(TaskContext(task_id=task.id, context=context))
         link = TaskLink(
             task_id=task.id,
             goal_id=goal.id if goal else None,
@@ -524,6 +554,15 @@ class CoordinationService:
                     "conversation_id": link.conversation_id,
                     "depends_on": link.depends_on,
                     "acceptance_criteria": link.acceptance_criteria,
+                    "workdir": args.get("workdir")
+                    or (
+                        (
+                            (task.result.get("workdir") if isinstance(task.result, dict) else None)
+                            or self.service.task_view(task)["workdir"]
+                        )
+                        if not args.get("agent_id") or args["agent_id"] == task.agent_id
+                        else None
+                    ),
                 },
                 actor,
                 retry_of=task.id,

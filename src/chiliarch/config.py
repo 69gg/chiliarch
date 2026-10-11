@@ -231,8 +231,13 @@ def environment_patch() -> dict[str, Any]:
 
 
 def atomic_write(path: Path, settings: Settings) -> None:
+    atomic_write_toml(path, raw_settings(settings))
+
+
+def atomic_write_toml(path: Path, data: dict[str, Any]) -> None:
+    """Persist validated TOML using the same private, cross-platform atomic write."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = tomli_w.dumps(raw_settings(settings))
+    content = tomli_w.dumps(data)
     tomllib.loads(content)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

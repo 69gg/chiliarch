@@ -80,6 +80,8 @@ SSE 使用可附带 Authorization header 的流式 HTTP 客户端；不能依赖
 
 Python 接入可复用 `chiliarch.adapters.mailbox.AgentMailbox`：`AgentClient(..., manual_tasks=True)` 仅保存任务，原生会话显式领取、汇报与完成。通过 `ClientStore` 的原子状态转换防止重复领取，取消与任务队列在同一事务内持久化。已有 handler 模式自动领取任务，并用 `TaskExecutionError` 提供可安全展示的固定诊断；其他异常只公开类型，不直接上传第三方错误文本。
 
+支持任务目录的执行器声明 `chiliarch.task_workdir` 能力或心跳 `supports_task_workdir=true`，并实际处理 `task.dispatch.workdir`；不要声明后忽略字段。必须在目标机器按本地系统校验绝对路径和存在性，失效时报告失败，保留原生权限。可通过心跳 `default_workdir`、`task_workspaces` 与结果 `workdir` 公布默认及实际目录，便于协作调度；格式见 [协议](protocol.md)。未声明能力的旧扩展仍可接受未指定目录的任务。
+
 已有 `agent.message`、`request.resolved` 在持久 inbox 中保留，业务读取不影响网络 ACK。`AgentMailbox.read_messages` 使用本地 cursor，`get_request_result` 按请求身份查结果；离线时联系/请求仍可持久排队，但不能当成已送达或批准。联系的回复使用原消息 ID 作为 `send_agent_message.correlation_id`。MCP mailbox 模式仅共享队列，不建立第二条网络连接，也不暴露任务领取与完成工具。
 
 自定义 handler 可通过 `AgentClient(..., runtime_metadata=callback)` 提供无参数的本地状态回调，返回可公开的 JSON 字典（如 adapter、workspace、state、blocked_reason）。默认客户端会报告活动任务、队列数、执行模式与容量；回调不能包含凭证或原生认证诊断。托管任务应保持真实终态，平台据 `task.status` 持久唤醒总管，不需要为保证完成通知另发一封联系消息。

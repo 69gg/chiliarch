@@ -68,6 +68,7 @@ export default function AgentsPage({
   const [adding, setAdding] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [parameters, setParameters] = useState("{}");
+  const [workdir, setWorkdir] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -122,6 +123,7 @@ export default function AgentsPage({
     setName(item.name);
     setInstruction("");
     setParameters("{}");
+    setWorkdir("");
     setError(null);
     setNotice(null);
   }
@@ -140,6 +142,7 @@ export default function AgentsPage({
       agent_id: agent.id,
       instruction: instruction.trim(),
       parameters: parsed,
+      ...(workdir.trim() ? { workdir: workdir.trim() } : {}),
     });
     if (result) {
       setInstruction("");
@@ -345,6 +348,14 @@ export default function AgentsPage({
                     value={instruction}
                     onChange={(event) => setInstruction(event.target.value)}
                     required
+                    disabled={agent.revoked}
+                  />
+                  <label htmlFor="task-workdir">工作目录（可选）</label>
+                  <input
+                    id="task-workdir"
+                    value={workdir}
+                    onChange={(event) => setWorkdir(event.target.value)}
+                    placeholder="留空使用 agent 的默认目录；填写 agent 机器上的绝对路径"
                     disabled={agent.revoked}
                   />
                   <details>
@@ -883,6 +894,10 @@ function TaskItem({
           <div>
             <dt>来源</dt>
             <dd>{task.requested_by}</dd>
+          </div>
+          <div>
+            <dt>任务工作目录</dt>
+            <dd className="mono">{task.workdir || "使用 agent 默认目录"}</dd>
           </div>
         </dl>
         {task.progress !== null &&

@@ -21,7 +21,7 @@ flowchart LR
 
 核心模块：`protocol` 定义可移植协议；`database` 管理存储；`service` 提供操作与授权；`transport` 仅转换传输；`auth` 管理单用户会话和凭证摘要；`chat` 管理总管执行；`ai.providers` 转换模型 API，`ai.context` 管理 token 用量与跨 API 摘要压缩；`client` 提供出站传输与持久队列；`adapters` 复用客户端实现 MCP 会话桥与原生 CLI runner；`daemon` 管理本机独立 agent 的共享后台进程，`daemon_client` 和系统服务适配负责本地发现、健康与用户登录自启动；`config` 与 `logging` 管理运行配置和日志。
 
-本机共享守护进程按当前系统用户登记多个 agent，每个身份保留独立状态库、凭证和平台出站连接。原生宿主启动轻量 stdio MCP 桥，通过受认证的回环接口向已有守护进程转发；常驻连接不意味着平台能唤醒空闲宿主会话。托管身份按机器本地 TOML 的程序、固定工作目录和资源限额运行：Codex 使用独立本机 app-server stdio，经过 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`；Claude Code 使用 print JSONL。任务内 mailbox 只读写父连接的本地队列。平台不会反向联系 agent IP。
+本机共享守护进程按当前系统用户登记多个 agent，每个身份保留独立状态库、凭证和平台出站连接。原生宿主启动轻量 stdio MCP 桥，通过受认证的回环接口向已有守护进程转发；常驻连接不意味着平台能唤醒空闲宿主会话。托管身份按机器本地 TOML 的程序、默认工作目录和资源限额运行：Codex 使用独立本机 app-server stdio，经过 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`；Claude Code 使用 print JSONL。任务内 mailbox 只读写父连接的本地队列。平台不会反向联系 agent IP。
 
 原生模型、provider、认证、沙箱、审批、指令、skills、hooks 与 MCP 由原生工具加载。runner 只为任务追加一个名称唯一的 mailbox MCP，提示模型使用该名称，不覆盖用户已有服务或为其自动授予工具权限。Codex 续接保留原生 resume 语义，可能沿用此前线程配置。app-server 不连接用户已有 App 控制 socket；当前也没有跨平台原生审批或用户输入回复桥，收到必须交互的请求时明确受阻或失败，不通过平台审批模式放宽原生权限。
 
@@ -71,6 +71,8 @@ SQLite 使用 WAL、外键和 busy timeout；写事务保持短小。单服务�
 agent 机器上的 runner 复用 Codex/Claude Code 的原生认证、模型提供方和本地设置，原生模型流量由它们自身配置决定。Chiliarch 不读取原生认证文件或远程扫描历史会话；本地原生进程仍可能访问自身配置的工具与提供方。已原生登录且没有更高优先级 API 来源时，可由原生工具使用订阅，具体计费仍由服务商决定；usage 和费用估算不是扣费凭证。MCP mailbox 只通过已有父连接交换平台消息，不安装 agent 或建立服务端反向连接。
 
 三系统自启动保存安装时的非秘密配置目录环境，帮助原生工具找到用户配置，不复制 API Key、不 source shell。现有健康进程复用不会自动取得新终端环境；服务定义与进程环境的更新步骤见 [守护进程环境](daemon.md#原生配置目录与环境)。
+
+Agent 配对默认登记 managed runner，状态库旁的本地 TOML 保存每个身份的默认工作目录；manual 需显式选择。统一操作层校验任务可选 `workdir` 并协商客户端能力，审批、持久队列与依赖释放都保留该参数。服务端不解析或访问远端机器的实际路径，runner 在本机验证目录、解析实际路径并加锁，使用本轮目录启动原生工具。心跳分别报告默认目录与活动任务实际目录，协作等待据此检查资源冲突；续接绑定原生会话的实际目录，不随本机默认值变化。
 
 开发安装与流水线会访问 Python/npm 包仓库，发布会访问 PyPI 与 GitHub。服务端不会联系 agent 所在机器的 IP。
 

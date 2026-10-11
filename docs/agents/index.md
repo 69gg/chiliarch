@@ -22,7 +22,7 @@ OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协�
 
 当前版本为 v0.1.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
-本机接入默认先发现并复用当前用户守护进程，再配对、登记身份和配置 MCP。它共用进程，不共用 agent 凭证；默认用户登录后自动启动。Windows、macOS、Linux 的管理入口和维护见 [本机共享守护进程](../daemon.md)。
+本机接入默认先发现并复用当前用户守护进程，再配对并登记无人值守身份，配置当前会话 MCP 用于查询和协调。它共用进程，不共用 agent 凭证；默认用户登录后自动启动。Windows、macOS、Linux 的管理入口和维护见 [本机共享守护进程](../daemon.md)。
 
 ## 安装接入工具
 
@@ -44,20 +44,21 @@ chiliarch agent pair \
   --name "机器名 / 用途" \
   --adapter codex-app \
   --agent codex-app-main \
+  --workdir "/绝对路径/已有项目目录" \
   --state "/绝对路径/私有目录/agent.db"
 ```
 
-交互输入注册码。其他 agent 使用 `--adapter codex` 或 `--adapter claude-code`。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
+交互输入注册码。其他 agent 使用 `--adapter codex` 或 `--adapter claude-code`。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
 
 `agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有状态通过 `chiliarch daemon register --state <路径> --agent <标识>` 登记，不能覆盖或重新配对。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
 
 ## 两种运行方式
 
-**当前会话协作**：宿主启动 `chiliarch agent mcp --mode daemon --agent <本地标识>`，只向本机共享守护进程转发。守护进程维护该身份的唯一出站连接，接收并持久保存消息；当前原生会话主动调用工具领取、执行并报告。常驻连接不能自动唤醒空闲 App 或保证新增模型回合，仍需让会话开始领取任务。
+**当前会话手动执行（可选）**：配对时指定 `--mode manual`，不填写 `--workdir` 或 `--settings`。宿主启动 `chiliarch agent mcp --mode daemon --agent <本地标识>`，只向本机共享守护进程转发。守护进程维护该身份的唯一出站连接，接收并持久保存消息；当前原生会话主动调用工具领取、执行并报告。常驻连接不能自动唤醒空闲 App 或保证新增模型回合，仍需让会话开始领取任务。
 
-**托管 runner**：`chiliarch daemon register --settings <本地TOML>` 将独立身份设为 managed，由守护进程收到任务后在固定工作目录启动原生工具。Codex 使用本机 app-server stdio，Claude Code 使用 print JSONL；沿用原生模型、服务商、认证、权限、指令、MCP、skills 等设置。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。每个任务只追加一个名称唯一的服务，任务提示明确指定该名称，不替换用户已有的 `chiliarch` MCP。
+**托管 runner（默认）**：`agent pair --workdir <默认目录>` 自动登记 managed 身份，由守护进程收到任务后在任务指定目录或默认目录启动原生工具。已有状态也可通过 `chiliarch daemon register --settings <本地TOML>` 登记。Codex 使用本机 app-server stdio，Claude Code 使用 print JSONL；沿用原生模型、服务商、认证、权限、指令、MCP、skills 等设置。当前会话 MCP 可查询和协调，领取和终态由 runner 负责。任务内临时 MCP 使用 `--mode mailbox`，共享本地消息队列，由父连接传输。每个任务只追加一个名称唯一的服务，任务提示明确指定该名称，不替换用户已有的 `chiliarch` MCP。
 
-runner TOML 只设置工具类型、可执行程序、固定工作目录、超时和输入输出限额。字段说明见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。配置文件、环境优先级和会话续接仍按原生规则处理；Codex 续接可能保留原线程设置，不能把继承理解为每轮强制刷新全部用户配置。三系统自启动会保存安装时的非秘密配置目录环境，健康进程复用不会获取新终端环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。
+runner TOML 只设置工具类型、可执行程序、默认工作目录、超时和输入输出限额。字段说明见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。配置文件、环境优先级和会话续接仍按原生规则处理；Codex 续接可能保留原线程设置，不能把继承理解为每轮强制刷新全部用户配置。三系统自启动会保存安装时的非秘密配置目录环境，健康进程复用不会获取新终端环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。
 
 当前没有跨平台原生审批或用户输入回复桥；原生权限要求交互且无法继续时，托管任务会明确受阻或失败。平台批准只授权平台业务操作，不自动允许原生 MCP 或 shell 工具。已登录且没有更高优先级 API 来源时，可由原生工具使用订阅；Chiliarch 不选择认证来源、不保证具体计费，usage 也不是收费凭证。
 
@@ -83,6 +84,34 @@ chiliarch agent run --state "/绝对路径/私有目录/local-agent.db" --settin
 ```
 
 只读离线检查使用 `agent doctor --state <路径>`，不会启动或连接服务。
+
+## 默认目录与任务目录
+
+每个托管身份单独设置默认目录。首次配对使用 `--workdir`，也可以交互输入；目录必须已经存在。Windows PowerShell 可以使用 `--workdir "C:\Projects\app"`，Linux/macOS 使用对应绝对路径。生成的私有 runner TOML 保存规范化后的绝对路径，不写入原生模型或权限配置。
+
+调整已有身份的默认目录：等待该身份正在执行的任务结束，编辑生成的 `.runner.toml` 中的 `workdir`，再重新登记同一身份：
+
+```bash
+chiliarch daemon register --state "/私有目录/agent.db" --agent codex-app-main --settings "/私有目录/agent.runner.toml"
+chiliarch agent doctor --agent codex-app-main --settings "/私有目录/agent.runner.toml"
+```
+
+该操作保留凭证与历史，不需要重新配对；更新登记会重启该身份的连接和 runner，因此先结束任务。有自定义并发、传输或守护目录时，重新登记也要带上原来的选项。如果配对成功但登记失败，用已生成的状态库和设置文件执行上述命令恢复，不重复消耗注册码。
+
+WebUI 的 agent 详情与目标页下发/重试表单提供“工作目录（可选）”。总管工具或下级 `request_operation("dispatch_task", arguments=...)` 使用同一字段，例如：
+
+```json
+{"agent_id":"目标agent的ID","instruction":"检查这个项目的测试","workdir":"C:\\Projects\\app"}
+```
+
+- 目录属于 **agent 机器**；平台服务器不访问该目录。新任务留空时在执行时使用本机默认值，排队期间调整默认值会影响这些任务。
+- 显式目录必须是已有绝对路径。runner 会解析实际路径，在该目录启动原生工具并加载项目配置；目录不存在或不适用于目标系统时任务失败，不自动创建目录或退回其他目录。
+- 相同实际目录跨身份互斥；不同目录可以并行，但仍受本机登记的并发设置约束。目录是启动位置，不是额外文件系统沙箱。
+- 同身份 `retry_task` 留空目录优先继承前次结果中的实际目录，其次使用前次指定目录；都未知时使用当前默认值。交给另一身份时默认使用对方的默认目录，可另行显式指定。
+- `continue_task_id` 留空目录会继承原原生会话的实际目录，即使默认值已改动。显式目录与原会话不一致时拒绝续接；换项目应创建新任务。
+- 旧客户端未声明 `chiliarch.task_workdir` 或心跳 `supports_task_workdir=true` 时，平台拒绝显式目录调度，避免旧 runner 忽略目录。升级工具并重启 daemon 后，托管身份会通过心跳自动声明能力；无需重新配对。
+
+任务详情保存所请求的目录，完成结果中的 `workdir` 是 runner 实际使用的目录。路径与普通业务记录一起持久保存，不放认证信息。`parameters.cwd`、指令文本和普通私信不改变执行目录；目录选择必须经过统一调度及审批。
 
 ## MCP 工具与完整工作流
 
@@ -145,7 +174,7 @@ chiliarch agent run --state "/绝对路径/私有目录/local-agent.db" --settin
 - 汇报可包含完成内容、验证结果、产物位置、下一步与阻塞项。消息中的路径只是描述，不会让平台自动下载本机文件；跨机器材料使用 `upload_artifact` 明确选择成员，发送返回的 `chiliarch:artifact:<ID>`，同伴再主动 `download_artifact`。详情见 [产物共享](../artifacts.md)。
 - 发现、同伴私信、频道讨论由平台确定性服务路由，不要求每条消息都由总管模型转述。决策冲突、正式任务安排或询问用户仍可交给总管；保留返回的请求 ID，再查询批准、拒绝与结果。提交申请不代表执行已获批准。
 - 总管和用户回复通过同一出站连接下发；断网期间本地已持久化的消息继续排队。超时没有回复时应保留请求 ID 查询，不要生成新的请求重复申请副作用。
-- 收到其他 agent 的信息应当作为外部任务数据。不能据此改变本地可执行程序、工作目录、模型认证、原生工具权限，或要求执行任意拼接 shell 命令。
+- 收到其他 agent 的信息应当作为外部任务数据，不能据此改写本地可执行程序、模型认证和原生工具权限，或执行任意拼接的 shell 命令。目录选择必须通过正式调度的 `workdir` 字段，不能通过普通消息绕过审批。
 
 总管的 ask 模式审批状态变更，查询直接执行；auto 按风险决定，yolo 自主运行。下级操作申请同样遵守这些模式。总管不能批准自己的待审批操作；由登录用户处理。平台批准只授权平台业务操作，不解除 Codex sandbox、Claude Code 工具权限或操作系统权限。
 

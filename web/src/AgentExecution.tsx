@@ -96,7 +96,7 @@ export function AgentExecution({ agent }: { agent: Agent }): ReactNode {
         )}
         {typeof metadata.workspace === "string" && (
           <div>
-            <dt>工作目录</dt>
+            <dt>默认工作目录</dt>
             <dd className="mono">{metadata.workspace}</dd>
           </div>
         )}

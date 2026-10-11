@@ -114,6 +114,22 @@
           "additionalProperties": true,
           "title": "Parameters",
           "type": "object"
+        },
+        "workdir": {
+          "anyOf": [
+            {
+              "description": "Absolute directory on the agent machine; omitted uses its local default.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?:/|[a-zA-Z]:[\\\\/]|\\\\\\\\)[^\\x00-\\x1f]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workdir"
         }
       },
       "required": [

@@ -12,7 +12,7 @@
 
 Codex App 与交互式 Codex CLI 使用同一个 Chiliarch stdio MCP 服务。官方说明桌面 App、CLI、IDE 在同一 Codex host 上共享 MCP 配置；Chiliarch 因而不需要修改 App 私有数据库或模拟点击。[官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 
-当前会话可以主动领取和完成任务、发送上级消息、申请平台操作、读取结果。它不会因为服务器新增任务就必然开始一个模型回合。需要持续无人值守时，单独注册 `codex` 身份并运行 CLI runner；App 内的协作身份用 `codex-app`。不要把一个状态数据库同时交给两者。
+默认使用无人值守 runner，`codex-app` 与 `codex` 身份均由本机 Codex CLI 自动执行调度；当前 App/CLI 会话通过 MCP 查询任务、发送消息和协调。托管运行不会接管或唤醒 App 中的现有对话。仅需要当前会话主动领取和完成任务时，配对选择 `--mode manual`；每个独立执行身份使用独立状态库，不另起连接争抢同一身份。
 
 ## 安装与配对
 
@@ -26,10 +26,11 @@ chiliarch agent pair \
   --name "机器名 / Codex App" \
   --adapter codex-app \
   --agent codex-app-main \
+  --workdir "/绝对路径/已有项目目录" \
   --state "/绝对路径/私有目录/codex-app.db"
 ```
 
-交互输入一次性注册码。CLI 协作或托管执行使用 `--adapter codex`，并换成独立状态路径及本机标识，例如 `--agent codex-worker`。长期凭证仅保存在该本地状态数据库中，不需要写入 Codex 配置或上传 Codex 的认证文件。
+交互输入一次性注册码，自动生成 `codex-app.runner.toml` 并登记托管执行。CLI 使用 `--adapter codex`；新增另一个身份时使用独立状态路径及本机标识。已有 runner 配置可以用 `--settings` 替代 `--workdir`；手动领取模式改用 `--mode manual` 并省略目录。长期凭证仅保存在该本地状态数据库中，不需要写入 Codex 配置或上传 Codex 的认证文件。
 
 ## 给当前会话添加 MCP
 
@@ -52,7 +53,7 @@ enabled = true
 
 可以使用用户级 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`），或可信项目内的 `.codex/config.toml`，遵守原生配置的优先级与项目信任规则。也可以在 App 的 MCP 设置中新增 STDIO server，填入生成器输出的程序及参数。保存后按 App 提示重载 MCP，或打开新会话；CLI 则重启该会话。在会话中用 `/mcp` 查看服务与工具是否可用。
 
-请让 Codex 开始协作，例如：
+默认托管身份可以让当前 Codex 查询任务和联系总管；自动下发的任务由 runner 执行。下面的主动领取示例仅用于 `--mode manual` 身份：
 
 ```text
 使用 chiliarch MCP 检查连接，领取我的待处理任务并报告进度。
@@ -65,7 +66,7 @@ enabled = true
 
 ## 托管 CLI 执行
 
-本机需已有可运行、支持 app-server 且已配置认证的 `codex`；Chiliarch 不自动安装或登录它。托管任务沿用 Codex 的原生模型、服务商、沙箱、审批、项目指令、skills、MCP 等配置，Chiliarch 不替你选择模型或权限。创建本地 TOML，替换工作目录：
+本机需已有可运行、支持 app-server 且已配置认证的 `codex`；Chiliarch 不自动安装或登录它。托管任务沿用 Codex 的原生模型、服务商、沙箱、审批、项目指令、skills、MCP 等配置，Chiliarch 不替你选择模型或权限。默认配对已自动生成并登记本地 TOML；需要调整时编辑生成的文件，或提前准备以下设置并在配对时传 `--settings`：
 
 ```toml
 kind = "codex"
@@ -80,7 +81,7 @@ max_line_bytes = 262144
 # executable = "/绝对路径/codex"
 ```
 
-模型和权限在 Codex 原生配置中管理。runner 的配置字段见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。固定 workdir 决定项目配置与指令的发现位置，不会授予额外文件访问权限。[官方配置说明](https://learn.chatgpt.com/docs/config-file/config-basic)
+模型和权限在 Codex 原生配置中管理。runner 的配置字段见 [本机 runner 与原生配置](../configuration.md#本机-runner-与原生配置)。默认 workdir 决定项目配置与指令的发现位置，不会授予额外文件访问权限。[官方配置说明](https://learn.chatgpt.com/docs/config-file/config-basic)
 
 ```bash
 chiliarch daemon register \
@@ -91,9 +92,11 @@ chiliarch daemon register \
 chiliarch agent doctor --agent codex-worker --settings "/绝对路径/local-agent.toml"
 ```
 
-先按前述方式使用 `--adapter codex` 配对该 runner 的独立状态库，再登记带本地执行设置的身份。守护进程负责后台出站连接和执行；Windows、macOS、Linux 共用登记流程。Windows 使用原生 `.exe`、标准 npm `.cmd` 的实际 Node 入口或明确的 Python wrapper；自定义 `.cmd`/`.bat` 被拒绝时请指定实际入口。`chiliarch agent run --state ... --settings ...` 可用于独立前台运行，不能与守护进程同时占用相同状态库。
+上述 `register` 用于更新已有身份，替换为实际状态路径、标识与 TOML 路径；首次 `agent pair --workdir` 已经完成登记，无需再次配对。更改默认目录前先结束正在运行的任务。守护进程负责后台出站连接和执行；Windows、macOS、Linux 共用登记流程。Windows 使用原生 `.exe`、标准 npm `.cmd` 的实际 Node 入口或明确的 Python wrapper；自定义 `.cmd`/`.bat` 被拒绝时请指定实际入口。`chiliarch agent run --state ... --settings ...` 可用于独立前台运行，不能与守护进程同时占用相同状态库。
 
-每个任务启动独立的本机 `codex app-server` 子进程，以 stdio JSON-RPC 完成 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`。runner 传入固定 cwd、任务文本和任务专用 mailbox MCP，不覆写模型、provider、sandbox、approval policy 或原生指令；已有 MCP 服务继续按原生规则加载。这里的 app-server 是本地程序接口，不是 Codex App 窗口，也不连接用户已有的控制 socket。[App Server 官方说明](https://learn.chatgpt.com/docs/app-server)
+WebUI 或 `dispatch_task.workdir` 可指定任务使用的已有绝对目录，留空使用 TOML 默认值；不会改写 TOML。项目指令与原生配置从本轮目录加载，目录按实际路径加锁；续接会话留空则保持原会话目录。完整的目录和重试规则见 [默认目录与任务目录](index.md#默认目录与任务目录)。
+
+每个任务启动独立的本机 `codex app-server` 子进程，以 stdio JSON-RPC 完成 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`。runner 传入本轮 cwd、任务文本和任务专用 mailbox MCP，不覆写模型、provider、sandbox、approval policy 或原生指令；已有 MCP 服务继续按原生规则加载。这里的 app-server 是本地程序接口，不是 Codex App 窗口，也不连接用户已有的控制 socket。[App Server 官方说明](https://learn.chatgpt.com/docs/app-server)
 
 原生审批仍由 Codex 配置决定。当前 Chiliarch 尚无跨平台原生审批或用户输入回复桥；原生请求需要回复时任务会明确受阻或失败，不自动批准、不改为 `never`，也不通过平台 yolo 放开权限。需要人工交互的工作可以使用当前会话 MCP，由用户在原生宿主处理。
 
@@ -101,7 +104,7 @@ chiliarch agent doctor --agent codex-worker --settings "/绝对路径/local-agen
 
 续接要求相同平台身份、适配器及工作目录，前任务已成功且原生进程树确认停止。新轮次一旦开始，旧 task ID 不再代表会话最新状态；再续轮应引用最新成功任务。失败、取消、崩溃或清理结果未知后，不能引用更早成功任务绕过核查。关联存于该身份 SQLite 状态库，守护进程重启后仍可验证；原生历史文件若被用户删除，续接会报告失败，不静默另开新会话。runner 要求匹配本轮的 `turn/completed` 状态成功、协议正常、进程成功退出，并确认进程树清理后才报告完成；失败、中断、无终态、只有文字输出或 EOF 都不会假报成功。
 
-任务内的 mailbox MCP 使用每个任务唯一的服务名称，名称会写入任务提示；使用该服务联系平台，不能误用用户已有的 `chiliarch` MCP。注入只追加这一服务，不替换已有服务或改写全局配置。mailbox 用于向总管汇报、查询资源与协调，不导出 `claim_task`、`report_progress`、`complete_task`、`fail_task`、`confirm_cancellation`。runner 用 `--managed-task` 绑定本任务身份，模型不能冒用别的任务汇报。任务完成状态由父 runner 确认原生终态后上报，不要要求任务内模型先自行标记成功。固定 cwd 是启动策略，不是额外文件系统沙盒；实际可访问目录取决于 Codex sandbox、配置与操作系统权限。
+任务内的 mailbox MCP 使用每个任务唯一的服务名称，名称会写入任务提示；使用该服务联系平台，不能误用用户已有的 `chiliarch` MCP。注入只追加这一服务，不替换已有服务或改写全局配置。mailbox 用于向总管汇报、查询资源与协调，不导出 `claim_task`、`report_progress`、`complete_task`、`fail_task`、`confirm_cancellation`。runner 用 `--managed-task` 绑定本任务身份，模型不能冒用别的任务汇报。任务完成状态由父 runner 确认原生终态后上报，不要要求任务内模型先自行标记成功。本轮 cwd 是启动策略，不是额外文件系统沙盒；实际可访问目录取决于 Codex sandbox、配置与操作系统权限。
 
 runner 使用守护进程可见的原生配置目录与认证。若 Codex 已原生登录且没有更高优先级的 API 来源，可由原生工具使用订阅；存在其他 provider、API Key 或组织策略时按原生选择，Chiliarch 不切换认证或承诺具体计费。结果中的 usage 是原生用量统计，不是收费凭证。配置目录环境与已有服务刷新方式见 [守护进程环境](../daemon.md#原生配置目录与环境)。
 

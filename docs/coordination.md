@@ -19,6 +19,8 @@ Chiliarch 使用“目标 → 任务 → 验收 → 下一项任务”的持久�
 
 在任务的重试弹窗选择原 agent 或其他未吊销 agent，并填写实际核查及恢复理由；提交失败时保留选择与输入。交接传递执行记录和产物引用，不自动复制本机文件；跨机器材料可显式使用[共享产物](artifacts.md)上传和下载。运行中、取消未确认及已结束目标内的任务不开放重试入口；执行权限和最终参数校验始终由服务端决定。
 
+下发和重试表单支持可选工作目录。填写 agent 机器上的已有绝对路径，目录作为受审批的任务参数持久保存；新任务留空使用 agent 本机默认值，同身份重试优先保留前次实际或指定目录，换 agent 留空使用对方的默认值。会话续接继承原目录，不允许在另一项目中恢复原会话；具体规则见 [默认目录与任务目录](agents/index.md#默认目录与任务目录)。
+
 ## 总管与用户使用相同的工具
 
 | 工具 | 用途 | 关键参数 |
@@ -26,9 +28,9 @@ Chiliarch 使用“目标 → 任务 → 验收 → 下一项任务”的持久�
 | `create_goal` | 建立持久目标 | `title`、`objective`、`constraints`、`acceptance_criteria`，可选 `conversation_id` |
 | `list_goals` / `get_goal` | 查看目标、全部任务尝试、评审、产物 | `get_goal` 使用 `goal_id` |
 | `update_goal` | 修改标题、约束、验收条件、总结与状态 | `goal_id` 与需要修改的字段；状态 `active`、`blocked`、`completed`、`cancelled` |
-| `dispatch_task` | 派发或安排等待依赖的任务 | 原有 `agent_id`、`instruction`、`parameters`，新增可选 `goal_id`、`conversation_id`、`depends_on`、`acceptance_criteria` |
+| `dispatch_task` | 派发或安排等待依赖的任务 | 原有 `agent_id`、`instruction`、`parameters`，可选 `workdir`、`continue_task_id`、`goal_id`、`conversation_id`、`depends_on`、`acceptance_criteria` |
 | `review_task` | 明确验收或要求修改 | `task_id`、`decision`、非空 `note`，可选 `artifacts` |
-| `retry_task` | 核查实际执行情况后重试或交给其他 agent | `task_id`、非空 `recovery_note`，可选新 `instruction`、接手者 `agent_id` |
+| `retry_task` | 核查实际执行情况后重试或交给其他 agent | `task_id`、非空 `recovery_note`，可选新 `instruction`、接手者 `agent_id`、任务目录 `workdir` |
 
 这些工具均经过 `OperationService` 的参数校验、幂等记录和审批边界。查询不需要审批；`ask` 下状态变更仍需用户批准，`auto` 按风险处理，`yolo` 自主执行。重试属于高风险操作，`auto` 下不能通过模型声明低风险跳过审批。等待依赖的任务在首次派发时已经审批，依赖通过后的出队延续该授权，不再次请求同一许可。
 
@@ -49,7 +51,7 @@ Chiliarch 使用“目标 → 任务 → 验收 → 下一项任务”的持久�
 
 `name` 与 `uri` 必填，`kind` 默认 `reference`，`digest` 可选。引用可以是提交、PR、报告、共享文件等；支持 HTTP(S)、file、git、ssh、chiliarch 产物引用及本地路径，不接受 javascript/data 等可执行或内嵌内容 URI。URI 不得含内嵌用户名或密码，也不要使用携带私密凭证的 URL。平台记录引用，**不会主动访问 agent 机器或自动下载文件**。`file://` 或本地路径只有能够访问同一文件系统的下游才可使用；跨机器协作应提供实际可访问的仓库地址，或上传产物后使用 `chiliarch:artifact:<ID>`，由接手者调用 `download_artifact` 获取并校验内容。
 
-有目标、验收条件、依赖或重试关系的派发，在 `parameters.chiliarch_context` 内附带目标约束、任务验收条件、最新依赖结果与产物。Codex／Claude runner 将其作为任务数据提供给模型。它不能改变机器本地配置的可执行程序、目录、权限或沙箱策略；调用者也不能自行覆写这个保留字段。
+有目标、验收条件、依赖或重试关系的派发，在 `parameters.chiliarch_context` 内附带目标约束、任务验收条件、最新依赖结果与产物。Codex／Claude runner 将其作为任务数据提供给模型。调用者不能自行覆写这个保留字段；可执行程序、权限及沙箱策略仍由本地原生设置决定。显式 `dispatch_task.workdir` 会作为独立启动字段下发，并在上下文中保留用于查看的目录记录。
 
 重试还附带 `previous_attempt`：其中 `task` 包含上一尝试的 ID、agent、指令、执行状态、结果和错误，另附 `review_status`、`review_note`、`artifacts` 与本次 `recovery_note`。上一尝试的 `parameters` 不递归复制进交接材料，避免多次重试不断膨胀；`retry_of` 指向更早尝试，需要时可继续查询历史。发送前沿用敏感字段脱敏。不同机器不会自动共享工作目录，接手者应根据产物引用取得实际文件，再核对版本与恢复说明。
 
