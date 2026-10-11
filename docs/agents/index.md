@@ -20,7 +20,7 @@
 
 OpenCode、Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协议](../protocol.md) 实现适配，本版不把它们标为已完成的厂商适配器。
 
-当前版本为 v0.1.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
+当前版本为 v0.1.1。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 本机接入默认先发现并复用当前用户守护进程，再配对并登记无人值守身份，配置当前会话 MCP 用于查询和协调。它共用进程，不共用 agent 凭证；默认用户登录后自动启动。Windows、macOS、Linux 的管理入口和维护见 [本机共享守护进程](../daemon.md)。
 

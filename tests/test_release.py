@@ -58,6 +58,8 @@ def test_bump_failure_restores_all_managed_files(tmp_path: Path) -> None:
 
 def test_release_validator_rejects_mismatches_and_extracts_exact_entry(tmp_path: Path) -> None:
     project_copy(tmp_path)
+    # Establish the fixture version instead of depending on the repository's current release.
+    bump_version("0.1.0", tmp_path)
     assert validate(tmp_path, "v0.1.0")["uv.lock"] == "0.1.0"
     with pytest.raises(ValueError):
         validate(tmp_path, "v0.2.0")

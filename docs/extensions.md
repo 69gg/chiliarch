@@ -1,6 +1,6 @@
 # 扩展操作与出站客户端
 
-v0.1.0 提供 Codex App/CLI、Claude Code 的 MCP 会话接入及 CLI 执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
+v0.1.1 提供 Codex App/CLI、Claude Code 的 MCP 会话接入及 CLI 执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
 
 ## 注册平台工具
 
