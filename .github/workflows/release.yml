@@ -31,7 +31,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: uv run pytest
+      - run: uv run pytest -vv --durations=20 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
       - name: Validate tag, version and changelog
         env:
           RELEASE_TAG: ${{ github.ref_name }}

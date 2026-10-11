@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import socket
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -164,14 +165,52 @@ class LiveServer:
             server = self.server
             server_task = self.task
             server.should_exit = True
+
+            def stalled(phase: str) -> TimeoutError:
+                listeners = [
+                    {
+                        "serving": listener.is_serving(),
+                        "active_count": getattr(listener, "_active_count", None),
+                        "clients": len(getattr(listener, "_clients", ())),
+                    }
+                    for listener in server.servers
+                ]
+                diagnostic = (
+                    f"Test platform shutdown stalled during {phase}: "
+                    f"connections={len(server.server_state.connections)}, listeners={listeners}\n"
+                    + pending_task_stacks()
+                )
+                # A failing finalizer may itself be blocked. Emit evidence now,
+                # without waiting for pytest to print the captured failure.
+                print(diagnostic, file=sys.__stderr__, flush=True)
+                return TimeoutError(diagnostic)
+
             try:
                 # wait() leaves the blocked task intact long enough to capture
                 # its actual cleanup phase, rather than only a CancelledError.
                 done, _ = await asyncio.wait([server_task], timeout=5)
                 if not done:
-                    raise TimeoutError("Test platform shutdown stalled:\n" + pending_task_stacks())
+                    raise stalled("graceful shutdown")
                 await server_task
             finally:
+                deadline = asyncio.get_running_loop().time() + 5
+                phase = "request cleanup"
+                owned: set[asyncio.Task[Any]] = {server_task}
+
+                async def join_phase(tasks: list[asyncio.Task[Any]], name: str) -> None:
+                    nonlocal phase
+                    phase = name
+                    owned.update(tasks)
+                    if not tasks:
+                        return
+                    remaining = max(0, deadline - asyncio.get_running_loop().time())
+                    done, pending = await asyncio.wait(tasks, timeout=min(5, remaining))
+                    if pending:
+                        error = stalled(name)
+                        for task in pending:
+                            task.cancel()
+                        raise error
+                    await asyncio.gather(*done, return_exceptions=True)
 
                 async def join_owned_tasks() -> None:
                     for listener in server.servers:
@@ -185,19 +224,35 @@ class LiveServer:
                     for task in tasks:
                         if not task.done():
                             task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    await join_phase(tasks, "request cleanup")
                     lifespan = self.gate.lifespan_task
                     if lifespan is not None:
                         if not lifespan.done():
                             lifespan.cancel()
-                        await asyncio.gather(lifespan, return_exceptions=True)
-                    await asyncio.gather(*(listener.wait_closed() for listener in server.servers))
+                        await join_phase([lifespan], "lifespan cleanup")
+                    await join_phase(
+                        [
+                            asyncio.create_task(listener.wait_closed())
+                            for listener in server.servers
+                        ],
+                        "listener cleanup",
+                    )
 
                 cleanup = asyncio.create_task(join_owned_tasks())
                 cancelled = False
                 while not cleanup.done():
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        error = stalled(phase)
+                        cleanup.cancel()
+                        for task in owned:
+                            if not task.done():
+                                task.cancel()
+                        raise error
                     try:
-                        await asyncio.shield(cleanup)
+                        # wait() does not cancel cleanup when this task is
+                        # cancelled; repeated cancellation never resets its budget.
+                        await asyncio.wait([cleanup], timeout=remaining)
                     except asyncio.CancelledError:
                         cancelled = True
                 cleanup.result()
@@ -361,6 +416,57 @@ async def test_interrupted_platform_shutdown_joins_lifespan_and_releases_listene
                 await asyncio.gather(shutdown, return_exceptions=True)
             else:
                 await platform.stop()
+
+
+async def test_stalled_listener_cleanup_fails_with_immediate_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    platform = LiveServer(tmp_path)
+    await platform.start()
+    assert platform.server is not None
+    original_shutdown = platform.server.shutdown
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_listener() -> None:
+        entered.set()
+        try:
+            await released.wait()
+        finally:
+            cancelled.set()
+
+    async def shutdown_then_stall(sockets: list[socket.socket] | None = None) -> None:
+        await original_shutdown(sockets)
+        for listener in platform.server.servers:
+            monkeypatch.setattr(listener, "wait_closed", stalled_listener)
+
+    monkeypatch.setattr(platform.server, "shutdown", shutdown_then_stall)
+    shutdown = asyncio.create_task(platform.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        # A repeated caller cancellation must not extend the cleanup deadline.
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        shutdown.cancel()
+        done, pending = await asyncio.wait([shutdown], timeout=6)
+        assert done and not pending, "Cleanup must fail instead of shielding forever"
+        with pytest.raises(TimeoutError, match="listener cleanup"):
+            shutdown.result()
+        diagnostic = capfd.readouterr().err
+        assert "listener cleanup" in diagnostic
+        assert "stalled_listener" in diagnostic
+        assert "connections=0" in diagnostic
+        assert "'serving': False" in diagnostic
+        await asyncio.wait_for(cancelled.wait(), 1)
+    finally:
+        # Release the simulated block even if a regression breaks the deadline;
+        # the test's own failure path must not leave an unjoinable task behind.
+        released.set()
+        shutdown.cancel()
+        done, pending = await asyncio.wait([shutdown], timeout=5)
+        assert not pending
+        await asyncio.gather(*done, return_exceptions=True)
 
 
 async def wait_for_task(live: LiveServer, task_id: str, status: str) -> JsonObject:
