@@ -21,6 +21,8 @@ TaskWorkdir = Annotated[
         min_length=1,
         max_length=4096,
         pattern=r"^(?:/|[a-zA-Z]:[\\/]|\\\\)[^\x00-\x1f]*$",
+        # JSON Schema regex engines may match $ before a final newline.
+        json_schema_extra={"not": {"pattern": r"[\x00-\x1f]"}},
         description="Absolute directory on the agent machine; omitted uses its local default.",
     ),
 ]

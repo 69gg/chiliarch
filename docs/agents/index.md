@@ -50,7 +50,7 @@ chiliarch agent pair \
 
 交互输入注册码。其他 agent 使用 `--adapter codex` 或 `--adapter claude-code`。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
 
-`agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有状态通过 `chiliarch daemon register --state <路径> --agent <标识>` 登记，不能覆盖或重新配对。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
+`agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有托管状态通过 `chiliarch daemon register --state <路径> --agent <标识> --settings <本地TOML>` 登记，不能覆盖或重新配对；manual 身份省略 `--settings`。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
 
 ## 两种运行方式
 

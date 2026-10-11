@@ -121,6 +121,9 @@
               "description": "Absolute directory on the agent machine; omitted uses its local default.",
               "maxLength": 4096,
               "minLength": 1,
+              "not": {
+                "pattern": "[\\x00-\\x1f]"
+              },
               "pattern": "^(?:/|[a-zA-Z]:[\\\\/]|\\\\\\\\)[^\\x00-\\x1f]*$",
               "type": "string"
             },

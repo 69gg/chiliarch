@@ -35,7 +35,8 @@ def test_portable_directory_protocol_roundtrips(workdir: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "workdir", ["", "relative/project", "C:relative", "~/project", "/a\x00b", "/a\nb"]
+    "workdir",
+    ["", "relative/project", "C:relative", "~/project", "/a\x00b", "/a\nb", "/a\n", "/a\r"],
 )
 def test_invalid_directory_rejected_by_both_protocols(workdir: str) -> None:
     data = task("t").model_dump(mode="json")

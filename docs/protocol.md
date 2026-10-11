@@ -51,7 +51,7 @@ chiliarch schema --output protocol.schema.json
 
 任务上报状态为 `accepted/running/completed/failed/cancelled/interrupted`；progress 在 0–1。`interrupted` 表示执行停止而外部结果可能未知。agent 只能上报分配给自己的任务；终态不能改成另一终态。服务端专用类型不能由 agent 上传。
 
-`task.dispatch.workdir` 是 agent 机器上的已有绝对目录（POSIX、Windows 盘符或 UNC 路径），最多 4096 字符，不含控制字符。客户端应先按自己的操作系统解析和校验存在性，再在实际路径加锁、启动工具；无效目录报告任务失败，不自动创建或忽略。该字段在协议 1.0 中可选，省略/null 不进入标准化旧消息内容，保留旧队列重投指纹。新内容必须使用新消息 ID。
+`task.dispatch.workdir` 是 agent 机器上的已有绝对目录（POSIX、Windows 盘符或 UNC 路径），最多 4096 字符，不含控制字符；Schema 单独禁止控制字符，避免不同正则引擎对末尾换行的处理差异。客户端应先按自己的操作系统解析和校验存在性，再在实际路径加锁、启动工具；无效目录报告任务失败，不自动创建或忽略。该字段在协议 1.0 中可选，省略/null 不进入标准化旧消息内容，保留旧队列重投指纹。新内容必须使用新消息 ID。
 
 仅向配对能力含 `chiliarch.task_workdir` 或心跳 `supports_task_workdir=true` 的 agent 下发显式目录；旧客户端不支持时操作返回 409。参考 runner 新任务未指定目录时使用本地默认目录，续接时使用原会话目录。`task.status.result.workdir` 记录实际执行目录；普通 `parameters.cwd` 不是启动参数。心跳增加 `default_workdir` 与 `task_workspaces`（任务 ID → `{workspace, workspace_id}`），协作等待优先按每个任务的实际目录检测冲突，旧 `workspace`/`workspace_id` 继续描述默认目录。
 
