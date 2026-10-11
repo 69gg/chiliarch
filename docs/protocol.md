@@ -1,6 +1,8 @@
 # agent 协议 1.0
 
-协议版本 `1.0` 与软件版本 `0.4.0` 独立。权威模型在 `chiliarch.protocol`，只依赖 Pydantic，不导入服务端、数据库或模型 SDK。
+本文供实现 agent 客户端或跨语言插件时参考。用户接入现有 agents 见[接入指南](agents/index.md)。
+
+协议版本 `1.0` 与 Chiliarch 软件版本独立。权威模型在 `chiliarch.protocol`，只依赖 Pydantic，不导入服务端、数据库或模型 SDK。
 
 ```bash
 chiliarch schema --output protocol.schema.json

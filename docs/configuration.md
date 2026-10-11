@@ -1,172 +1,176 @@
-# 配置、热重载与日志
+# 配置与日志
 
-完整默认字段见 [示例 TOML](chiliarch.example.toml)，权威验证模型是 `chiliarch.config.Settings`。使用 `chiliarch init` 生成真实配置，示例中的空密码哈希不能直接启动服务。
+通常在 WebUI 的“配置”页面修改，保存后会提示成功或具体错误。完整字段见[示例 TOML](chiliarch.example.toml)；首次安装使用 `chiliarch init`，示例里的空密码不能直接用于启动。
+
+## 常用设置在哪里改
+
+| 你想改什么 | 设置位置 | 生效时间 |
+| --- | --- | --- |
+| 总管模型、Key、格式、上下文窗口 | 配置 → 总管模型 | 后续模型运行 |
+| ask / auto / yolo | 对话页或配置 → 总管 | 后续操作，旧许可不会自动批准 |
+| 登录密码 | 配置页的密码修改 | 立即使已有登录失效，重新登录 |
+| 监听地址、端口 | 配置 → 服务 | 重启平台 |
+| 浏览器公开地址、HTTPS cookie | 配置 → 服务与认证 | 保存后用于后续请求 / 登录 |
+| 数据库位置 | 配置 → 数据库 | 重启平台 |
+| 日志级别、轮换大小与份数 | 配置 → 日志 | 热重载 |
+| Agent 默认项目目录 | Agent 机器上的 runner TOML | 重新登记该身份 |
+| Agent 登录自启动 | `chiliarch daemon autostart` | 见[守护进程](daemon.md#默认登录后自启动) |
 
 ## 优先级与路径
 
-命令行显式 `--config` 优先；未指定时，uv 工具安装使用当前用户状态根下的 `chiliarch/server/chiliarch.toml`，自动更新后的运行环境保持相同位置。Linux 默认为 `~/.local/state/chiliarch/server/chiliarch.toml`，macOS 为 `~/Library/Application Support/chiliarch/server/chiliarch.toml`，Windows 为 `%LOCALAPPDATA%\chiliarch\server\chiliarch.toml`；Linux 尊重绝对路径的 `XDG_STATE_HOME`。源码 `uv run` 和普通非 uv 工具环境默认读取当前目录的 `chiliarch.toml`。`init`、`serve`、`backup` 采用同一规则，完整示例见 [配置文件位置](deployment.md#配置文件位置)。
+平台读取设置的顺序为：默认值 → TOML → 环境变量 → 本次 `serve` 的监听参数。环境变量优先于配置文件；修改文件却没有生效时，先核对实际启动环境。
 
-`chiliarch init` 交互配置密码、监听 host/port、公开 origin、审批模式、日志级别及可选总管模型，最后输出配置绝对路径和启动命令。`init --defaults` 使用非密码字段的默认值，密码仍需输入并确认；已有文件默认拒绝覆盖。
+uv 工具安装默认使用用户目录中的 `chiliarch/server/chiliarch.toml`，[各系统路径](deployment.md#配置文件位置)不同。`init` 会打印绝对路径。显式 `--config` 优先；源码运行默认当前目录。
 
-默认值 → TOML → `CHILIARCH_<SECTION>__<FIELD>` 环境变量 → 本次 CLI 的监听参数。环境变量可提供 JSON 对象；数值和布尔值按模型校验。例如 `CHILIARCH_MODEL__API_KEY`、`CHILIARCH_MODEL__HEADERS`。
+数据库和日志的相对路径以配置文件目录为基准，与你从哪个终端目录启动无关。总管的 Key 可以只放在环境变量中：
 
-模型网关不支持 `enable_thinking` 时，可在 WebUI“配置”关闭“发送 enable_thinking 参数”，或设置 `[model]` 下的 `enable_thinking_param_enabled = false`；也可通过 `CHILIARCH_MODEL__ENABLE_THINKING_PARAM_ENABLED=false` 覆盖。该字段支持热重载，新模型运行使用更新值，已运行的调用保留原快照。关闭只省略此请求字段，不影响推理强度、Anthropic 原生 thinking 或思考内容展示，见 [模型兼容](models.md#配置模型)。
+Linux / macOS：
 
-相对日志路径和 SQLite 路径相对于配置文件所在目录解析，不依赖进程从哪里启动。未指定配置文件的嵌入式应用则以创建应用时的当前目录为基准。
+```sh
+export CHILIARCH_MODEL__API_KEY='你的模型密钥'
+chiliarch serve
+```
 
-密钥可只通过环境变量提供，保存 WebUI 配置不会把环境变量密钥写回 TOML。环境变量在进程启动时提供；修改另一个终端里的变量不会改变已有进程的环境。
+Windows PowerShell：
 
-## 启动更新开关
+```powershell
+$env:CHILIARCH_MODEL__API_KEY = '你的模型密钥'
+chiliarch serve
+```
 
-标准 uv 工具安装默认在平台或 agent 服务启动时检查并自动安装兼容正式新版。`CHILIARCH_AUTO_UPDATE=0` 关闭新的检查与安装，仍使用已选中的运行版本；在实际进程启动环境设置，不属于平台 TOML 或 WebUI 热重载字段。当前用户自启动项保存安装时的该变量，修改既有启动项环境需按 [守护进程维护](daemon.md#原生配置目录与环境) 刷新；只修改终端变量不会改变已有服务。版本约束、离线行为和旧版首次升级见 [自动升级](upgrading.md)。
+示例 Key 请替换；避免将带有真实秘密的命令留在共享记录中。服务管理器运行的平台需在服务环境中设置变量，修改另一个终端不会改变已有进程。
+
+环境变量格式为 `CHILIARCH_<SECTION>__<FIELD>`，例如 `CHILIARCH_MODEL__CONTEXT_WINDOW`。对象设置使用 JSON。通过环境变量提供的 Key 不会因 WebUI 保存配置写回 TOML。
 
 ## 保存与热重载
 
-WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子替换；POSIX 还会同步父目录，Windows 不使用不受支持的目录文件描述符。POSIX 配置权限为 0600；Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。文件监视按 `server.config_poll_seconds` 检查修改；无效 TOML、未知字段、错误类型或不合理参数均保留上一份有效配置。
+保存会先校验整份设置。修改配置文件时，默认每 2 秒检查一次；无效内容会保留上一份有效配置并记录错误，修正后重新加载。
 
-有效更新增加配置 revision。新任务/模型调用使用新快照；运行中调用保留原快照。模式与审批仍在统一操作服务实际执行时检查，不能通过修改配置把已发起的待审批操作自动批准。
+模型、审批模式、通信时间参数、公开地址和日志支持热重载。已经运行的模型调用继续使用它开始时的设置，后续运行使用新值。
 
-配置表单先展示保存响应中的有效值，刷新前的旧页面快照不会覆盖保存结果；后续外部修改会更新尚未编辑的表单，正在编辑时保留草稿并提示配置已变化。
+以下字段需重启：`server.host`、`server.port`、`server.graceful_shutdown_seconds`、`database.url`。配置页面显示当前有效值，保存时提示哪些设置需重启。停止平台后用原启动命令重新运行即可。
 
-`server.host`、`server.port`、`server.graceful_shutdown_seconds`、`database.url` 保存后需要重启。WebUI 表单显示当前有效配置，保存时提示哪些修改需要重启；配置版本与待重启值可通过 `/api/state` 的 runtime 查询。配置页面保留校验失败和保存结果提示，不常驻展示热重载状态面板。`server.public_url`、模型、模式、投递时间参数、日志策略等支持热重载。
+API Key 输入留空会保留已有值，需要清除时使用对应清除选项。页面隐藏敏感值；原样保留 `********` 不会把它当作新 Key。自定义请求头和额外参数作为完整映射保存，提交空对象会清除旧键。
 
-配置表单在工作区内居中，长表单可以滚动。左侧导航支持收起为图标栏，收起后仍可切换页面、主题和退出登录；展开偏好保存在当前浏览器。小屏幕用同一按钮收起或展开导航。
-
-上次打开的总管会话 ID 也保存在当前浏览器的本地存储中，同一平台地址下刷新或返回时恢复；清理浏览器站点数据会重置这项偏好。它不写入 TOML，不保存聊天正文、凭证或草稿；没有记录或会话已删除时回到新对话页面，见 [对话页面](models.md#对话页面与键盘)。
-
-`model.headers` 与 `request_params` 是完整映射，提交 `{}` 可以清除旧键。读取 API Key、请求头、密码哈希与嵌套敏感参数时使用 `********`；原样回传掩码保留原秘密。空 API Key 明确清除；不提交该字段保持原值。
+密码只保存 scrypt 哈希，不手填明文到 `auth.password_hash`。POSIX 配置权限为 0600，Windows 使用私有目录继承的 ACL。
 
 ## 字段说明
 
 ### server / auth / database
 
-| 字段                                           | 用途                                                     |
-| ---------------------------------------------- | -------------------------------------------------------- |
-| server.host / port                             | 监听地址和端口，需重启                                   |
-| server.public_url                              | 浏览器公开 origin，用于反向代理后的 Origin 校验          |
-| server.config_poll_seconds                     | 文件配置检查间隔                                         |
-| server.graceful_shutdown_seconds               | 关闭时等待 HTTP/SSE 连接与请求结束的上限，正整数秒，默认 15，需重启 |
-| auth.password_hash                             | init/密码修改生成的 scrypt 哈希，不手填明文              |
-| auth.session_ttl_seconds                       | 登录会话有效期；新会话采用新值                           |
-| auth.max_login_attempts / login_window_seconds | 同来源登录限流                                           |
-| auth.secure_cookie                             | 新签发的 cookie 是否仅随 HTTPS 发送；HTTP 部署保持 false |
-| database.url                                   | 默认 SQLite async URL，改动需重启；初版验收存储为 SQLite |
+| 字段 | 默认值 / 用途 |
+| --- | --- |
+| `server.host` / `port` | `127.0.0.1` / `8000`，监听地址与端口 |
+| `server.public_url` | 浏览器实际访问的公开 origin，可留空 |
+| `server.config_poll_seconds` | `2`，检查配置文件修改的间隔 |
+| `server.graceful_shutdown_seconds` | `15`，停止时等待 HTTP/SSE 请求结束的上限秒数 |
+| `auth.password_hash` | 初始化或修改密码生成，不填写明文 |
+| `auth.session_ttl_seconds` | `86400`，登录会话有效秒数 |
+| `auth.max_login_attempts` / `login_window_seconds` | `10` / `300`，同来源登录限流 |
+| `auth.secure_cookie` | false；通过 HTTPS 访问时启用 |
+| `database.url` | `sqlite+aiosqlite:///data/chiliarch.db` |
 
-UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie 和 `X-CSRF-Token`；登录会校验 Origin。初版为单用户，没有多用户、角色管理或默认管理员密码。
+公开地址不含路径。HTTPS 由反向代理提供，填写公开地址不会启动 TLS。初始化时 HTTPS 地址会自动开启 secure cookie，以后两项分别保存；切换访问方式需要一起核对。
 
-初始化时，`server.public_url` 填写 HTTPS origin 会同时开启 `auth.secure_cookie`；填写 HTTP 或留空则关闭。保存后的两项设置分别管理，之后改用 HTTPS 或 HTTP 时需同步调整；只有反向代理或部署环境提供 TLS，设置公开地址本身不会启动 HTTPS 监听。
-
-侧栏底部的主题按钮按“跟随系统 → 浅色 → 深色”循环切换。默认跟随系统，选择保存在当前浏览器中；返回跟随系统后继续响应系统明暗变化。
-
-浅色主题使用柔和浅底，暗色主题采用炭灰背景与暖白文字，以不同的中性表面区分侧栏、消息、输入区和工具详情；蓝金色用于按钮、焦点及状态强调。主题偏好只保存在浏览器，不写入服务端 TOML。
-
-界面的抽屉、消息和折叠反馈遵循操作系统的“减少动态效果”设置。聊天输入支持 Enter 发送、Shift + Enter 换行及 Ctrl / ⌘ + Enter 发送；阅读历史时暂停自动跟随，可通过“回到最新”恢复。具体交互见 [模型与总管行为](models.md#对话页面与键盘)。
-
-### transport
-
-| 字段                                           | 用途                                               |
-| ---------------------------------------------- | -------------------------------------------------- |
-| heartbeat_seconds                              | 参考客户端主动心跳间隔                             |
-| offline_after_seconds                          | 超过最后主动活性记录多久显示离线，必须大于心跳间隔 |
-| poll_timeout_seconds                           | 长轮询最大等待，最长 60 秒                         |
-| retry_seconds                                  | 队列检查间隔及未 ACK 消息首次重投等待              |
-| queue_limit                                    | 持久未确认消息数量上限                             |
-| message_ttl_seconds                            | 下行消息有效期，过期后显式停止交付                 |
-| max_message_bytes                              | 单条信封大小上限                                   |
-| reconnect_base_seconds / reconnect_max_seconds | 客户端退避范围，加入抖动                           |
-| upgrade_interval_seconds                       | 降级传输定期重新尝试 WS 的间隔                     |
-
-`upgrade_interval_seconds` 是传输恢复间隔，不是软件版本更新间隔。
-
-这些客户端字段只有使用对应配置启动参考客户端时才影响其行为。跨语言插件应使用自己的配置或协商默认值；本版不自动向任意插件推送所有服务端设置。
-
-客户端出站和服务端 WS/SSE 下行对每条未确认消息独立指数退避，首次间隔为 `retry_seconds`，封顶为 `max(retry_seconds, offline_after_seconds)`。这使接收与持久化较慢时不会持续堆积相同消息；新消息仍可及时发送，重连后使用原消息 ID 立即恢复投递。退避不改变离线判定、消息有效期或 ACK 的含义。
-
-真实 agent 的 `chiliarch agent` 与 `chiliarch daemon` 命令独立于服务器 TOML，不需要 `chiliarch init` 或 WebUI 密码。默认守护目录由当前用户与操作系统解析，目录内登记独立身份及可选 runner 设置；`agent pair/config/doctor/mcp` 用 `--daemon-directory`，管理命令用 `--directory`，保持同一目录。推荐 MCP 使用 `--agent` 引用本机登记，避免每个会话建立平台连接；`doctor` 检查本地健康与登记，不隐式启停。`--state` 指定私有 SQLite 凭证与消息库，`--transport` 选择起始传输。CLI runner 的 `--settings` 是另一份机器本地 TOML，字段由 `RunnerSettings` 校验；工作目录相对于该文件解析，普通任务参数不能修改启动程序或权限；只有正式调度的 `workdir` 字段可以覆盖本轮目录。runner 设置启动时读取，修改后通过 `daemon register --settings <路径>` 更新登记；本机 daemon/runner 设置不受平台服务器热重载影响。standalone MCP 和独立 `agent run` 不与守护身份同时占用状态库。具体示例见 [接入文档](agents/index.md)。
-
-### artifacts
-
-跨机器产物经已有出站请求分块存入 SQLite，不要求服务端访问 agent 的文件路径或 URL。配置支持热重载：
-
-| 字段 | 默认值 | 用途 |
-| --- | --- | --- |
-| max_artifact_bytes | 67108864（64 MiB） | 新上传的单文件上限 |
-| chunk_bytes | 65536（64 KiB） | 新上传的分块大小；自动适配 `transport.max_message_bytes` 的信封开销和 base64 扩张 |
-| max_total_bytes | 1073741824（1 GiB） | 所有产物清单声明大小的合计配额；未完成上传也预占额度 |
-
-已开始上传的清单、成员、SHA256、分块大小保持不变；降低配额不会删除已有内容，超额后拒绝新的上传。`max_total_bytes` 不是 SQLite 磁盘大小上限：出入站消息、请求历史、索引和备份也占用空间。废弃上传使用 `discard_artifact_upload`，删除已发布内容使用需审批的 `delete_artifact`；这些操作释放产物清单配额，但不回收已交付副本、传输历史或既有备份，也不承诺物理擦除。见 [产物共享](artifacts.md)。
-
-### 本机 daemon 配置
-
-共享守护目录中的 `daemon.json` 是独立私有配置，不属于平台 `chiliarch.toml`。它保存格式版本、agent 登记、本地调用凭证、监听端口、启动超时、HTTP 关闭等待和日志/传输策略；`port=0` 让系统选择可用回环端口，发现信息供本机客户端读取。不要把该文件、运行时发现信息或每个 agent 的 SQLite 状态库写入仓库或共享给其他用户。
-
-顶层 `graceful_shutdown_seconds` 为正整数秒，默认 15，修改后重启守护进程生效。它与平台同名设置均只限制停止时等待连接与 HTTP 请求结束的阶段：超时后取消剩余请求，再继续应用资源清理。这不是整个退出过程的总时限，也不会跳过或缩短 agent 任务和子进程的清理。
-
-新增或更新单个身份使用 `daemon register`，设置独立状态路径、可选 runner TOML、并发和起始传输，登记后即时生效。直接修改 `daemon.json` 需重启该守护进程；它没有平台配置的文件热重载功能。重启会取消本机托管工作并等待进程树清理，未知结果不会自动再次执行。具体管理命令见 [本机守护进程](daemon.md)。
+关闭请求等待达到上限后继续清理资源；它不限制整个退出流程，也不跳过后台任务和 agent 进程树清理。平台只支持单实例使用业务数据库。
 
 ### supervisor / model
 
-`supervisor.mode` 为 ask/auto/yolo，默认 **auto**：查询直接执行，状态变更按风险决定，固有高风险操作仍需用户批准。默认值适用于新初始化或省略此字段的配置；显式保存的模式不会在升级时被覆盖。此设置不修改 Codex／Claude／OpenCode 的原生权限。`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
+总管的格式、思考参数、输出 tokens 和审批说明见[模型指南](models.md)。常用字段：
 
-任务长期不更新由 `supervisor.task_stall_seconds` 控制，默认 **300 秒**；失联仍使用 `transport.offline_after_seconds`（默认 60 秒）。服务端维护循环按 `transport.retry_seconds` 扫描，仅生成持久核查事件，不认定任务失败，也不重新派发。每个任务进度时间、每次 agent 活性时间分别去重；进度恢复或重连后可开启新的监护周期。未配置总管模型或会话暂停时事件仍保留。
+| 字段 | 默认值 / 用途 |
+| --- | --- |
+| `model.api_mode` | `chat_completions`，另有 `responses`、`anthropic` |
+| `model.model` / `base_url` / `api_key` | 模型 ID、API 根地址、密钥 |
+| `model.context_window` | `200000`，90% 时自动压缩 |
+| `model.anthropic_max_tokens` | 未配置；仅 Anthropic 必填 |
+| `model.timeout` / `retries` | `120` / `2`，请求超时秒数与 SDK 重试次数 |
+| `model.headers` / `request_params` | 自定义请求头与当前 API 支持的额外参数 |
+| `model.enable_thinking_param_enabled` | true；关闭后省略 enable_thinking |
+| `supervisor.mode` | `auto`，另有 `ask`、`yolo` |
+| `supervisor.run_timeout` | `600`，一段活跃运行的超时秒数，审批等待不计入 |
+| `supervisor.event_poll_seconds` / `inbox_poll_seconds` | `0.25` / `1`，事件与来信检查间隔 |
+| `supervisor.task_stall_seconds` | `300`，任务长期无更新时通知总管核查 |
+| `supervisor.system_prompt` | 总管角色与协调提示，通常保持默认 |
+| `supervisor.model_recovery_attempts` | `3`，临时模型故障的后续核查次数；0 关闭 |
+| `supervisor.model_recovery_base_seconds` / `model_recovery_max_seconds` | `5` / `60`，恢复退避的首次间隔与上限 |
 
-模型传输故障的恢复策略也可热重载：
+总管故障恢复是新的核查轮次，不重放旧工具；与 SDK 请求重试不同。修改模型配置不会改变本机 agent 的原生设置。
 
-| supervisor 字段 | 默认值 | 用途 |
-| --- | --- | --- |
-| model_recovery_attempts | 3 | 单次连续故障最多新增的核查轮次，范围 0–10；0 禁用 |
-| model_recovery_base_seconds | 5 | 首次恢复等待秒数，此后按指数退避 |
-| model_recovery_max_seconds | 60 | 单次等待上限，必须不小于 base |
+### transport
 
-这与 `model.retries` 不同：后者是 SDK 请求层重试；总管恢复在原轮次已失败后另开核查轮次，携带已有历史、当前任务快照与操作结果，不直接重放工具。仅连接/传输异常、HTTP 408/429/5xx 可自动恢复；认证错误、无效参数、模型返回不完整、逻辑错误和用户停止仍要求用户处理。失败次数与下次核查时间持久保存，重启不会重置预算。到达上限后自动协调暂停，用户新消息或明确“继续协调”可恢复。用户停止可撤销等待中的恢复；新消息会取代旧恢复计划。
+正常连接保持默认即可。平台和接入客户端的设置分别管理，服务端不会自动把所有这些值下发给任意插件。
 
-`model.context_window` 为正整数，默认 **200000 tokens**；填写服务商模型实际支持的上下文窗口。达到 **90%** 时，总管自动将历史压缩成接续摘要，保留最近的完整调用与结果，并继续当前工作。页面展示上下文占用，估算值标注“约”；压缩不会删除完整聊天记录。优先使用服务商当前轮次的输入和输出用量，缓存输入同样计入窗口；没有 usage 时采用本地估算。修改窗口热重载，后续新运行使用新值，已运行或等待审批的执行仍使用自己的模型配置快照。
+| 字段 | 默认值 / 用途 |
+| --- | --- |
+| `heartbeat_seconds` | `15`，参考客户端心跳间隔 |
+| `offline_after_seconds` | `60`，活性超过此时间显示离线，需大于心跳间隔 |
+| `poll_timeout_seconds` | `25`，长轮询等待秒数，最长 60 |
+| `retry_seconds` | `5`，队列检查与首次重投等待 |
+| `queue_limit` | `10000`，未确认消息数上限 |
+| `message_ttl_seconds` | `86400`，下行消息有效秒数 |
+| `max_message_bytes` | `1048576`，单条信封最大字节数 |
+| `reconnect_base_seconds` / `reconnect_max_seconds` | `1` / `30`，断线重连退避范围 |
+| `upgrade_interval_seconds` | `300`，降级后重新尝试 WS 的间隔，**不是软件更新间隔** |
 
-平台不设置最大工具轮次、上下文消息条数或全局并行运行上限；同一会话仍只能有一个活跃运行，运行超时与审批规则继续生效。并行能力受机器资源及模型服务的限流约束。
+消息未确认时按条退避重投，重连保留原消息 ID。ACK 表示持久接收，不代表任务执行成功。协议细节见[开发参考](protocol.md)。
 
-Chat Completions / Responses 默认不设置最大输出 tokens，使用服务端默认输出长度。需要自定义时，可在 `model.request_params` 中显式填写：Chat Completions 通常使用 `max_completion_tokens`（部分兼容网关使用 `max_tokens`），Responses 使用 `max_output_tokens`。这些手动设置会随请求发送，平台不会另加默认上限；参数名称和数值以服务商支持范围为准。
+### artifacts
 
-Anthropic Messages 的 `max_tokens` 是必填参数，对应 **`model.anthropic_max_tokens`**：默认未配置，用户应填写实际模型支持的正整数，不存在平台硬编码上限。初始化向导和 WebUI 只在选择 `anthropic` 时显示这一项；缺失时模型请求会明确报错。已有 `model.request_params.max_tokens` 正整数仍可使用，专用字段优先。专用字段不影响 OpenAI 两种格式；切换 API 时仍应检查 `request_params` 中手动填写的参数。它控制单次输出，与 `model.context_window` 的上下文容量和压缩触发条件分开。
+| 字段 | 默认值 / 用途 |
+| --- | --- |
+| `max_artifact_bytes` | `67108864`（64 MiB），单文件上限 |
+| `chunk_bytes` | `65536`（64 KiB），分块大小，还受信封大小限制 |
+| `max_total_bytes` | `1073741824`（1 GiB），所有产物清单的合计额度 |
 
-模型字段的 API 映射、压缩过程与失败处理见 [模型文档](models.md#上下文窗口与自动压缩)。
+未完成上传也预占额度。降低配额不会删除已有文件；超额后拒绝新上传。该额度不是数据库文件的总大小限制，消息历史、索引和备份还会占空间。废弃上传或删除产物的操作见[共享文件](artifacts.md)。
+
+### 本机 daemon 配置
+
+Agent 机器的 `daemon.json` 独立于平台 TOML，保存在[守护目录](daemon.md#目录与本地通信)。它管理本机登记、监听、日志与传输；本地端口默认自动选择，接口只绑定回环地址。
+
+新增或更新身份使用 `daemon register`，可以即时生效。直接编辑 daemon.json 后需要重启；本机设置不受平台热重载控制。重启会停止所有托管任务，先确认它们空闲。
+
+顶层 `graceful_shutdown_seconds` 默认 15 秒，控制本地 HTTP 请求关闭等待，不跳过任务清理。配置与运行时发现文件包含本地认证信息，不要共享或放进版本库。
 
 ## 本机 runner 与原生配置
 
-托管 agent 的本地 runner TOML 独立于平台 `chiliarch.toml`。平台 `[model]` 配置只供 Chiliarch AI 总管使用，不会下发给 Codex／Claude／OpenCode，也不会覆盖它们的模型、服务商或认证。runner 字段如下：
+每个托管身份有自己的 runner TOML。自动生成文件是完整状态库名加 `.runner.toml`，例如 `codex-main.db.runner.toml`。
 
-| 字段 | 默认值 | 用途 |
-| --- | --- | --- |
-| kind | 必填 | `codex`、`claude-code`、`opencode`（v2）或 `opencode-v1`（legacy） |
-| workdir | 必填 | 已存在的默认项目目录；相对路径按 runner TOML 所在目录解析；任务可显式指定其他已有绝对目录 |
-| executable | 未指定 | 可选的本机程序路径；否则查找对应原生工具 |
-| timeout_seconds | 1800 | 一次托管任务最长运行秒数 |
-| terminate_grace_seconds | 2 | 终止原生进程树时的宽限秒数 |
-| max_input_bytes | 1048576 | 输入大小上限，字节 |
-| max_output_bytes | 524288 | 输出总量上限，字节 |
-| max_line_bytes | 262144 | 单行输出上限，字节，不得大于输出总量上限 |
+| 字段 | 默认值 / 用途 |
+| --- | --- |
+| `kind` | 必填：`codex`、`claude-code`、`opencode` 或 `opencode-v1` |
+| `workdir` | 必填，已有默认目录；相对路径以 TOML 所在目录为基准 |
+| `executable` | 可选的原生程序路径；未填时查找对应工具 |
+| `timeout_seconds` | `1800`，单次任务运行时限 |
+| `terminate_grace_seconds` | `2`，结束原生进程树的宽限秒数 |
+| `max_input_bytes` | `1048576`，输入字节上限 |
+| `max_output_bytes` | `524288`，输出字节上限 |
+| `max_line_bytes` | `262144`，单行输出字节上限，不大于总输出上限 |
 
-这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。默认 `workdir` 在任务未指定目录时使用；本轮目录决定启动位置及项目配置发现位置，不构成额外操作系统沙盒。
+这些字节设置是本机通信与资源限制，不是模型 token 上限。并发和起始传输通过 `daemon register` 参数管理。修改后等待任务结束，用原状态库、标识与设置路径重新登记，见[目录配置](agents/index.md#默认目录与任务目录)。
 
-`agent pair` 默认 `--mode managed`，`--workdir <已有目录>` 自动生成 runner TOML 并登记；也可用 `--settings <TOML>`，都省略时交互询问目录。仅当前会话手动领取时选择 `--mode manual`。修改默认目录后重新 `daemon register --settings` 生效，不受平台热重载影响。调度 `dispatch_task` 与 `retry_task` 的可选 `workdir` 是 agent 机器上的绝对路径，保存到任务并经过统一审批；客户端校验目录存在，不自动创建或回退。具体续接、重试和重新登记步骤见 [目录配置](agents/index.md#默认目录与任务目录)。
+runner 不提供模型或权限覆盖。原生模型、provider、认证、沙箱、审批、项目指令、skills、hooks、插件和原有 MCP 按宿主规则加载；仅追加当前任务专用的 Chiliarch mailbox。实际配置发现取决于用户、工作目录和[服务环境](daemon.md#原生配置目录与环境)。
 
-Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL；OpenCode 两代 runner 使用 `opencode acp`，通过 `session/new` 或 `session/load` 传入本轮目录和 mailbox。各工具保留原生配置加载，只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
-
-平台 ask/auto/yolo 只管理平台业务审批，不调整原生权限。当前没有跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，不自动批准、不偷偷变更审批模式。配置目录与原生认证的可见性取决于守护进程环境；安装时保存的非秘密目录变量、已有服务的刷新步骤见 [守护进程环境](daemon.md#原生配置目录与环境)。用量统计不是收费凭证，订阅与 API 来源由原生工具选择。
-
-完整 TOML 和运行流程见 [Codex](agents/codex.md#托管-cli-执行)、[Claude Code](agents/claude-code.md#托管-runner-配置) 与 [OpenCode](agents/opencode.md#托管-runner-配置)。修改本地 TOML 后重新执行 `daemon register --settings <路径>` 更新对应身份；先确认正在执行的工作已结束，避免更新时中断托管任务。
+平台调度的 `workdir` 可选择 agent 机器上的其他已有绝对目录。目录只是启动位置，不是额外沙箱；续接仍需原目录和最近成功任务，见[接入指南](agents/index.md)。
 
 ## 日志存储与轮换
 
-启动更新器在服务日志初始化前工作，单独写入默认状态根目录的 `updates/<安装标识>/update.log`，1 MiB 轮换并保留 2 个备份，不受下方 `logs` 配置控制。来源、时限和位置见 [升级日志](upgrading.md#运行环境与更新日志)。
+| 日志 | 默认位置 |
+| --- | --- |
+| 平台 | 配置目录下 `logs/chiliarch.jsonl` |
+| 守护进程与 daemon MCP | 守护目录下 `logs/chiliarch.jsonl` |
+| 独立 MCP / runner | 状态库旁的 `logs`，可用 `--log-directory` 指定 |
+| 启动更新器 | 用户状态根的 `updates/<安装标识>/update.log` |
 
-`logs.directory` 下的 `chiliarch.jsonl` 为 UTF-8 JSON Lines，每行包含 UTC timestamp、level、logger、message 以及事件相关 ID、状态或耗时。记录平台启停、HTTP 路径/状态/耗时、操作执行/审批、agent 连接/消息/任务状态、配置更新和总管运行事件。
+应用日志是 UTF-8 JSON Lines，时间为 UTC，记录启停、请求、配置、审批、连接与任务等事件。配置页和总管 `get_logs` 可读取当前日志末尾，最多 1000 行。
 
-`logs.max_bytes` 为单文件最大字节数，`backup_count` 为保留的轮换文件数；总大小约受 `(backup_count+1)×max_bytes` 约束。达到大小后生成 `.1/.2/...` 并淘汰最旧文件。`logs.level` 可热更新。标准错误同时输出结构化日志，便于进程管理器采集。
+`logs.level` 默认 INFO。`logs.max_bytes` 默认 10485760（10 MiB），`logs.backup_count` 默认 10；达到大小后轮换为 `.1`、`.2` 等，删除最旧份。stderr 同步输出日志，MCP stdout 专用于协议。
 
-认证 header、cookie、密码和凭证不记录；敏感键递归脱敏。HTTP 日志不记录原始请求 body。异常记录类别及栈帧的文件、行号、函数名，不保存异常正文或局部变量，防止 SDK 错误回显认证内容。流式每个 token 的正文保存在聊天业务数据中，不逐 token 写应用日志。
+更新器日志单独按 1 MiB 轮换，保留 2 份备份，不受平台日志设置控制。
 
-SQLite 审计事件、会话消息、任务和操作记录是业务历史，不随应用日志文件轮换删除；数据库应单独备份并监控磁盘。当前版本不提供自动清理所有业务历史的保留策略。WebUI“读取日志”和 `get_logs` 工具读取当前日志末尾，最多 1000 行。
+密码、Key、cookie 和认证头不会写入日志；异常记录类别与栈位置，避免保存可能含认证信息的原始错误正文。聊天、任务和审计是数据库里的业务记录，**不会随日志轮换删除**。数据库目前没有自动清理全部历史的保留策略，应定期备份并关注磁盘空间。
 
-日志包含操作信息，聊天数据库包含用户发送给模型的内容；保护目录权限与备份。秘密参数掩码依据敏感字段名，扩展开发者必须对自定义秘密字段自行脱敏。
+## 启动更新开关
 
-共享守护进程与 daemon MCP 默认在守护目录下的 `logs` 写同样的结构化轮换日志；独立 MCP/runner 默认在状态库旁的 `logs`，也可用 `--log-directory` 指定。共享日志使用跨进程锁保护写入与轮换，并重开被其他进程轮换的旧文件；stdio MCP 的 stdout 只用于协议，日志写 stderr；原生 CLI 的 stderr 并发读取、计入输出限额后丢弃，不把认证诊断上传平台。执行结果只包含所需答案、会话身份、数值用量等字段；真实工作生成的敏感内容仍需由工作策略和扩展自行处理。POSIX 上状态库权限为 0600；Windows 使用当前用户私有目录及继承的 ACL，`chmod` 不替代 Windows 权限配置；托管任务的临时原生 MCP 配置在结束时清理，不改全局 agent 配置。
+`CHILIARCH_AUTO_UPDATE=0` 关闭新版本检查和安装，属于启动环境设置，不在 WebUI 热重载配置中。已有自启动服务需要刷新保存的环境，见[升级指南](upgrading.md#关闭自动更新)。

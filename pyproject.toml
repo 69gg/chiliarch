@@ -43,7 +43,7 @@ chiliarch = "chiliarch.bootstrap:main"
 
 [project.urls]
 Repository = "https://github.com/69gg/chiliarch"
-Documentation = "https://github.com/69gg/chiliarch/tree/main/docs"
+Documentation = "https://github.com/69gg/chiliarch/blob/main/docs/index.md"
 
 [dependency-groups]
 dev = [

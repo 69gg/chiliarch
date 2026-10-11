@@ -1,6 +1,8 @@
-# 使用 chiliarch init 生成包含密码哈希的真实配置；此文件只展示字段。
+# 完整字段参考：用 chiliarch init 生成真实配置，不要直接使用下方的空密码哈希。
 # uv 工具安装默认保存到用户状态目录的 chiliarch/server/chiliarch.toml；
 # 源码运行默认保存到当前目录，显式 --config 始终优先。
+# 常用设置可以在 WebUI“配置”修改；操作步骤见 docs/configuration.md。
+# 数据库和日志的相对路径以真实配置文件所在目录为基准。
 [server]
 host = "127.0.0.1"
 port = 8000

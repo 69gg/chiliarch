@@ -1,126 +1,104 @@
-# 开发、测试与发版
+# 源码开发与发版
 
-## 本地验证
+这是维护者参考。用户安装、更新与日常操作从[用户手册](index.md)开始；正式包已包含 WebUI，用户无需构建源码。
 
-Python 默认 3.13，CI 使用 Linux、macOS、Windows 与 Python 3.11、3.12、3.13 的完整矩阵；所有组合和前端验证通过后才构建并检查 wheel、sdist。3.14 可另行验证，不因 requires-python 无上限就声明所有未来版本支持。
+## 源码运行
 
-```bash
+准备 uv、Node.js 24 LTS 与 web/package.json 指定的 pnpm，进入检出的仓库目录：
+
+```sh
 uv sync --locked --group dev
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
+uv run chiliarch --config ./chiliarch.toml init
+uv run chiliarch --config ./chiliarch.toml serve
+```
+
+源码配置默认是当前目录的 chiliarch.toml，显式路径便于区分用户目录中的平台配置。没有构建前端时，WebUI 会明确返回 503。
+
+## 验证
+
+```sh
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 uv run pytest
-pnpm --dir web install --frozen-lockfile
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web build
 ```
 
-测试验证数据库事务、实际 SDK 请求、工具副作用、审批、真实 TCP 长连接与故障恢复，前端测试驱动真实 DOM 交互。不通过搜索源码是否包含某个字符串判断功能。
+行为测试验证实际状态、网络和副作用，不搜索源码字符串代替功能。原生 agent 测试使用隔离测试子进程，不依赖开发者真实认证、任务、配置或付费推理。
 
-`uv run pytest` 默认通过 pytest-xdist 的 `-n auto --maxprocesses=8` 按 CPU 数量启动**最多 8 个 worker**，按 `worksteal` 调度独立测试，让空闲进程接手较慢进程尚未开始的工作。macOS 等少核心的 CI runner 默认不强制启动 8 个进程，避免冷启动和数据库争用；高核心设备也不会无限创建 worker。可用 `uv run pytest -n 8` 明确指定并发，资源较少的设备用 `-n 2`，串行调试用 `-n 0`。测试使用独立临时状态库、目录与动态端口；新增用例同样不能读写开发者真实配置或依赖执行顺序。worker 意外退出会直接失败，不自动重启或重跑来掩盖错误。
+Python 测试默认按可用 CPU 并行，最多 8 个 worker，使用 worksteal 调度。资源较少时用 `-n 2`，串行定位用 `-n 0`，高核心机器可显式 `-n 8`。保留每项测试的超时和失败，不重跑来掩盖错误。
 
-Windows 同样按 CPU 数量选择并发：在 4 核 runner 强制 8 个 worker 虽能缩短部分运行，但会显著增加 SQLite 与 HTTP 请求争用，可能触发正常的传输超时。需要比较更高并发时显式使用 `-n 8`，同时核对完整结果和最慢用例，不能只比较总时长或放宽业务超时。
+CI 保留 Linux、macOS、Windows × Python 3.11、3.12、3.13 的 9 个组合。前端构建一次供同次 CI 打包使用；所有检查通过后，分别验证 wheel 和 sdist 的实际隔离安装。Python 3.14 不是已声明的验收版本。
 
-调试单项或对比同一代码的串行耗时时，可以显式覆盖并行设置：
+网络测试应依据持久业务状态等待结果。短工具等待返回 pending 是合法状态，保留 request_id 查询最终结果，不重发请求，也不把它变成模拟任务失败。延迟 ACK、去重、降级和最终队列清空仍需真实验证。
 
-```bash
-uv run pytest -n 0 --durations=20
-uv run pytest --durations=20
+## 同步版本与 CHANGELOG
+
+下一补丁版本示例：
+
+```sh
+uv run python scripts/bump_version.py 0.4.5 --dry-run
+uv run python scripts/bump_version.py 0.4.5
 ```
 
-比较两轮耗时时保持源码、依赖和机器负载一致，并核对测试总数与结果。CI 保留全部 9 个系统/Python 组合的行为测试，Ruff 在 Linux/Python 3.13 执行一次，mypy 在每种系统的 Python 3.13 各执行一次，继续检查平台分支；mypy 的目标语法版本仍为项目配置的 Python 3.11。标签发布的静态检查在 Python 3.13 执行，三个 Python 版本均执行完整行为测试。
+脚本同步 pyproject.toml、uv.lock 与 web/package.json，不自动提交、推送或打 tag。包版本来自安装元数据，无需再维护一份源码常量。
 
-CI 的 `web` job 构建一次 WebUI 并上传 `web-dist`；所有矩阵和前端检查通过后，`distributions` 下载同一次运行的产物用于打包，省去重复安装 Node/pnpm 与构建。wheel 和 sdist 的实际隔离安装验证继续分别执行；正式 tag 发布仍由发布流水线构建自己的 WebUI 与分发包。
+CHANGELOG 使用 `## v<版本> 标题`，按最终用户的行为与影响撰写，段落末尾用 `---`。不自动拼接提交记录。预发布可使用三段公开 PEP 440 版本，如 0.4.5rc1，标签会生成 prerelease。
 
-跨平台测试将业务网络调用与事件循环内部通信分开检查；Windows 虚拟环境启动器的 PID 可能不同于实际 Python 进程，执行身份应在解释器内验证。测试子进程的运行记录完整写入后才发布，轮询等待本次运行的记录，避免读取半写入数据。
+## 构建分发包
 
-多轮工具测试按每轮执行进展等待，最终核对完成状态与持久化的幂等记录，不将整段任务的总耗时当成存储性能要求。测试服务器退出超时时保留未完成协程的位置，并清理服务与 lifespan 任务，避免将资源泄漏带入后续测试。
-
-并发会话测试先用上游屏障确认全部模型请求同时在运行，再同时释放响应，按任一执行任务完成来观察进度；每次完成后核对对应的持久状态。不能按创建顺序只等待某一会话、同时高频查询数据库，把其他会话仍在推进的 SQLite 竞争误判为停滞。每次无完成进展仍保留 5 秒期限，十个会话均需完成，失败和取消不能被当作成功。
-
-测试服务器将关闭分成网络排空和应用资源清理两段：网络仍限 5 秒，收到 ASGI `lifespan.shutdown` 后才开始单独的 20 秒清理期限。SQLite 本身允许等待锁 10 秒，Windows 上连接池关闭/WAL 清理可能超过原先的统一 5 秒；不能在请求已经排空后把数据库清理误报为网络卡死。两段超时都保留协程诊断，兜底清理仍有独立的 5 秒总期限；行为测试覆盖慢清理正常完成和真正停滞按阶段失败。
-
-CI 和发版测试逐项输出测试名称，并列出最慢的 20 项。单项测试（含准备、清理）超过 120 秒时，使用锁文件中 pytest 的 faulthandler 看门狗输出线程栈并以失败状态结束，避免死锁占用整个 runner；这不替代协议、业务和夹具各自的更短超时。测试服务器的兜底清理也有独立时限，卡住时立即输出协程等待链，不通过无限屏蔽取消来推迟诊断。
-
-SSE 离线检测测试持续消费服务端事件，但不发送 agent 心跳，并在离线后核实仍能收到服务端心跳。只读首条后长期停止读取，会在关闭含未读响应的连接时触发 TCP reset；已在 Windows Python 3.12/3.13 观察到 Proactor 关闭回调因 `WinError 10054` 漏掉连接回收，让 `wait_closed()` 无法完成。该测试要验证的是出站心跳与连接活性各自的含义，不能把停止消费 SSE 混入这一场景。
-
-网络测试等待任务状态时直接读取持久记录，不反复发起会写入审计记录的管理操作，避免观察本身增加 SQLite 写入争用。降级测试校验 WS → SSE → 长轮询的完整顺序，并允许同一传输重连；仍需确认最终任务结果、处理次数、在线状态和消息 ACK，不能把正常重连误判为失败。
-
-公共 service fixture 在每个 worker 中复用固定测试密码的真实哈希，状态库和配置仍逐测试隔离；专门的密码生成、验证、修改和初始化测试继续使用原始加密流程。SQLite 初始化将表、索引和版本记录一次提交，测试验证真实事务、故障回滚和并发初始化；保留文件数据库、WAL 与生产持久性，减少独立库重复建表的落盘开销。Windows 子进程存活检查同时核对创建时间，避免其他 worker 复用已释放的 PID 后被误认成残留进程。MCP 测试使用真实 CLI 与传输，靠邮箱提交唤醒消除发送空等，不替换 CLI 或降低生产密码哈希成本。
-
-网络 fixture 保留心跳、重传及离线检测，但不以几十毫秒的持续数据库轮询制造背景争用；慢 ACK 场景独立延迟业务确认帧，接收端继续处理后续消息，延迟仍超过重试周期。测试检查同 ID 实际重投、重传次数有界、原有任务完成期限和最终出站队列清空。已由事件确认“故意阻塞”的清理测试使用较短的测试专用期限，正常服务清理期限和诊断断言保持不变。
-
-自动更新测试使用隔离安装环境、可控元数据和安装子进程，验证版本与 Python 约束、来源识别、并发选择、失败时保留旧运行环境、原子发布及日志脱敏；CLI 测试覆盖实际参数解析和进程转交。测试不得更新开发者真实 uv 工具环境或向原生 agent 发起推理。
-
-生产静态资源为生成文件，不提交到 Git；`static/.gitkeep` 保留构建目录。前端 build 输出到 Python package，Hatch wheel/sdist 强制包含该目录；协议 Schema 为受版本管理的公开契约，修改模型后重新导出并验证。
-
-## 升级版本
-
-```bash
-uv run python scripts/bump_version.py 0.4.0 --dry-run
-uv run python scripts/bump_version.py 0.4.0
-```
-
-脚本使用 uv version 同步 pyproject 与 uv.lock，再同步 web/package.json；JSON 报告中的仓库相对路径在各系统统一使用 `/`。包 `__version__` 来自安装元数据，不再维护第二个源码版本字符串。同版本重跑可以修复前端版本不一致；失败时恢复受管理文件。脚本不自动提交、打 tag 或推送。
-
-支持公开三段 PEP 440 版本，例如 0.4.0、0.4.0rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
-
-预发布标签会生成 GitHub prerelease，并且不更新 latest。wheel 与 sdist 明确使用 Core Metadata 2.4，兼容当前 Twine 校验器，同时保留 MIT SPDX 许可证信息。
-
-## 构建并验证实际包
-
-```bash
+```sh
 pnpm --dir web build
 uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 uv run twine check dist/*
 uv run --isolated --no-project --with dist/*.whl scripts/smoke_test.py
 uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_test.py
-uv run python scripts/release_notes.py validate --tag v0.4.0
-uv run python scripts/release_notes.py extract --tag v0.4.0
+uv run python scripts/release_notes.py validate --tag v0.4.5
+uv run python scripts/release_notes.py extract --tag v0.4.5
 ```
 
-隔离 smoke test 从实际分发包导入模块，验证 UI、协议 Schema、密码登录和 API。sdist 同样含已构建 UI，安装它时无需 Node；重新开发 UI 仍需 pnpm。
+版本示例要换成当前准备发布的版本。清理旧 dist 或显式选择本轮文件，避免通配符同时选中不同版本。
 
-## 首次配置 PyPI Trusted Publishing
+构建产物应包含 WebUI 与独立协议 Schema。前端资源是生成文件，不提交到 Git；协议 Schema 是受版本管理的契约，变更后需重新导出并验证。Wheel 与 sdist 使用 Core Metadata 2.4 和 MIT SPDX 信息。
 
-仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。现有 `.github/workflows/release.yml` 已声明发布所需的 `id-token: write`，使用 GitHub environment `pypi`；不需要改成 API Token 发布。
+## PyPI Trusted Publishing
 
-1. 在 GitHub 仓库的 **Settings → Environments** 创建名为 `pypi` 的环境。如果限制部署来源，添加 **Tag** 类型的 `v*` 规则，让发布标签能够使用该环境。需要每次发版人工批准时再配置 required reviewers。
-2. 在 **Settings → Actions → General** 确认 GitHub Actions 已启用，并允许 workflow 使用的 `actions/*` 和 `astral-sh/*`。各 job 已声明所需权限，无需将整个仓库的默认 workflow 权限改成读写。
-3. 登录 [PyPI 帐号 Publishing](https://pypi.org/manage/account/publishing/)，在 GitHub 的 **Add a new pending publisher** 表单填写下列值并添加。
+仓库 [69gg/chiliarch](https://github.com/69gg/chiliarch) 的 release.yml 使用 GitHub 环境 pypi 和 OIDC，不需要 PyPI API Token。
 
-| PyPI 字段                | 填写值                                                   |
-| ------------------------ | -------------------------------------------------------- |
-| PyPI project name        | `chiliarch`                                              |
-| Owner                    | `69gg`                                                   |
-| Repository name          | `chiliarch`                                              |
-| Workflow name / filename | `release.yml`，只填写文件名，不填写 `.github/workflows/` |
-| Environment name         | `pypi`，与 workflow 完全一致                             |
+Publisher 对应字段：
 
-不需要创建或配置 `PYPI_API_TOKEN`，也不需要先手动上传一个版本。首次发布会创建 PyPI 项目，并将 pending publisher 转为正式 publisher。已有 `chiliarch` 项目时，在该项目的 **Manage → Publishing** 添加同样的 GitHub publisher。设置 pending publisher 不预留项目名称。[PyPI 创建项目文档](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
+| 字段 | 值 |
+| --- | --- |
+| Project | chiliarch |
+| Owner | 69gg |
+| Repository | chiliarch |
+| Workflow filename | release.yml |
+| Environment | pypi |
 
-## tag 发布流程
+已有项目在 PyPI Manage → Publishing 配置 publisher；首次创建使用账户的 Pending Publisher。GitHub pypi 环境如限制部署来源，允许 Tag 类型的 v*；是否要求审核按维护者选择。
 
-`.github/workflows/ci.yml` 运行 Python 矩阵、前端行为测试和实际产物隔离安装；`release.yml` 在推送 `v*` tag 时：
+[PyPI OIDC 说明](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
 
-1. 在 Python 3.11–3.13 上检查格式、类型、行为和 tag/版本/CHANGELOG 一致性。
-2. 构建前端，生成 wheel/sdist，执行 twine 和隔离 smoke test。
-3. build job 上传产物，publish job 下载同一产物，通过 OIDC、attestation 和 `uv publish --trusted-publishing always` 发布 PyPI。
-4. PyPI 成功后创建 GitHub Release，正文直接读取对应 CHANGELOG 条目，附件为同一 wheel/sdist。
+## 发布步骤
 
-build 不拥有 PyPI OIDC 凭证；只有 publish job 有 id-token:write，GitHub Release job 单独拥有 contents:write。Actions 固定到核实过的 commit SHA，升级时核查官方来源。
+1. 完成代码、用户文档、行为测试、版本和 CHANGELOG。
+2. 使用 GPG 签名提交并推送 main，确认**该提交**的全部 CI 成功。
+3. 对同一提交创建并推送签名 v* tag。
+4. 在 Actions → Release 确认校验、构建、PyPI 发布和 GitHub Release 全部成功。
 
-确认版本、CHANGELOG、测试和签名提交后，项目维护者才执行 tag 和 push。代码完成或本地构建成功不等于已经上传 PyPI；未设置 publisher 或未推送 tag 时不会发布。
+以待发布 v0.4.5 为例，在获得发布授权后：
 
-以 v0.4.0 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
-
-```bash
-git remote add origin https://github.com/69gg/chiliarch.git
-git push -u origin main
-git tag -s v0.4.0 -m "v0.4.0"
-git push origin v0.4.0
+```sh
+git push origin main
+git tag -s v0.4.5 -m "Release v0.4.5"
+git push origin v0.4.5
 ```
 
-在 GitHub **Actions → Release** 查看运行结果；若设置了环境审核，批准 `pypi` 部署后继续发布。成功后用户及 agent 均默认使用 `uv tool install chiliarch` 从 PyPI 安装。
+Release 工作流检查 Python 3.11–3.13、tag / 版本 / CHANGELOG 一致性，构建并校验包，通过 uv Trusted Publishing 上传同一组产物，再创建 GitHub Release。发布说明读取对应 CHANGELOG 条目。
+
+代码已推送、tag 已创建或本地构建成功，不等于 PyPI 已发布。失败时读取具体 job 日志，修复原因再继续，不能重复上传已经存在的同版本包。

@@ -1,6 +1,8 @@
 # 扩展操作与出站客户端
 
-v0.4.0 提供 Codex App/CLI、Claude Code、OpenCode v2 与 v1 legacy 的 MCP 会话接入及原生执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
+本文供开发适配器和平台工具时参考。用户接入已有 Codex、Claude Code 或 OpenCode，见[接入指南](agents/index.md)。
+
+Chiliarch 提供 Codex App/CLI、Claude Code、OpenCode v2 与 v1 legacy 的 MCP 会话接入及原生执行器，见 [Agent 接入](agents/index.md)。另外保留两个独立扩展边界：平台 OperationService 注册工具，agent 按公开协议主动连接。不同语言的插件不需要依赖 Python 服务端实现。
 
 ## 注册平台工具
 
@@ -89,3 +91,19 @@ Python 接入可复用 `chiliarch.adapters.mailbox.AgentMailbox`：`AgentClient(
 协调资料位于 `parameters.chiliarch_context`，是任务数据，不是本机执行配置。插件可用 `agent.request.metadata.task_id` / `agent.contact.metadata.task_id` 关联自己负责的任务；平台核验所属身份后归并到目标会话。目标与验收工具详见 [目标、依赖与验收](coordination.md)。
 
 后续能力发现、插件配置、Undefined 等厂商适配可以在这些边界扩展，不需要改变 WebUI 与总管的业务授权入口。已有 OpenCode 适配通过原生 ACP 托管和 MCP 会话桥接入，不需要另外编写 TypeScript 插件。
+
+## 独立前台接入
+
+需要自行管理进程、不使用共享 daemon 时，可用基础 pair 保存一份新的私有状态，再让一个前台连接进程持有它：
+
+```sh
+chiliarch pair --server "http://平台主机:8000" --name "独立客户端" --state "/你的私有目录/agent.db"
+chiliarch agent config --host codex --state "/你的私有目录/agent.db" --mode standalone
+chiliarch agent mcp --state "/你的私有目录/agent.db" --mode standalone
+```
+
+Standalone MCP 由当前会话手动领取任务。要用独立 runner，则运行 `chiliarch agent run --state "/你的私有目录/agent.db" --settings "/你的私有目录/runner.toml"`，并将会话 MCP 配置生成时的模式改为 mailbox，由它复用本地队列。
+
+同一状态库只运行一个网络连接所有者，不与 daemon、standalone 或另一 runner 同时使用。此方式不登记登录自启动，日志与恢复需由自己的进程管理方式负责。正常一机多 agent 使用共享 daemon 更方便。
+
+只想验证协议时可用 `chiliarch demo-agent --state "/你的私有目录/agent.db"`，它仅模拟进度与结果，不执行真实原生工具。

@@ -1,168 +1,164 @@
-# 部署、初始化与维护
+# 安装与部署
 
-## 从 PyPI 安装并运行
+先选定平台运行的机器。它保存任务、聊天和配置，提供 WebUI；agent 机器只安装接入工具和本机守护进程。两者可以是同一台机器。
 
-默认使用持久的 uv 工具环境，从 PyPI 安装 Chiliarch。发布包已经包含 WebUI，无需 Node、pnpm 或前端开发服务器：
+支持 Windows、macOS、Linux 与 Python 3.11–3.13。发布包自带 WebUI，正常安装无需 Node、pnpm 或源码构建。
 
-```bash
-uv tool install chiliarch
+## 1. 安装 uv
+
+已安装 uv 可以跳过。官方安装方式如下，更多方法见 [uv 安装指南](https://docs.astral.sh/uv/getting-started/installation/)。
+
+Linux / macOS：
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+安装后重新打开终端，确认 `uv --version` 可用。
+
+## 2. 安装 Chiliarch
+
+三种系统都运行：
+
+```sh
+uv tool install --python 3.13 chiliarch
+chiliarch --version
+```
+
+uv 会准备需要的 Python 和独立工具环境。若终端找不到 `chiliarch`，运行 `uv tool update-shell`，再重新打开终端；桌面 App 也可能需要重启才能看到新的 PATH。
+
+默认从 PyPI 安装。需要固定版本时可使用 `uv tool install --python 3.13 "chiliarch==0.4.4"`；固定版本会保留约束，不自动跨越它。
+
+## 3. 初始化平台
+
+```sh
 chiliarch init
+```
+
+向导依次询问：
+
+| 设置 | 怎样填写 |
+| --- | --- |
+| 登录密码 | 至少 8 字符，输入两次；没有用户名或默认密码 |
+| 监听地址 | 默认 `127.0.0.1`，仅本机可访问；其他机器接入通常填 `0.0.0.0` |
+| 端口 | 默认 `8000` |
+| 浏览器公开地址 | 直接访问可留空；使用反向代理时填写浏览器实际访问的 origin，如 `https://chiliarch.example.com`，不含路径 |
+| 审批模式 | 默认 `auto`；详细区别见[总管模式](models.md#审批模式) |
+| 日志级别 | 默认 `INFO`，通常保持即可 |
+| 总管模型 | 可现在配置，也可在登录后的“配置”页面填写 |
+
+配置模型需要 API 格式、模型 ID、API 根地址和 API Key，上下文窗口默认 200000 tokens。OpenAI 两种格式默认不传输出上限；Anthropic Messages 还需填写模型支持的最大输出 tokens。总管设置不会修改本机 Codex、Claude Code 或 OpenCode 的设置。
+
+只想使用默认设置时运行 `chiliarch init --defaults`，仍需要设置密码。初始化结束会显示**配置文件的绝对路径**和启动命令。已有配置不会被覆盖；日常修改用 WebUI 或编辑 TOML，通常无需再次 init。
+
+## 4. 启动并登录
+
+```sh
 chiliarch serve
 ```
 
-需要固定版本时，使用 `uv tool install chiliarch==<版本>`。启动检查保留该约束，固定版本不会被自动跨越。
+默认访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)，输入初始化密码登录。暂未配置模型时，你可以先打开“Agents 管理”接入机器、手动下发任务。
 
-v0.3.0 起，标准 uv 工具安装在 `serve` 和 agent 服务启动时默认检查并安装兼容的正式新版，通过校验后使用新的独立运行环境。检查或安装失败时继续启动已有版本，不中断运行中的实例。旧版先手动升级一次，详见 [自动升级与开关](upgrading.md)。
+平台运行期间保留终端，停止时使用 Ctrl+C。需要长期后台运行，可将打印的启动命令交给你使用的进程管理器。平台应只运行一个实例；不要为同一个数据库开启多个 workers。
 
-`init` 会依次询问常用设置，直接按 Enter 可接受显示的默认值：
+仅覆盖本次监听参数可以运行：
 
-| 设置 | 默认值或行为 |
-| --- | --- |
-| WebUI 密码与确认 | 必填，至少 8 字符，隐藏输入；只保存 scrypt 哈希，没有默认密码 |
-| 监听 host / port | `127.0.0.1` / `8000` |
-| 浏览器公开访问地址 | 留空；使用反向代理时填写实际公开 origin，如 `https://chiliarch.example.com`，不含路径 |
-| 总管审批模式 | `auto`；可选择 `ask` 或 `yolo` |
-| 日志级别 | `INFO` |
-| 现在配置总管模型 | 可跳过，之后在 WebUI 配置 |
-
-选择配置模型时，还会询问 API 类型（`chat_completions`、`responses` 或 `anthropic`）、模型名称、API 地址、API Key 和上下文窗口（默认 `200000` tokens）。API Key 隐藏输入，可留空或之后通过环境变量提供；不要把 WebUI 登录密码作为模型 API Key。选择 Anthropic Messages 时，还需填写模型支持的最大输出 tokens；其他两种 API 的向导不询问输出上限，默认使用服务端值，需要时可之后通过 `model.request_params` 显式配置。此处配置只供 Chiliarch AI 总管使用，不改变本机 Codex／Claude／OpenCode 设置，详见 [模型配置](models.md#配置模型)。
-
-只想先用默认设置启动，可执行 `chiliarch init --defaults`：它跳过非密码问题，仍要求输入并确认密码。初始化成功会显示配置文件的绝对路径，以及明确携带该路径的 `--config` 启动命令。已有配置不会被覆盖，除非显式指定 `init --force`；同时运行多个 `init` 时，写入锁也会防止未指定 `--force` 的初始化互相覆盖。日常修改使用 WebUI 或编辑 TOML。
-
-平台使用单用户密码登录，不需要用户名。未登录不能读取平台业务数据或执行管理操作；登录限流、会话和 CSRF 保护仍然生效，修改密码会使已有登录会话失效。
-
-新初始化的总管审批模式默认为 `auto`，会根据操作风险决定是否询问用户。希望每项状态变更都经用户审批时，可在 WebUI 切换为 `ask`；已有配置保存的选择会继续生效。平台模式不改写原生 agent 的权限。
-
-服务默认监听 `127.0.0.1:8000`。需要 agent 所在机器访问时，配置适当的监听地址与端口，并确保客户端能主动访问平台；agent 不需要开放端口。服务器不需要访问 agent IP。
-
-```bash
-chiliarch serve --host <监听地址> --port <端口>
+```sh
+chiliarch serve --host 0.0.0.0 --port 8000
 ```
 
-CLI 覆盖用于本次启动。平台只支持一个服务进程；不要添加多 workers 或并行启动两个实例共同使用同一业务数据库。
+平台与 agent 守护进程在启动时分别检查新版，详见[升级指南](upgrading.md)。
 
-启动未完成或被取消时，平台会释放已创建的数据库连接、后台任务和日志资源，并保留原始启动错误。关闭某个组件失败时，其他组件仍继续关闭。
+## 5. 连接其他机器
 
-停止平台时，HTTP/SSE 连接与请求的结束等待默认上限为 15 秒，超过后取消尚未结束的请求并继续应用资源清理。通过 `[server]` 中的 `graceful_shutdown_seconds` 设置正整数秒，或在 WebUI 修改“关闭时等待请求结束（秒）”，重启后生效。长驻 SSE 不会因此无限阻塞这一阶段；该值不是整个进程退出的总时限，后续数据库、后台任务与 agent 进程树仍按各自生命周期清理，不因该期限被强行跳过。
+如果 agent 在其他机器上：
+
+1. 平台监听 `0.0.0.0` 或适当的网络接口。
+2. 允许 agent 机器访问平台端口；给它使用实际可达的服务器地址。
+3. 登录 WebUI，在“Agents 管理”点击“添加 agent”，创建一次性注册码。
+4. 按[接入指南](agents/index.md)在 agent 机器完成配对。
+
+`0.0.0.0` 是监听设置，不能当作客户端要连接的服务器地址。`127.0.0.1` 指当前机器；远程 agent 使用它会连接到自己。
+
+Agent 无需运行 `chiliarch init` 或 `serve`，也无需开放入站端口。通信从 agent 主动建立，优先 WebSocket，受网络限制时降级为 SSE＋HTTP POST、长轮询。
 
 ## 配置文件位置
 
-通过 `uv tool install chiliarch` 安装时，服务端配置默认放在当前用户状态目录，与 agent 的 `daemon` 目录同级：
+uv 工具安装默认使用当前用户目录：
 
-| 系统 | 默认服务端配置路径 |
+| 系统 | 默认服务端配置 |
 | --- | --- |
 | Linux | `~/.local/state/chiliarch/server/chiliarch.toml` |
 | macOS | `~/Library/Application Support/chiliarch/server/chiliarch.toml` |
 | Windows | `%LOCALAPPDATA%\chiliarch\server\chiliarch.toml` |
 
-Linux 的 `XDG_STATE_HOME` 若设置为绝对路径，则使用 `$XDG_STATE_HOME/chiliarch/server/chiliarch.toml`；相对值不作为状态根目录。`init`、`serve` 和 `backup` 使用相同的路径选择，自动更新后的独立运行环境也沿用这一规则。数据库默认位于配置目录下的 `data/chiliarch.db`，日志默认位于该目录下的 `logs`，不随启动时的工作目录变化。
+Linux 设置了绝对路径的 `XDG_STATE_HOME` 时，以该目录为状态根。默认数据库在配置目录下的 `data/chiliarch.db`，日志在 `logs`，不受启动终端目录影响。
 
-显式 `--config` 始终优先，可用于独立部署目录或继续使用已有配置；包含空格的路径要加引号：
+使用自定义路径时，初始化和启动都带上相同的 `--config`：
 
-```bash
+```sh
 chiliarch --config "/你的部署目录/chiliarch.toml" init
 chiliarch --config "/你的部署目录/chiliarch.toml" serve
 ```
 
-源码 `uv run` 或普通非 uv 工具环境仍默认使用当前目录的 `chiliarch.toml`。服务端配置与守护进程的 `daemon.json` 分开管理，不需要先安装本机 agent 守护进程才能初始化平台。POSIX 上生成的配置文件权限为 0600；Windows 使用所在目录继承的 ACL，自定义路径也应选择当前用户的私有目录。
+以上路径请替换为自己的路径；有空格时保留引号。源码运行默认读取当前目录的 `chiliarch.toml`，源码构建方法见[开发参考](development.md)。
 
-## 源码开发运行
-
-修改或开发 Chiliarch 源码时，准备 uv、Node.js 24 LTS 和项目指定的 pnpm 版本。进入检出的仓库目录后：
-
-```bash
-uv sync --locked --group dev
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web build
-uv run chiliarch --config ./chiliarch.toml init
-uv run chiliarch --config ./chiliarch.toml serve
-```
-
-源码运行默认配置就是当前目录的 `chiliarch.toml`，上例显式指定以便区分用户目录中的服务端配置。源码构建必须先运行前端 build；缺少资源时 WebUI 返回明确 503，API 不假装页面已构建。
-
-## Agent 机器：共享守护进程
-
-Agent 机器无需运行 `init`、WebUI 或平台服务。先 `chiliarch daemon status` 发现当前用户服务；健康时复用，已安装但停止时 `chiliarch daemon start`。没有工具时默认执行 `uv tool install chiliarch` 从 PyPI 安装，再执行 `chiliarch daemon install`：默认注册当前用户登录后自启动并启动本地服务。
-
-Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务；无可用管理器时后台或前台运行仍可用，状态明确显示自启动未启用。详细入口、目录、维护、独立运行和 Windows 原生程序边界见 [本机守护进程](daemon.md)。
-
-本机守护进程的 `daemon.json` 顶层也提供 `graceful_shutdown_seconds`，默认 15 秒，修改后重启生效。它控制本地 HTTP 请求的关闭等待，不改变停止托管 agent 时等待任务及子进程清理的规则。
-
-服务健康后，在平台创建注册码，再在 agent 机器执行：
-
-```bash
-chiliarch agent pair --server "http://平台主机:8000" --name "工作机 / Codex App" \
-  --adapter codex-app --agent codex-main --state "/绝对路径/私有目录/agent.db" \
-  --workdir "/绝对路径/已有项目目录"
-chiliarch agent config --host codex-app --agent codex-main
-chiliarch agent doctor --agent codex-main
-```
-
-`agent pair` 先确认守护进程健康，校验默认目录，再配对、自动生成本地 runner TOML 并登记无人值守执行；注册码交互输入。Windows 示例目录可写 `--workdir "C:\Projects\app"`。已有 TOML 改用 `--settings`，两者都省略时交互询问默认目录。每个身份保留独立状态库，多个宿主 MCP 复用本机守护进程连接；MCP 配置携带本机标识，不携带长期平台凭证。仅手动领取时指定 `--mode manual`，不带目录参数。
-
-任务表单可填写 agent 机器上的已有绝对目录，留空使用本机默认值；总管和下级请求同样支持 `workdir`。默认无人值守保持原生权限，Codex App 的自动工作由本机 CLI 执行，不唤醒当前 App 会话。默认目录调整、任务续接与重试规则见 [Agent 目录配置](agents/index.md#默认目录与任务目录)，安装提示词见 [自助接入指南](agents/onboarding.md)。
-
-已有健康且本地 API 兼容的 daemon 会被复用，即使新 CLI 已更新，也不强制重启正在工作的守护进程。需要应用新运行版本时，等本机所有托管任务结束，再运行 `chiliarch daemon restart`；先前的登记与状态库保留，不必重新配对。自动更新不升级原生 Codex／Claude／OpenCode，不切换原有 manual 身份；需要转为托管时准备 runner TOML 并使用 `daemon register --settings` 更新。v0.2.0 及更早版本首次升级、固定版本和关闭检查的步骤见 [升级文档](upgrading.md)。
+平台 TOML 与 agent 的守护配置分别管理。密码只保存哈希，API Key 可通过环境变量提供，具体见[配置说明](configuration.md)。
 
 ## HTTP、HTTPS 与反向代理
 
-HTTP 可直接使用，不强制 TLS。HTTPS 可以在反向代理终止；设置 `server.public_url` 为浏览器实际访问的公开 origin，避免代理后的 Origin 校验使用内部地址。`init` 中填写 HTTPS 公开地址会同时设置 `auth.secure_cookie=true`；HTTP 地址或留空则为 `false`。这不会让 Chiliarch 自行配置 TLS；以后变更访问方式时，要在配置中同步调整 cookie 设置。
+HTTP 可以直接使用，不强制 SSL。HTTPS 由反向代理提供；将 `server.public_url` 设置为浏览器实际访问的 origin，WebUI 与 API 使用同一个地址。
 
-代理需要允许 WebSocket Upgrade；SSE 禁用缓冲和缓存，读超时应长于心跳/轮询间隔。即使代理不支持 WS，agent 仍可使用 SSE 或长轮询。对于浏览器聊天流，平台同样发送 `X-Accel-Buffering: no`。同源部署 WebUI 和 API；本版没有跨域登录功能。
+初始化填写 HTTPS 公开地址时会开启 `auth.secure_cookie`。以后切换 HTTP / HTTPS，需要同步调整此项；设为 true 的 cookie 不会通过 HTTP 发送。填写公开地址本身不会让 Chiliarch 启动 HTTPS 监听。
 
-运行可自行接入 systemd、容器或其他进程管理器，使用持久卷保存配置、数据库和日志，并只启动一个实例。当前版本没有提供容器镜像发布。
+代理需要支持 WebSocket Upgrade，并关闭 SSE 的缓冲和缓存，避免聊天输出等到最后才出现。代理不支持 WS 时，agent 可以降级使用 SSE 或轮询。
 
-## 配对与验收
-
-1. 登录 WebUI，在“Agents 管理”右上角点击添加按钮，在弹窗内创建一次性注册码。
-2. 在 agent 所在机器执行 `chiliarch pair --server <平台地址> --name <名称> --state <本地数据库>`，交互输入注册码。
-3. 执行 `chiliarch demo-agent --state <本地数据库>`。可使用 `--transport sse` 或 `--transport poll` 排查网络。
-4. 手动派发测试任务；parameters 可设 `{"steps":5,"delay":0.2}`，观察进度和完成结果中的 `simulated:true`。
-5. 停止客户端后派发任务，重新启动验证离线交付；吊销凭证后该客户端应停止，不能继续收发。
-
-模拟器只测试通信和任务生命周期，不操作真实 Codex、Claude Code、OpenCode 或 Undefined。真实 Codex App、Codex CLI、Claude Code、OpenCode v2 与 v1 legacy 使用上述守护进程接入；其他工具可实现参考客户端 handler 或同协议插件。OpenCode v2 的 `--adapter` 与 `--host` 使用 `opencode`，v1 legacy 使用 `opencode-v1`，两代配置格式与并存安装见 [OpenCode 接入](agents/opencode.md)。
-
-Agents 管理列表以机器卡片展示实际连接状态、任务和待处理数；待处理徽标统计仍需处理的请求和审批。点击卡片进入详情，上方查看连接、心跳、能力与任务状态，下方派发指令、处理请求、查看任务或管理凭证。CPU、内存等机器遥测仅在 agent 实际上报时显示。
-
-多 agent 上线后可在“协作”页创建讨论、发送私信、查看回执与等待关系。普通传话无需总管模型逐条转述；明确勾选唤醒时会向托管身份派发正式任务。跨机器文件由 MCP 上传、获授权同伴主动下载，不开放新的 agent 入站端口。操作与限制见 [横向协作](collaboration.md) 和 [共享产物](artifacts.md)。
+当前没有官方容器镜像。自行容器化或接入系统服务时，持久保存配置、数据库和日志，并保持单实例运行。
 
 ## 备份与恢复
 
-服务端业务数据库、配置和日志是不同资源。SQLite 在运行中有 WAL 文件；不要只复制主 `.db` 文件并假设已得到一致快照。平台运行时可使用内置命令获取一致快照：
+平台运行中使用：
 
-```bash
-chiliarch backup --output ./backups/platform-snapshot.db
+```sh
+chiliarch backup --output ./platform-backup.db
 ```
 
-命令使用 SQLite backup API，包含已提交的 WAL 数据，不包含尚未提交的事务。输出经过完整性及 schema version 校验，是无需原库 WAL/SHM 的独立数据库文件；默认 30 秒超时，可用 `--timeout` 调整。只有成功后才原子发布输出，已存在的文件永不覆盖，失败时清理临时快照。输出目录需要支持硬链接；不支持时命令明确失败，应选择本机支持的文件系统保存后再转移。仅支持普通本地 SQLite 文件，不支持内存库、SQLite URI 选项或其他数据库；其他数据库使用对应厂商备份工具。
+它创建一个独立、经过完整性校验的 SQLite 快照，包含已提交的数据和共享产物，不覆盖已有文件。不要在运行中仅复制主 `.db` 文件，未合并的 WAL 数据可能遗漏。
 
-默认读取与 `init`、`serve` 相同位置的 TOML；自定义部署需传入相同的 `--config`。来源由磁盘上的 TOML 与备份命令当前环境变量解析，命令会显示源路径，**不会自动识别运行实例的有效配置**。如果数据库设置存在待重启变更，或后台服务环境变量与当前终端不同，请核对运行配置中的数据库路径，并显式选择：
+命令会打印来源数据库。若你修改了数据库配置但尚未重启，或终端与服务的环境不同，可明确指定实际使用的数据库：
 
-```bash
-chiliarch backup --database /实际运行的数据库路径/chiliarch.db --output ./backups/platform-snapshot.db
+```sh
+chiliarch backup --database "/实际数据库路径/chiliarch.db" --output ./platform-backup.db
 ```
 
-`--database` 优先于配置文件和环境覆盖，也不要求存在配置文件；本机路径包含空格时需加引号。
+还需另外保存：
 
-此命令只备份平台数据库，不打包配置、环境变量、日志、agent 状态库或原生 agent 会话。另行保存对应 TOML 和必要的环境配置；保护快照中的会话、业务消息与凭证哈希。Unix 快照权限为 `0600`，Windows 继承目标目录 ACL，应选择当前用户的私有目录。需要停止实例做文件级备份时，先完成正常关闭，再复制数据库和配置。
+- 平台 `chiliarch.toml` 和必要的环境配置。
+- 每台 agent 的守护目录、独立状态库与 runner TOML。
+- 需要保留的应用日志、原生 agent 会话和项目文件。
 
-讨论记录、逐人回执、共享产物清单及文件块也在平台数据库内，因此一致性快照包含它们。产物会增加数据库和备份大小；配置 `artifacts.max_total_bytes` 只限制文件清单额度，传输消息历史、索引和已有备份另占空间。Agent 机器上尚未完成的下载 `.part` 文件属于本地文件，平台备份不会保存它们。
+备份输出目录需要支持硬链接；不支持时先保存到支持的本地文件系统，再转移快照。`--timeout` 可调整默认 30 秒备份时限。
 
-恢复时停止实例，恢复匹配的数据库和配置，再运行同版本服务。数据库 schema version 不兼容会明确拒绝启动，不能默默重建。升级前保留快照；本版只有初始 schema，未来迁移应明确版本、备份和回滚步骤。
-
-本机守护目录的登记与设置、各 agent 状态库和 runner TOML 同样需要保留；丢失它意味着丢失长期凭证、待上传结果和任务去重记录。重新配对前吊销旧身份；不要把同一个客户端数据库复制到两台机器同时运行。
+恢复时，停止平台，恢复数据库和匹配配置，再用对应版本启动。Agent 的状态库包含长期凭证和未上传消息，不要复制到两台机器同时运行，也不要为恢复随意重新配对。
 
 ## 常见问题
 
-| 现象                  | 检查                                                      |
-| --------------------- | --------------------------------------------------------- |
-| 启动缺少密码          | 使用正确 `--config` 文件，先执行 init                     |
-| 登录后操作 403        | 同源访问、公开地址、CSRF token 与 HTTPS cookie 设置       |
-| WebUI 503             | 源码运行先执行 pnpm build，安装包检查是否使用正式构建产物 |
-| agent 无法上线        | 从 agent 机器测试平台可达性；确认注册码未过期、凭证未吊销 |
-| agent 始终离线        | 确认客户端在运行并发送心跳；服务端不会主动联系机器        |
-| 总管没有回复          | 配置模型名称/地址/认证，检查 run 状态和脱敏日志           |
-| 任务 cancel_requested | agent 尚未确认取消；不能等同于已经停止                    |
-| interrupted           | 执行结果未知，先检查任务/操作记录，避免重复副作用         |
-| 热重载拒绝            | 修正配置类型和取值，上一份有效配置继续生效                |
-| 自动更新失败但仍启动旧版 | 检查 uv、网络及启动提示；下一次启动会再检查，见 [升级文档](upgrading.md) |
+| 现象 | 先做什么 |
+| --- | --- |
+| 找不到 `chiliarch` 命令 | `uv tool update-shell` 后重新打开终端；桌面宿主重启 |
+| 登录后操作返回 403 | 核对浏览器公开地址、HTTP / HTTPS 与 secure cookie 设置 |
+| WebUI 返回 503 | 正式 PyPI 包应包含页面；源码运行先构建前端 |
+| Agent 一直离线 | 在 agent 机器核对平台地址与端口，再查 `chiliarch daemon agents` |
+| 配对成功但本机登记失败 | 保留状态库，按[接入恢复](agents/index.md#接入失败时如何恢复)重新登记 |
+| 总管报模型错误 | 查看[模型排错](models.md#模型报错时怎么处理)与配置页日志 |
+| 取消后没有停止确认 | Agent 尚未确认，离线时取消请求会排队；先核对实际任务 |
+| 中断或执行结果未知 | 检查实际改动和原生记录，再决定是否重试 |
+| 修改配置没有生效 | 模型等设置用于后续运行；监听地址、端口和数据库需重启 |
+
+下一步：[连接 agent](agents/index.md) · [创建目标](coordination.md) · [配置与日志](configuration.md)。
