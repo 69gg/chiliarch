@@ -405,7 +405,7 @@ async def test_stderr_is_drained_and_counted_against_output_limit(tmp_path: Path
             )
 
 
-def process_running(pid: int) -> bool:
+def process_running(pid: int, *, expected_creation_time: int | None = None) -> bool:
     """Linux orphan zombies are stopped even before PID 1 reaps them."""
     if os.name == "nt":
         import ctypes
@@ -418,11 +418,41 @@ def process_running(pid: int) -> bool:
         kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel.WaitForSingleObject.restype = wintypes.DWORD
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        handle = kernel.OpenProcess(0x00100000, False, pid)
+        access = 0x00100000  # SYNCHRONIZE
+        if expected_creation_time is not None:
+            access |= 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel.OpenProcess(access, False, pid)
         if not handle:
-            return False
+            code = windows_ctypes.get_last_error()
+            if code == 87:  # ERROR_INVALID_PARAMETER: no process currently has this PID.
+                return False
+            raise windows_ctypes.WinError(code)
         try:
-            return bool(kernel.WaitForSingleObject(handle, 0))
+            if expected_creation_time is not None:
+                kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [
+                    ctypes.POINTER(wintypes.FILETIME)
+                ] * 4
+                kernel.GetProcessTimes.restype = wintypes.BOOL
+                creation, exit_time, kernel_time, user_time = (
+                    wintypes.FILETIME() for _ in range(4)
+                )
+                if not kernel.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel_time),
+                    ctypes.byref(user_time),
+                ):
+                    raise windows_ctypes.WinError(windows_ctypes.get_last_error())
+                actual_creation_time = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+                if actual_creation_time != expected_creation_time:
+                    return False  # Another worker may already have reused the released PID.
+            result = kernel.WaitForSingleObject(handle, 0)
+            if result == 0:  # WAIT_OBJECT_0
+                return False
+            if result == 258:  # WAIT_TIMEOUT
+                return True
+            raise windows_ctypes.WinError(windows_ctypes.get_last_error())
         finally:
             kernel.CloseHandle(handle)
     status = Path(f"/proc/{pid}/stat")

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import Message, Receive, Scope, Send
 from websockets.asyncio.client import connect
 
+from chiliarch.adapters.runtime import outbound_client
 from chiliarch.api import create_app
 from chiliarch.auth import hash_password
 from chiliarch.client import AgentClient, ClientStore, CredentialRejected
@@ -141,9 +142,9 @@ class LiveServer:
                 "auth": {"password_hash": hash_password("network-password")},
                 "logs": {"directory": str(directory / "logs")},
                 "transport": {
-                    "heartbeat_seconds": 0.2,
+                    "heartbeat_seconds": 0.5,
                     "offline_after_seconds": 5,
-                    "retry_seconds": 0.03,
+                    "retry_seconds": 0.1,
                     "poll_timeout_seconds": 2,
                     "reconnect_base_seconds": 0.02,
                     "reconnect_max_seconds": 0.05,
@@ -196,7 +197,13 @@ class LiveServer:
             self.task = None
             raise
 
-    async def stop(self, *, request_timeout: float = 5, resource_timeout: float = 20) -> None:
+    async def stop(
+        self,
+        *,
+        request_timeout: float = 5,
+        resource_timeout: float = 20,
+        cleanup_timeout: float = 5,
+    ) -> None:
         if self.server and self.task:
             server = self.server
             server_task = self.task
@@ -243,7 +250,7 @@ class LiveServer:
             finally:
                 drained.cancel()
                 await asyncio.gather(drained, return_exceptions=True)
-                deadline = asyncio.get_running_loop().time() + 5
+                deadline = asyncio.get_running_loop().time() + cleanup_timeout
                 phase = "request cleanup"
                 owned: set[asyncio.Task[Any]] = {server_task}
 
@@ -254,7 +261,7 @@ class LiveServer:
                     if not tasks:
                         return
                     remaining = max(0, deadline - asyncio.get_running_loop().time())
-                    done, pending = await asyncio.wait(tasks, timeout=min(5, remaining))
+                    done, pending = await asyncio.wait(tasks, timeout=remaining)
                     if pending:
                         error = stalled(name)
                         for task in pending:
@@ -475,7 +482,7 @@ async def test_interrupted_platform_shutdown_joins_lifespan_and_releases_listene
                 await request_entered.wait()
                 requests = tuple(platform.server.server_state.tasks)
                 assert requests
-                shutdown = asyncio.create_task(platform.stop())
+                shutdown = asyncio.create_task(platform.stop(request_timeout=0.2))
                 await entered.wait()
                 if cancel_stop:
                     shutdown.cancel()
@@ -539,7 +546,7 @@ async def test_stalled_listener_cleanup_fails_with_immediate_diagnostics(
             monkeypatch.setattr(listener, "wait_closed", stalled_listener)
 
     monkeypatch.setattr(platform.server, "shutdown", shutdown_then_stall)
-    shutdown = asyncio.create_task(platform.stop())
+    shutdown = asyncio.create_task(platform.stop(cleanup_timeout=0.2))
     try:
         await asyncio.wait_for(entered.wait(), 5)
         # A repeated caller cancellation must not extend the cleanup deadline.
@@ -766,6 +773,152 @@ async def test_ws_missing_heartbeat_ack_falls_back_to_sse_and_completes_task(
         assert client.transport == "sse"
     finally:
         await stop_client(client, runner)
+
+
+@pytest.mark.parametrize("cancel_owner", [False, True], ids=["normal-exit", "cancelled-owner"])
+async def test_outbound_context_finishes_inflight_post_before_closing_sse(
+    live: LiveServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_owner: bool,
+) -> None:
+    state_path = tmp_path / "graceful-client.db"
+
+    async def handler(_: JsonObject, __: Callable[[float, str], Awaitable[None]]) -> None:
+        return None
+
+    await live.agent(state_path, handler)
+    response_held = asyncio.Event()
+    release_response = asyncio.Event()
+    leave_body = asyncio.Event()
+    stop_requested = asyncio.Event()
+    original_app = live.gate.app
+    message_id = ""
+
+    async def hold_contact_response(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("path") != "/api/agent/messages":
+            await original_app(scope, receive, send)
+            return
+        body = bytearray()
+
+        async def observe_body() -> Message:
+            message = await receive()
+            if message["type"] == "http.request":
+                body.extend(message.get("body", b""))
+            return message
+
+        async def delayed_response(message: Message) -> None:
+            if (
+                message["type"] == "http.response.body"
+                and json.loads(body).get("type") == "agent.contact"
+            ):
+                response_held.set()
+                await release_response.wait()
+            await send(message)
+
+        await original_app(scope, observe_body, delayed_response)
+
+    monkeypatch.setattr(live.gate, "app", hold_contact_response)
+
+    async def owner() -> None:
+        nonlocal message_id
+        async with outbound_client(
+            state_path, manual_tasks=True, preferred="sse", options=live.settings.transport
+        ) as (client, _):
+            original_stop = client.stop
+
+            def stop() -> None:
+                original_stop()
+                stop_requested.set()
+
+            monkeypatch.setattr(client, "stop", stop)
+            message_id = await client.contact("Keep the final POST intact")
+            await leave_body.wait()
+
+    task = asyncio.create_task(owner())
+    try:
+        async with asyncio.timeout(8):
+            await response_held.wait()
+            if cancel_owner:
+                task.cancel()
+            else:
+                leave_body.set()
+            await stop_requested.wait()
+            if cancel_owner:
+                # A daemon's second cancellation must not cut off the owned
+                # connection's bounded graceful phase or SQLite cleanup.
+                task.cancel()
+                await asyncio.sleep(0)
+            assert not task.done()
+            release_response.set()
+            if cancel_owner:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                await task
+        store = ClientStore(state_path)
+        await store.open()
+        try:
+            assert message_id
+            assert all(envelope.id != message_id for envelope in await store.pending())
+        finally:
+            await store.close()
+    finally:
+        release_response.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_outbound_context_does_not_hide_connection_failure_after_ready(
+    live: LiveServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "failed-connection.db"
+
+    async def handler(_: JsonObject, __: Callable[[float, str], Awaitable[None]]) -> None:
+        return None
+
+    await live.agent(state_path, handler)
+    fail = asyncio.Event()
+
+    async def failed_transport(_: AgentClient) -> None:
+        await fail.wait()
+        raise CredentialRejected("Test identity was revoked")
+
+    monkeypatch.setattr(AgentClient, "_ws", failed_transport)
+    with pytest.raises(CredentialRejected, match="revoked"):
+        async with outbound_client(state_path) as (_, connection):
+            fail.set()
+            done, pending = await asyncio.wait([connection], timeout=5)
+            assert done and not pending
+
+
+async def test_outbound_context_bounds_graceful_wait_and_joins_forced_cleanup(
+    live: LiveServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "stalled-connection.db"
+
+    async def handler(_: JsonObject, __: Callable[[float, str], Awaitable[None]]) -> None:
+        return None
+
+    await live.agent(state_path, handler)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_transport(_: AgentClient) -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(AgentClient, "_ws", stalled_transport)
+    options = live.settings.transport.model_copy(update={"poll_timeout_seconds": 0.1})
+    async with asyncio.timeout(5):
+        async with outbound_client(state_path, options=options) as (client, connection):
+            await entered.wait()
+        assert cancelled.is_set()
+        assert connection.done()
+        assert client.store.connection is None
 
 
 async def test_unacknowledged_message_crosses_ws_and_poll_with_same_identity(

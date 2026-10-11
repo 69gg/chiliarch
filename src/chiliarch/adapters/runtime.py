@@ -186,15 +186,40 @@ async def outbound_client(
             client.run(preferred=preferred), name="chiliarch.agent.connection"
         )
         ready = asyncio.create_task(client.ready.wait())
+        body_failed = False
         try:
             done, _ = await asyncio.wait({task, ready}, return_when=asyncio.FIRST_COMPLETED)
             if task in done:
                 task.result()
                 raise RuntimeError("Outbound client stopped before its mailbox was ready")
             yield client, task
+        except BaseException:
+            body_failed = True
+            raise
         finally:
             ready.cancel()
             client.stop()
-            # Interrupt a pending long poll/stream instead of delaying stdio shutdown.
-            task.cancel()
-            await asyncio.gather(ready, task, return_exceptions=True)
+
+            async def finish() -> None:
+                # Let an in-flight HTTP POST receive its durable ACK before
+                # closing SSE/long-poll readers. Immediate cancellation can
+                # reset that socket halfway through the server's request body.
+                done, _ = await asyncio.wait([task], timeout=client.options.poll_timeout_seconds)
+                if not done:
+                    task.cancel()
+                # Cancellation still joins the client's existing resource and
+                # native-worker cleanup before releasing connection ownership.
+                await asyncio.gather(ready, task, return_exceptions=True)
+
+            cleanup = asyncio.create_task(finish())
+            interrupted = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    interrupted = True
+            cleanup.result()
+            if interrupted:
+                raise asyncio.CancelledError
+            if not body_failed and not task.cancelled():
+                task.result()

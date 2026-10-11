@@ -13,6 +13,30 @@ from typing import Any
 JsonObject = dict[str, Any]
 
 
+def process_creation_time() -> int | None:
+    """Record a Windows process identity while the fixture itself is still alive."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    windows_ctypes: Any = ctypes
+    kernel: Any = windows_ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    creation, exit_time, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+    if not kernel.GetProcessTimes(
+        kernel.GetCurrentProcess(),
+        ctypes.byref(creation),
+        ctypes.byref(exit_time),
+        ctypes.byref(kernel_time),
+        ctypes.byref(user_time),
+    ):
+        raise windows_ctypes.WinError(windows_ctypes.get_last_error())
+    return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+
+
 def emit(event: JsonObject) -> None:
     print(json.dumps({"jsonrpc": "2.0", **event}, ensure_ascii=False), flush=True)
 
@@ -68,6 +92,7 @@ def main(fixture: JsonObject) -> None:
         "argv": sys.argv[1:],
         "cwd": os.getcwd(),
         "pid": os.getpid(),
+        "creation_time": process_creation_time(),
         "requests": requests,
         "stdin": "".join(block["text"] for block in prompt["params"]["prompt"]),
         "environment": {

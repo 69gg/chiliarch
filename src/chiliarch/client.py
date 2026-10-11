@@ -56,6 +56,7 @@ class ClientStore:
         self.path = path
         self.connection: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
+        self.changed = asyncio.Event()
 
     async def open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,10 +108,16 @@ class ClientStore:
             try:
                 await self.db().execute("BEGIN IMMEDIATE")
                 yield
-                await self._settle(self.db().commit())
+                await self._settle(self._commit())
             except BaseException:
                 await self._settle(self.db().rollback())
                 raise
+
+    async def _commit(self) -> None:
+        await self.db().commit()
+        # Keep notification inside the settled operation: cancellation can arrive
+        # while SQLite commits, but a durable result must still wake the writer.
+        self.changed.set()
 
     async def identity(self) -> dict[str, str]:
         async with self.lock:
@@ -759,6 +766,10 @@ class AgentClient:
         delivery = DeliveryBackoff()
         heartbeat_at = 0.0
         while not self.stop_event.is_set():
+            # Clear before reading, so a commit racing with the snapshot or its
+            # delivery remains visible when we start waiting. Other processes
+            # have independent events and are still discovered by timed polling.
+            self.store.changed.clear()
             await self._schedule()
             for envelope in delivery.ready(
                 await self.store.pending(),
@@ -771,7 +782,7 @@ class AgentClient:
                 heartbeat_at = time.monotonic() + self.options.heartbeat_seconds
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
-                    self.stop_event.wait(),
+                    self.store.changed.wait(),
                     min(self.options.retry_seconds, self.options.heartbeat_seconds),
                 )
 
@@ -970,6 +981,7 @@ class AgentClient:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.store.changed.set()
 
 
 async def simulated_task(

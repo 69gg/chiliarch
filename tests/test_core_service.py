@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,20 @@ from chiliarch.protocol import Envelope
 from chiliarch.service import OperationError, OperationService
 
 
+@cache
+def _fixture_password_hash() -> str:
+    # Reuse only the immutable fixture credential within this worker. Password
+    # initialization, verification and change tests still use real scrypt.
+    return hash_password("test-password")
+
+
 @pytest.fixture
 async def service(tmp_path: Path) -> AsyncIterator[OperationService]:
     settings = Settings.model_validate(
         {
             "database": {"url": f"sqlite+aiosqlite:///{tmp_path}/test.db"},
             "logs": {"directory": str(tmp_path / "logs")},
-            "auth": {"password_hash": hash_password("test-password")},
+            "auth": {"password_hash": _fixture_password_hash()},
         }
     )
     database = Database(settings.database.url)

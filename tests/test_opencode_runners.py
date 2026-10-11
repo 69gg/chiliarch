@@ -198,7 +198,51 @@ async def test_output_or_zero_exit_cannot_replace_native_success(
         assert "approval" in str(failure.value)
     if fixture.get("exitcode"):
         assert "exit code 2" in str(failure.value)
-    assert not process_running(observed(tmp_path)["pid"])
+    execution = observed(tmp_path)
+    assert not process_running(execution["pid"], expected_creation_time=execution["creation_time"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process identity requires native Windows")
+async def test_windows_exit_probe_checks_process_identity_instead_of_reused_pid() -> None:
+    source = (Path(__file__).parent / "helpers" / "fake_opencode_cli.py").read_text(
+        encoding="utf-8"
+    )
+    program = (
+        source
+        + '\nprint(json.dumps({"pid": os.getpid(), "creation_time": process_creation_time()}), '
+        "flush=True)\nsys.stdin.read()\n"
+    )
+    workers: list[asyncio.subprocess.Process] = []
+    identities: list[JsonObject] = []
+    try:
+        for _ in range(2):
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-u",
+                "-c",
+                program,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+            )
+            workers.append(process)
+            assert process.stdout is not None
+            identities.append(json.loads(await asyncio.wait_for(process.stdout.readline(), 5)))
+        first, second = identities
+        assert process_running(first["pid"], expected_creation_time=first["creation_time"])
+        assert process_running(second["pid"], expected_creation_time=second["creation_time"])
+        # A stale identity must not report another live process as the original
+        # worker. This checks the PID-reuse boundary without waiting for OS reuse.
+        assert not process_running(second["pid"], expected_creation_time=first["creation_time"])
+        assert workers[0].stdin is not None
+        workers[0].stdin.close()
+        await asyncio.wait_for(workers[0].wait(), 5)
+        assert not process_running(first["pid"], expected_creation_time=first["creation_time"])
+        assert process_running(second["pid"], expected_creation_time=second["creation_time"])
+    finally:
+        for process in workers:
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
 
 
 @pytest.mark.parametrize("kind", ["opencode", "opencode-v1"])
