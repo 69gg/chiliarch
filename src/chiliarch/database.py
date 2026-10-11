@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    insert,
     inspect,
     select,
 )
@@ -241,6 +242,12 @@ class Database:
 
     async def initialize(self) -> None:
         async with self.engine.begin() as connection:
+            if self.engine.dialect.name == "sqlite":
+                # sqlite3's legacy transaction control does not BEGIN for DDL.
+                # Group schema creation and its version in one durable commit,
+                # also serializing concurrent initializers before their reads.
+                await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            version_number: int | None = None
             exists = await connection.run_sync(
                 lambda sync: inspect(sync).has_table("schema_version")
             )
@@ -255,14 +262,8 @@ class Database:
                         f"Unsupported database schema version {version_number}; expected {SCHEMA_VERSION}"
                     )
             await connection.run_sync(Base.metadata.create_all)
-        async with self.sessions.begin() as session:
-            version = await session.get(SchemaVersion, 1)
-            if version is None:
-                session.add(SchemaVersion(id=1, version=SCHEMA_VERSION))
-            elif version.version != SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"Unsupported database schema version {version.version}; expected {SCHEMA_VERSION}"
-                )
+            if version_number is None:
+                await connection.execute(insert(SchemaVersion).values(id=1, version=SCHEMA_VERSION))
 
         if self.sqlite_path is not None:
             for path in (
