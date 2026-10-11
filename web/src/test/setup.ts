@@ -4,6 +4,7 @@ import { cleanup } from "@testing-library/react";
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
+afterEach(() => localStorage.clear());
 afterEach(() =>
   history.replaceState(null, "", location.pathname + location.search),
 );

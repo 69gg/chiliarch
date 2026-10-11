@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import {
   AnimatedDisclosure,
   ErrorNotice,
@@ -29,6 +29,7 @@ const ACTIVE_RUN_STATUSES = [
   "queued",
   "awaiting_approval",
 ];
+const LAST_CONVERSATION_KEY = "chiliarch-last-conversation";
 
 function conversationFromHash(): string | null {
   const match = location.hash.match(/^#ai\/([^/]+)$/);
@@ -38,6 +39,10 @@ function conversationFromHash(): string | null {
   } catch {
     return null;
   }
+}
+
+function initialConversation(): string | null {
+  return conversationFromHash() ?? localStorage.getItem(LAST_CONVERSATION_KEY);
 }
 
 export default function ChatPage({
@@ -50,7 +55,7 @@ export default function ChatPage({
   onConfigure: () => void;
 }): ReactNode {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selected, setSelected] = useState<string | null>(conversationFromHash);
+  const [selected, setSelected] = useState<string | null>(initialConversation);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [chat, setChat] = useState<ChatState>({
     messages: [],
@@ -79,6 +84,9 @@ export default function ChatPage({
   const scrollPinned = useRef(true);
   const localMessageSequence = useRef(0);
   const conversationRevision = useRef(0);
+  const restoringConversation = useRef(
+    selected === localStorage.getItem(LAST_CONVERSATION_KEY) ? selected : null,
+  );
   const model = state.config.model as Record<string, Json> | undefined;
   const configured = Boolean(model?.model);
   const supervisor = state.config.supervisor as
@@ -164,6 +172,10 @@ export default function ChatPage({
       .conversation(selected)
       .then((result) => {
         if (cancelled) return;
+        localStorage.setItem(LAST_CONVERSATION_KEY, selected);
+        restoringConversation.current = null;
+        if (!location.hash || location.hash === "#ai")
+          history.replaceState(null, "", `#ai/${encodeURIComponent(selected)}`);
         setDetail(result);
         setChat(restoreChatState(result));
         stop = api.streamConversation(
@@ -216,8 +228,23 @@ export default function ChatPage({
         );
       })
       .catch((error: unknown) => {
-        if (!cancelled)
-          setError(error instanceof Error ? error.message : String(error));
+        if (cancelled) return;
+        if (
+          restoringConversation.current === selected &&
+          error instanceof ApiError &&
+          error.status === 404
+        ) {
+          restoringConversation.current = null;
+          if (localStorage.getItem(LAST_CONVERSATION_KEY) === selected)
+            localStorage.removeItem(LAST_CONVERSATION_KEY);
+          setSelected(null);
+          if (
+            !location.hash ||
+            location.hash === "#ai" ||
+            conversationFromHash() === selected
+          )
+            history.replaceState(null, "", "#ai");
+        } else setError(error instanceof Error ? error.message : String(error));
       });
     return () => {
       cancelled = true;
@@ -238,6 +265,8 @@ export default function ChatPage({
     setContent(next);
   }
   function chooseConversation(id: string | null): void {
+    restoringConversation.current = null;
+    if (!id) localStorage.removeItem(LAST_CONVERSATION_KEY);
     drafts.current.set(selected ?? "new", content);
     setContent(drafts.current.get(id ?? "new") ?? "");
     setSelected(id);
@@ -250,8 +279,13 @@ export default function ChatPage({
   useEffect(() => {
     const changed = (): void => {
       if (location.hash === "#ai" || location.hash.startsWith("#ai/")) {
-        const next = conversationFromHash();
-        if (next !== selected) chooseConversation(next);
+        const explicit = conversationFromHash();
+        const next = explicit ?? localStorage.getItem(LAST_CONVERSATION_KEY);
+        if (next !== selected) {
+          chooseConversation(next);
+          if (next === localStorage.getItem(LAST_CONVERSATION_KEY))
+            restoringConversation.current = next;
+        }
       }
     };
     window.addEventListener("hashchange", changed);
@@ -398,6 +432,8 @@ export default function ChatPage({
       );
       conversationRevision.current += 1;
       if (nextTitle === undefined) {
+        if (localStorage.getItem(LAST_CONVERSATION_KEY) === id)
+          localStorage.removeItem(LAST_CONVERSATION_KEY);
         setConversations((previous) =>
           previous.filter((conversation) => conversation.id !== id),
         );
