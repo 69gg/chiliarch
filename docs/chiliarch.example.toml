@@ -42,6 +42,9 @@ context_window = 200000
 # 仅 Anthropic Messages：设置 anthropic_max_tokens 为模型支持的正整数。
 # 默认未配置；初始化向导和 WebUI 在选择 anthropic 后提供此字段。
 reasoning_enabled = false
+# 关闭时不发送 enable_thinking，包括 request_params 中显式填写的值。
+# 不影响 reasoning_effort、Anthropic thinking、思考显示或回传。
+enable_thinking_param_enabled = true
 thinking_enabled = false
 reasoning_replay = true
 include_usage = true

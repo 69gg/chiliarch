@@ -225,6 +225,27 @@ def test_old_execution_limits_are_retired_and_context_window_hot_reloads(tmp_pat
         manager.update({"supervisor": {"typo_limit": 10}})
 
 
+def test_enable_thinking_parameter_control_persists_and_hot_reloads(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    manager = SettingsManager(path)
+    manager.update({"model": {"reasoning_enabled": True, "reasoning_effort": "high"}})
+    snapshot = manager.snapshot()
+    assert snapshot.model.enable_thinking_param_enabled
+    manager.update({"model": {"enable_thinking_param_enabled": False}})
+    assert not manager.current.model.enable_thinking_param_enabled
+    assert manager.current.model.reasoning_enabled
+    assert manager.current.model.reasoning_effort == "high"
+    assert snapshot.model.enable_thinking_param_enabled
+    assert manager.pending_restart == []
+    assert manager.public()["model"]["enable_thinking_param_enabled"] is False
+    reloaded = SettingsManager(path)
+    assert not reloaded.current.model.enable_thinking_param_enabled
+    reloaded.update({"model": {"enable_thinking_param_enabled": True}})
+    assert manager.reload()
+    assert manager.current.model.enable_thinking_param_enabled
+    assert manager.current.model.reasoning_enabled
+
+
 def test_environment_secret_overrides_are_not_persisted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

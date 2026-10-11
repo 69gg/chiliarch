@@ -189,7 +189,9 @@ class Provider:
                 params.setdefault("reasoning", {"effort": self.config.reasoning_effort})
             elif self.api_mode == "chat_completions":
                 params.setdefault("reasoning_effort", self.config.reasoning_effort)
-        if self.api_mode == "chat_completions" and self.config.reasoning_enabled:
+        if not self.config.enable_thinking_param_enabled:
+            params.pop("enable_thinking", None)
+        elif self.api_mode == "chat_completions" and self.config.reasoning_enabled:
             params.setdefault("enable_thinking", True)
         if self.api_mode == "anthropic" and self.config.thinking_enabled:
             if self.config.thinking_budget_tokens is None:

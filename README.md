@@ -56,6 +56,8 @@ v0.3.0 起，标准 uv 工具安装默认在平台或 agent 服务启动时检�
 
 Chat Completions / Responses 默认不设置输出上限，使用服务端默认值；需要时可通过 `model.request_params` 显式配置。Anthropic Messages 需要在配置中填写模型支持的最大输出 tokens，平台不代填固定值，见 [模型配置](docs/models.md#配置模型)。“配置”中可设置模型上下文窗口，默认 200k tokens，达到 90% 后自动压缩并继续工作。页面显示上下文占用与压缩状态，完整聊天和工具记录保留；工具轮次、消息条数和全局并行运行不再设固定上限，详见 [上下文压缩](docs/models.md#上下文窗口与自动压缩)。
 
+模型网关若报 `Unsupported parameter(s): enable_thinking`，在“配置”关闭“发送 enable_thinking 参数”，或设置 `model.enable_thinking_param_enabled = false`。关闭后省略该字段，推理强度、思考显示和回传独立保留，详见 [模型兼容](docs/models.md#配置模型)。
+
 左侧导航支持收起，并记住当前浏览器的选择；配置表单在工作区内居中。主题按钮可切换跟随系统、浅色和深色；暗色采用炭灰背景、暖白文字及中性表面层级。抽屉、消息和折叠动画遵循系统“减少动态效果”设置。更多说明见 [模型与总管行为](docs/models.md)。
 
 ## 连接 agent

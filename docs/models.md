@@ -20,7 +20,8 @@
 | context_window | 模型上下文窗口，默认 200000 tokens，达到 90% 自动压缩 |
 | anthropic_max_tokens | 仅 Anthropic Messages 使用，需填写模型支持的最大输出 tokens 正整数；默认未配置 |
 | temperature | 可省略，不接受的模型保持空值 |
-| reasoning_enabled / reasoning_effort | 请求模型推理及强度；按 API 映射 |
+| reasoning_enabled / reasoning_effort | Chat 自动请求 `enable_thinking=true`；推理强度按 API 映射 |
+| enable_thinking_param_enabled | 是否允许发送 `enable_thinking`，默认 true；关闭时省略该字段，包含 request_params 中的显式值 |
 | thinking_enabled / thinking_budget_tokens | thinking 参数与预算；服务商不支持时关闭 |
 | reasoning_replay | 下一轮保留服务商兼容的原生推理载体 |
 | include_usage | 请求流式 usage，网关不支持时关闭 |
@@ -28,6 +29,8 @@
 | tool_choice | 可选的服务商工具选择参数 |
 
 不要把业务消息、工具 Schema 或流式控制字段塞进 request_params；它们由平台生成。保留字段冲突会报错，而非静默覆盖。兼容开关按网关能力配置，不按某几个模型名硬编码。
+
+若网关返回 `400 Validation: Unsupported parameter(s): enable_thinking`，在 WebUI“配置”中关闭“发送 enable_thinking 参数”，或在 `[model]` 中设置 `enable_thinking_param_enabled = false`。关闭意味着**不传字段**，并非发送 `enable_thinking=false`；即使额外请求参数中包含该字段，也会省略。推理强度 `reasoning_effort`、Anthropic 原生 `thinking`、公开思考内容的显示和 `reasoning_replay` 均独立控制。开关开启时保留原行为：Chat 模式只有在 `reasoning_enabled=true` 时自动添加 `enable_thinking=true`，显式 `request_params.enable_thinking` 优先；其他 API 不自动添加。
 
 `chiliarch init` 可选择立即配置总管，依次填写 API 类型、模型名称、API 地址和隐藏输入的 API Key；也可跳过，之后在 WebUI“配置”中填写。API Key 与模型地址不从原生 agent 配置中读取，也不需要填写到聊天消息里。
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
 import { parseObject } from "./AgentsPage";
@@ -30,6 +30,7 @@ const LABELS: Record<string, string> = {
   temperature: "Temperature",
   reasoning_effort: "推理强度",
   reasoning_enabled: "启用 reasoning",
+  enable_thinking_param_enabled: "发送 enable_thinking 参数",
   thinking_enabled: "启用 thinking",
   thinking_budget_tokens: "思考 token 预算",
   reasoning_replay: "回传兼容的 reasoning",
@@ -172,6 +173,8 @@ export default function ConfigPage({
   const [original, setOriginal] = useState(state.config);
   const [draft, setDraft] = useState(() => configDraft(state.config));
   const [revision, setRevision] = useState(state.runtime.config_revision);
+  const observedRevision = useRef(state.runtime.config_revision);
+  const appliedRevision = useRef(state.runtime.config_revision);
   const [clearKey, setClearKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -190,7 +193,9 @@ export default function ConfigPage({
     );
 
   useEffect(() => {
-    if (!dirty && revision !== state.runtime.config_revision) {
+    observedRevision.current = state.runtime.config_revision;
+    if (!dirty && appliedRevision.current !== state.runtime.config_revision) {
+      appliedRevision.current = state.runtime.config_revision;
       setOriginal(state.config);
       setDraft(configDraft(state.config));
       setRevision(state.runtime.config_revision);
@@ -213,6 +218,7 @@ export default function ConfigPage({
       const result = await api.operate("update_config", { patch });
       const next = result.config;
       if (next && typeof next === "object" && !Array.isArray(next)) {
+        appliedRevision.current = observedRevision.current;
         setOriginal(next);
         setDraft(configDraft(next));
       }
@@ -459,10 +465,21 @@ function ConfigField({
         <input
           id={id}
           type="checkbox"
+          aria-label={label}
+          aria-describedby={
+            field === "enable_thinking_param_enabled" ? `${id}-help` : undefined
+          }
           checked={value === "true"}
           onChange={(event) => onChange(String(event.target.checked))}
         />
-        {label}
+        <span>
+          {label}
+          {field === "enable_thinking_param_enabled" && (
+            <small id={`${id}-help`} className="muted">
+              网关不支持时关闭；省略此参数，保留推理强度、显示与回传。
+            </small>
+          )}
+        </span>
       </label>
     );
   if (OPTIONS[field])

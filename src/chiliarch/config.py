@@ -110,6 +110,7 @@ class ModelSettings(ConfigModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     reasoning_effort: str | None = None
     reasoning_enabled: bool = False
+    enable_thinking_param_enabled: bool = True
     thinking_enabled: bool = False
     thinking_budget_tokens: int | None = Field(default=None, ge=1)
     reasoning_replay: bool = True

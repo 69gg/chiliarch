@@ -10,6 +10,8 @@
 
 默认值 → TOML → `CHILIARCH_<SECTION>__<FIELD>` 环境变量 → 本次 CLI 的监听参数。环境变量可提供 JSON 对象；数值和布尔值按模型校验。例如 `CHILIARCH_MODEL__API_KEY`、`CHILIARCH_MODEL__HEADERS`。
 
+模型网关不支持 `enable_thinking` 时，可在 WebUI“配置”关闭“发送 enable_thinking 参数”，或设置 `[model]` 下的 `enable_thinking_param_enabled = false`；也可通过 `CHILIARCH_MODEL__ENABLE_THINKING_PARAM_ENABLED=false` 覆盖。该字段支持热重载，新模型运行使用更新值，已运行的调用保留原快照。关闭只省略此请求字段，不影响推理强度、Anthropic 原生 thinking 或思考内容展示，见 [模型兼容](models.md#配置模型)。
+
 相对日志路径和 SQLite 路径相对于配置文件所在目录解析，不依赖进程从哪里启动。未指定配置文件的嵌入式应用则以创建应用时的当前目录为基准。
 
 密钥可只通过环境变量提供，保存 WebUI 配置不会把环境变量密钥写回 TOML。环境变量在进程启动时提供；修改另一个终端里的变量不会改变已有进程的环境。
@@ -23,6 +25,8 @@
 WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子替换；POSIX 还会同步父目录，Windows 不使用不受支持的目录文件描述符。POSIX 配置权限为 0600；Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。文件监视按 `server.config_poll_seconds` 检查修改；无效 TOML、未知字段、错误类型或不合理参数均保留上一份有效配置。
 
 有效更新增加配置 revision。新任务/模型调用使用新快照；运行中调用保留原快照。模式与审批仍在统一操作服务实际执行时检查，不能通过修改配置把已发起的待审批操作自动批准。
+
+配置表单先展示保存响应中的有效值，刷新前的旧页面快照不会覆盖保存结果；后续外部修改会更新尚未编辑的表单，正在编辑时保留草稿并提示配置已变化。
 
 `server.host`、`server.port`、`server.graceful_shutdown_seconds`、`database.url` 保存后需要重启。WebUI 表单显示当前有效配置，保存时提示哪些修改需要重启；配置版本与待重启值可通过 `/api/state` 的 runtime 查询。配置页面保留校验失败和保存结果提示，不常驻展示热重载状态面板。`server.public_url`、模型、模式、投递时间参数、日志策略等支持热重载。
 

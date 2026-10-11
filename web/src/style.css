@@ -1224,6 +1224,11 @@ pre {
   gap: 9px;
   min-height: 28px;
 }
+.checkbox-field small {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.5;
+}
 .settings-save {
   position: sticky;
   bottom: 0;
