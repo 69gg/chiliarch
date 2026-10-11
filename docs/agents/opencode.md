@@ -60,7 +60,7 @@ chiliarch agent config --host opencode --agent opencode-main
 chiliarch agent doctor --agent opencode-main
 ```
 
-v1 legacy 把 `--adapter` 和 `--host` 改为 `opencode-v1`，并选择独立的本机标识和状态库。注册码交互输入；长期凭证保存在状态库，不进入 MCP 配置、聊天或 shell 历史。配对自动生成状态库旁的 `.runner.toml` 并登记无人值守执行；省略 `--workdir` 时交互询问默认目录，已有配置可改用 `--settings <TOML>`。仅希望在当前会话手动领取任务时显式选择 `--mode manual`，并省略目录参数。
+v1 legacy 把 `--adapter` 和 `--host` 改为 `opencode-v1`，并选择独立的本机标识和状态库。注册码交互输入；长期凭证保存在状态库，不进入 MCP 配置、聊天或 shell 历史。配对自动生成状态库旁的 `<状态库文件名>.runner.toml` 并登记无人值守执行；省略 `--workdir` 时交互询问默认目录，已有配置可改用 `--settings <TOML>`。仅希望在当前会话手动领取任务时显式选择 `--mode manual`，并省略目录参数。
 
 当前会话的 MCP 配置只包含本地 daemon 标识；即使默认使用 managed 身份，也能查询工作、联系总管和协调同伴。任务的领取和最终状态由 runner 负责，不由当前会话抢先报告。为每个身份保存独立状态库；两个 OpenCode 版本不能并发复用同一状态库。
 
@@ -129,7 +129,7 @@ Windows TOML 路径可用单引号，例如 `workdir = 'C:\Users\你的用户名
 chiliarch daemon register \
   --state "/绝对路径/私有目录/opencode-agent.db" \
   --agent opencode-main \
-  --settings "/绝对路径/私有目录/opencode-agent.runner.toml"
+  --settings "/绝对路径/私有目录/opencode-agent.db.runner.toml"
 chiliarch agent doctor --agent opencode-main
 ```
 

@@ -164,8 +164,10 @@ async def _pair(arguments: argparse.Namespace) -> None:
     from chiliarch.adapters.runners import RunnerSettings
     from chiliarch.config import atomic_write_toml
     from chiliarch.daemon_client import DaemonClient, ensure_daemon
+    from chiliarch.daemon_models import DaemonError, RegistrationRequest
 
     state_path = arguments.state.expanduser().resolve()
+    request = RegistrationRequest(state_path=state_path, handle=arguments.agent)
     settings_path: Path | None = None
     generated: RunnerSettings | None = None
     async with connection_owner(state_path):
@@ -173,6 +175,13 @@ async def _pair(arguments: argparse.Namespace) -> None:
             # Never overwrite a credential/task ledger, even if the platform is unreachable.
             raise ValueError("State already exists; use another path for a new paired identity")
         await ensure_daemon(arguments.daemon_directory)
+        if request.handle is not None:
+            async with DaemonClient(arguments.daemon_directory) as daemon:
+                registrations = await daemon.agents()
+            if any(entry["handle"] == request.handle for entry in registrations):
+                raise ValueError(
+                    "This local agent handle is already registered; choose a different --agent"
+                )
         if arguments.mode == "manual":
             if arguments.workdir is not None or arguments.settings is not None:
                 raise ValueError("Manual mode does not use runner settings or a default workdir")
@@ -191,7 +200,9 @@ async def _pair(arguments: argparse.Namespace) -> None:
                         raise ValueError("A default workdir is required for managed mode")
                     workdir = Path(entered)
                 generated = RunnerSettings(kind=kind, workdir=workdir)
-                settings_path = state_path.with_suffix(".runner.toml")
+                # Keep the entire state filename: identity.db and identity.sqlite
+                # must not share a runner file, nor may TOML replace credentials.
+                settings_path = state_path.with_name(state_path.name + ".runner.toml")
                 if settings_path.exists():
                     raise ValueError("Runner settings already exist; pass --settings to reuse them")
         await AgentClient.pair(
@@ -210,11 +221,28 @@ async def _pair(arguments: argparse.Namespace) -> None:
         )
         if generated is not None:
             assert settings_path is not None
-            atomic_write_toml(settings_path, generated.model_dump(mode="json", exclude_none=True))
-    async with DaemonClient(arguments.daemon_directory) as daemon:
-        registration = await daemon.register(
-            state_path, handle=arguments.agent, runner_settings=settings_path
-        )
+            try:
+                atomic_write_toml(
+                    settings_path, generated.model_dump(mode="json", exclude_none=True)
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"配对凭证已保存到 {state_path}，但 runner 配置未能保存到 {settings_path}。"
+                    "不要重新配对；修复本地写入问题，保存 runner 配置后用 "
+                    "chiliarch daemon register 重新登记。"
+                ) from error
+    try:
+        async with DaemonClient(arguments.daemon_directory) as daemon:
+            registration = await daemon.register(
+                state_path, handle=request.handle, runner_settings=settings_path
+            )
+    except (DaemonError, OSError) as error:
+        settings_hint = f"、--settings {settings_path}" if settings_path is not None else ""
+        raise ValueError(
+            f"配对凭证已保存到 {state_path}，但守护进程登记未完成。不要重新配对；"
+            f"处理守护进程问题后，用 chiliarch daemon register，保留 --state {state_path}"
+            f"、原 --agent 与 --directory{settings_hint} 重新登记。"
+        ) from error
     print(f"配对完成，本地标识 {registration['handle']}；凭证保存在 {state_path}，不在终端显示。")
     if settings_path is not None:
         print(f"无人值守已登记；默认工作目录配置：{settings_path}")

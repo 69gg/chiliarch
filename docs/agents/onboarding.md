@@ -41,9 +41,11 @@ v0.3.0 起，标准 uv 工具安装会在服务启动时自动检查兼容的正
 
 ## 4. 配对、登记当前身份并配置 MCP
 
-选择一个便于当前宿主引用的本地 `--agent` 标识，用已确认的信息执行 `chiliarch agent pair --workdir <默认工作目录>` 完成配对。该命令先确认守护进程健康，校验目录，再配对、自动生成状态库旁的 `.runner.toml` 并登记无人值守 runner；已有 runner 配置可改用 `--settings <本地TOML>`。后续 MCP 通过这个标识调用已有守护进程，不再为每个会话启动平台连接。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`，OpenCode v2 使用 `opencode`，v1 legacy 使用 `opencode-v1`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
+选择一个便于当前宿主引用的本地 `--agent` 标识，用已确认的信息执行 `chiliarch agent pair --workdir <默认工作目录>` 完成配对。该命令先确认守护进程健康，校验目录，再配对、自动生成状态库旁的 `<状态库文件名>.runner.toml` 并登记无人值守 runner；已有 runner 配置可改用 `--settings <本地TOML>`。后续 MCP 通过这个标识调用已有守护进程，不再为每个会话启动平台连接。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`，OpenCode v2 使用 `opencode`，v1 legacy 使用 `opencode-v1`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
 
 用 `chiliarch agent config --host <宿主类型> --agent <本地标识>` 生成当前宿主对应的 MCP 配置，按用户选择的作用范围合并 `chiliarch` 一项，保留已有服务和其他配置。使用生成器输出的真实程序路径与参数，不凭空拼装其他宿主格式：
+
+本地标识仅使用 ASCII 字母、数字、下划线、点或短横线，长度 1–128，先确认没有占用。若命令已明确提示凭证保存完成但 runner 保存或登记失败，保留状态库；修复设置或本机服务后使用 `daemon register` 恢复登记，不删除状态库、不重新兑换注册码。自动设置文件为完整状态库文件名加 `.runner.toml`，例如 `agent.db.runner.toml`；已有 `--settings` 文件继续使用原路径。
 
 - Codex 按专用文档合并标准 MCP TOML；不读取 `auth.json`，不启动原生推理做安装验收。托管执行实际通过本机 app-server stdio，新建或续接 Chiliarch 自己创建的原生线程；当前会话 MCP 的安装不需要启动 app-server。
 - Claude Code 按专用文档配置项目或用户作用域的 stdio MCP；不覆盖整个 `~/.claude.json` 或项目配置，不读取原生认证文件，不运行真实推理做安装验收。

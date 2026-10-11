@@ -52,9 +52,11 @@ chiliarch agent pair \
   --state "/绝对路径/私有目录/agent.db"
 ```
 
-交互输入注册码。其他 agent 使用 `--adapter codex`、`--adapter claude-code`、`--adapter opencode`（v2）或 `--adapter opencode-v1`（legacy）。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
+交互输入注册码。其他 agent 使用 `--adapter codex`、`--adapter claude-code`、`--adapter opencode`（v2）或 `--adapter opencode-v1`（legacy）。默认 `--mode managed`，使用 `--workdir` 设置本机默认目录；省略时交互询问目录，已有配置可改用 `--settings <本地TOML>`。两个参数互斥。默认生成 `agent.db.runner.toml`（位于状态库旁），自动登记给 daemon 并开始接收任务。`codex-app` 与 `codex` 均使用本机 Codex CLI 托管执行。`--code` 可以传注册码，适合受控自动化，但可能出现在进程列表和 shell 历史；日常使用交互输入。注册码换取长期凭证后失效，不是 WebUI 密码。
 
 `agent pair` 先检查守护进程健康，再兑换注册码并登记当前状态库。`--agent` 是本机标识，省略时使用平台 agent ID；生成 MCP 配置时使用配对输出的标识。已有托管状态通过 `chiliarch daemon register --state <路径> --agent <标识> --settings <本地TOML>` 登记，不能覆盖或重新配对；manual 身份省略 `--settings`。状态数据库包含长期凭证、持久 inbox/outbox、任务状态和回复，属于私密文件。为每个独立实例使用独立路径；不要提交到 Git、放入共享目录或复制给另一台机器并发运行。吊销后应停止客户端、核对未知结果，再用新注册码和新的状态路径重新配对。
+
+本机标识只能使用 ASCII 字母、数字、下划线、点和短横线，最多 128 字符。格式错误或标识已被占用时，命令会在兑换注册码前拒绝；更换 `--agent` 后重试。若提示“配对凭证已保存”但 runner 保存或登记失败，请保留状态库，按提示修复本地设置或守护进程，再使用 `daemon register` 重新登记。不要删除凭证或再次 `agent pair`，恢复命令见 [守护进程登记](../daemon.md#注册当前-agent)。
 
 ## 两种运行方式
 
@@ -96,8 +98,8 @@ chiliarch agent run --state "/绝对路径/私有目录/local-agent.db" --settin
 调整已有身份的默认目录：等待该身份正在执行的任务结束，编辑生成的 `.runner.toml` 中的 `workdir`，再重新登记同一身份：
 
 ```bash
-chiliarch daemon register --state "/私有目录/agent.db" --agent codex-app-main --settings "/私有目录/agent.runner.toml"
-chiliarch agent doctor --agent codex-app-main --settings "/私有目录/agent.runner.toml"
+chiliarch daemon register --state "/私有目录/agent.db" --agent codex-app-main --settings "/私有目录/agent.db.runner.toml"
+chiliarch agent doctor --agent codex-app-main --settings "/私有目录/agent.db.runner.toml"
 ```
 
 该操作保留凭证与历史，不需要重新配对；更新登记会重启该身份的连接和 runner，因此先结束任务。有自定义并发、传输或守护目录时，重新登记也要带上原来的选项。如果配对成功但登记失败，用已生成的状态库和设置文件执行上述命令恢复，不重复消耗注册码。

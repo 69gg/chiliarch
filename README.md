@@ -72,7 +72,7 @@ chiliarch agent config --host codex-app --agent codex-main
 chiliarch agent doctor --agent codex-main
 ```
 
-默认无人值守：`agent pair` 校验默认目录、自动生成状态库旁的 `.runner.toml` 并登记 runner，收到调度后启动本机原生工具。省略 `--workdir` 时询问目录；已有设置可改用 `--settings`。Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`，OpenCode v2 使用 `opencode`，v1 legacy 使用 `opencode-v1`；Codex App 的托管任务使用同机 Codex CLI。将生成的 MCP 配置合并到原生配置中后，当前会话可查询和协调。仅需手动领取时，配对改用 `--mode manual` 并省略目录参数。
+默认无人值守：`agent pair` 校验默认目录、自动生成状态库旁的 `<状态库文件名>.runner.toml` 并登记 runner，收到调度后启动本机原生工具。省略 `--workdir` 时询问目录；已有设置可改用 `--settings`。Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`，OpenCode v2 使用 `opencode`，v1 legacy 使用 `opencode-v1`；Codex App 的托管任务使用同机 Codex CLI。将生成的 MCP 配置合并到原生配置中后，当前会话可查询和协调。仅需手动领取时，配对改用 `--mode manual` 并省略目录参数。
 
 Agents 管理、目标任务下发和重试表单均可填写“工作目录”；总管及下级调度使用 `dispatch_task.workdir`。填写 agent 机器上的已有绝对路径，留空使用该身份默认目录；同身份重试和会话续接默认保留原任务目录。目录选择遵循平台审批，并继续继承原生权限，不自动放宽沙箱或工具规则。默认目录的修改和 Windows 示例见 [目录配置](docs/agents/index.md#默认目录与任务目录)。
 

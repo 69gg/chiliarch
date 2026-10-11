@@ -154,7 +154,9 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
     if mode == "settings":
         kind = "codex" if adapter == "codex-app" else adapter
         existing = f'kind = "{kind}"\nworkdir = "."\ntimeout_seconds = 60\n'
-        state_path.with_suffix(".runner.toml").write_text(existing, encoding="utf-8")
+        state_path.with_name(state_path.name + ".runner.toml").write_text(
+            existing, encoding="utf-8"
+        )
 
     async def ensure(path: Path | None = None) -> JsonObject:
         assert path == directory
@@ -200,6 +202,10 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
         async def __aexit__(self, *_: object) -> None:
             pass
 
+        async def agents(self) -> list[JsonObject]:
+            assert order == ["health"]
+            return []
+
         async def register(
             self, path: Path, *, handle: str | None = None, runner_settings: Path | None = None
         ) -> JsonObject:
@@ -207,7 +213,7 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
             assert path == state_path.resolve()
             assert handle == "app-main"
             if mode != "manual":
-                assert runner_settings == state_path.with_suffix(".runner.toml")
+                assert runner_settings == state_path.with_name(state_path.name + ".runner.toml")
                 raw = await asyncio.to_thread(runner_settings.read_text, encoding="utf-8")
                 settings = tomllib.loads(raw)
                 assert settings["kind"] == ("codex" if adapter == "codex-app" else adapter)
@@ -218,7 +224,7 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
                     assert settings["workdir"] == str(await asyncio.to_thread(tmp_path.resolve))
             else:
                 assert runner_settings is None
-                assert not state_path.with_suffix(".runner.toml").exists()
+                assert not state_path.with_name(state_path.name + ".runner.toml").exists()
             # The connection ownership lock must be released before the daemon
             # begins owning this identity; pairing must also have closed its DB.
             async with connection_owner(path):
@@ -247,7 +253,10 @@ def test_pair_checks_health_before_private_prompt_and_registers_after_state_is_d
         arguments.extend(["--mode", "manual"])
     if mode == "settings":
         index = arguments.index("--workdir")
-        arguments[index : index + 2] = ["--settings", str(state_path.with_suffix(".runner.toml"))]
+        arguments[index : index + 2] = [
+            "--settings",
+            str(state_path.with_name(state_path.name + ".runner.toml")),
+        ]
     command(arguments, monkeypatch)
     assert directory_prompt.call_count == (1 if mode == "prompt" else 0)
     output = capsys.readouterr()
@@ -265,7 +274,7 @@ def test_invalid_managed_setup_does_not_consume_pairing_code(
     state_path = tmp_path / "identity.db"
     arguments = pair_arguments(state_path, tmp_path / "daemon")
     arguments[arguments.index("--adapter") + 1] = adapter
-    settings_path = state_path.with_suffix(".runner.toml")
+    settings_path = state_path.with_name(state_path.name + ".runner.toml")
     other_kind = {"opencode": "opencode-v1", "opencode-v1": "opencode"}.get(adapter, "claude-code")
     original = f'kind = "{other_kind}"\nworkdir = "."\n'
     if failure == "missing_directory":
@@ -278,6 +287,10 @@ def test_invalid_managed_setup_does_not_consume_pairing_code(
     pair = AsyncMock()
     prompt = Mock(side_effect=AssertionError("Must validate local setup before asking for a code"))
     monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", AsyncMock())
+    daemon = AsyncMock()
+    daemon.agents.return_value = []
+    daemon.__aenter__.return_value = daemon
+    monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", Mock(return_value=daemon))
     monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
     monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", prompt)
     with pytest.raises(SystemExit):
@@ -287,6 +300,111 @@ def test_invalid_managed_setup_does_not_consume_pairing_code(
     assert not state_path.exists()
     if failure != "missing_directory":
         assert settings_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("handle", ["", "path/to/agent", "有中文", "a" * 129])
+def test_invalid_local_handle_fails_before_daemon_start_or_pairing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handle: str
+) -> None:
+    state_path = tmp_path / "identity.db"
+    arguments = pair_arguments(state_path, tmp_path / "daemon")
+    arguments[arguments.index("--agent") + 1] = handle
+    ensure = AsyncMock()
+    pair = AsyncMock()
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", ensure)
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    with pytest.raises(SystemExit):
+        command(arguments, monkeypatch)
+    ensure.assert_not_awaited()
+    pair.assert_not_awaited()
+    assert not state_path.exists()
+
+
+def test_occupied_handle_does_not_consume_code_or_replace_another_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "new.db"
+    existing = tmp_path / "existing.db"
+    existing.write_bytes(b"existing credential ledger")
+    daemon = AsyncMock()
+    daemon.__aenter__.return_value = daemon
+    daemon.agents.return_value = [{"handle": "app-main", "state_path": str(existing)}]
+    pair = AsyncMock()
+    prompt = Mock()
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", AsyncMock())
+    monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", Mock(return_value=daemon))
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", prompt)
+    with pytest.raises(SystemExit, match="already registered"):
+        command(pair_arguments(state_path, tmp_path / "daemon"), monkeypatch)
+    pair.assert_not_awaited()
+    prompt.assert_not_called()
+    assert not state_path.exists()
+    assert existing.read_bytes() == b"existing credential ledger"
+
+
+@pytest.mark.parametrize("failure", [None, "settings", "registration"])
+def test_pairing_preserves_credentials_and_explains_partial_setup_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    # A state file ending in .runner.toml must remain SQLite, not be replaced by TOML.
+    state_path = tmp_path / "identity.runner.toml"
+    settings_path = state_path.with_name(state_path.name + ".runner.toml")
+    daemon = AsyncMock()
+    daemon.__aenter__.return_value = daemon
+    daemon.agents.return_value = []
+    daemon.register.return_value = {"handle": "app-main"}
+    if failure == "registration":
+        daemon.register.side_effect = DaemonError("daemon unavailable")
+
+    async def pair(
+        server: str, code: str, name: str, machine: str, path: Path, **kwargs: Any
+    ) -> None:
+        store = ClientStore(path)
+        await store.open()
+        try:
+            await store.save_identity(
+                {"credential": "persisted-private-credential", "agent_id": "platform-agent"}
+            )
+        finally:
+            await store.close()
+
+    async def saved_identity() -> JsonObject:
+        store = ClientStore(state_path)
+        await store.open()
+        try:
+            return await store.identity()
+        finally:
+            await store.close()
+
+    monkeypatch.setattr("chiliarch.daemon_client.ensure_daemon", AsyncMock())
+    monkeypatch.setattr("chiliarch.daemon_client.DaemonClient", Mock(return_value=daemon))
+    monkeypatch.setattr("chiliarch.adapters.cli.AgentClient.pair", pair)
+    monkeypatch.setattr("chiliarch.adapters.cli.getpass.getpass", lambda _: "one-time-code")
+    if failure == "settings":
+        monkeypatch.setattr(
+            "chiliarch.config.atomic_write_toml", Mock(side_effect=OSError("disk full"))
+        )
+    arguments = pair_arguments(state_path, tmp_path / "daemon")
+    if failure:
+        with pytest.raises(SystemExit, match="不要重新配对") as error:
+            command(arguments, monkeypatch)
+        message = str(error.value)
+        assert str(state_path) in message
+        assert str(settings_path) in message
+        assert "persisted-private-credential" not in message
+        assert "one-time-code" not in message
+    else:
+        command(arguments, monkeypatch)
+    assert asyncio.run(saved_identity())["credential"] == "persisted-private-credential"
+    if failure != "settings":
+        assert tomllib.loads(settings_path.read_text())["kind"] == "codex"
+        daemon.register.assert_awaited_once_with(
+            state_path, handle="app-main", runner_settings=settings_path
+        )
+    else:
+        assert not settings_path.exists()
+        daemon.register.assert_not_awaited()
 
 
 def test_unhealthy_daemon_blocks_pair_before_consuming_registration_code(

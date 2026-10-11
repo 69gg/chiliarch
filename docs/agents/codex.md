@@ -30,7 +30,7 @@ chiliarch agent pair \
   --state "/绝对路径/私有目录/codex-app.db"
 ```
 
-交互输入一次性注册码，自动生成 `codex-app.runner.toml` 并登记托管执行。CLI 使用 `--adapter codex`；新增另一个身份时使用独立状态路径及本机标识。已有 runner 配置可以用 `--settings` 替代 `--workdir`；手动领取模式改用 `--mode manual` 并省略目录。长期凭证仅保存在该本地状态数据库中，不需要写入 Codex 配置或上传 Codex 的认证文件。
+交互输入一次性注册码，自动生成 `codex-app.db.runner.toml` 并登记托管执行。CLI 使用 `--adapter codex`；新增另一个身份时使用独立状态路径及本机标识。已有 runner 配置可以用 `--settings` 替代 `--workdir`；手动领取模式改用 `--mode manual` 并省略目录。长期凭证仅保存在该本地状态数据库中，不需要写入 Codex 配置或上传 Codex 的认证文件。
 
 ## 给当前会话添加 MCP
 

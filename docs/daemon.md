@@ -68,7 +68,7 @@ chiliarch agent doctor --agent codex-app-main
 chiliarch daemon register \
   --state "/绝对路径/私有目录/codex-app.db" \
   --agent codex-app-main \
-  --settings "/绝对路径/私有目录/codex-app.runner.toml"
+  --settings "/绝对路径/私有目录/codex-app.db.runner.toml"
 chiliarch daemon agents
 ```
 
@@ -115,7 +115,7 @@ chiliarch agent config --host codex --agent worker \
 
 当前会话 MCP 通过 `--mode daemon --agent <标识>` 接入，可以查询工作、联系总管和读取回复。`agent pair` 默认登记无人值守 managed 身份并自动处理调度；仅在配对时明确指定 `--mode manual` 的身份由当前会话主动领取、执行并报告。守护进程不唤醒或接管空闲 Codex App、Claude Code 或 OpenCode 会话。
 
-首次 `agent pair --workdir <默认目录>` 自动生成状态库旁的 `.runner.toml` 并登记，无需再执行 register；也可用 `--settings` 复用已有 TOML。以下命令用于更新已有身份设置或将 manual 身份改为 managed。先结束该身份正在运行的任务，再编辑 TOML 和重新登记，并保留原有自定义并发与传输选项：
+首次 `agent pair --workdir <默认目录>` 自动生成状态库旁的 `<状态库文件名>.runner.toml` 并登记，无需再执行 register；也可用 `--settings` 复用已有 TOML。以下命令用于更新已有身份设置或将 manual 身份改为 managed。先结束该身份正在运行的任务，再编辑 TOML 和重新登记，并保留原有自定义并发与传输选项：
 
 ```bash
 chiliarch daemon register \

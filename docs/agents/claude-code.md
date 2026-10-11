@@ -24,7 +24,7 @@ chiliarch agent pair \
   --state "/绝对路径/私有目录/claude-agent.db"
 ```
 
-交互输入一次性注册码；长期凭证存入状态库，自动生成 `claude-agent.runner.toml` 并登记无人值守执行。省略 `--workdir` 时询问默认目录；已有 TOML 可改用 `--settings`。仅手动领取时指定 `--mode manual` 并省略目录参数。保密、备份、吊销和重新配对约定见 [通用说明](index.md#配对与本地身份)。
+交互输入一次性注册码；长期凭证存入状态库，自动生成 `claude-agent.db.runner.toml` 并登记无人值守执行。省略 `--workdir` 时询问默认目录；已有 TOML 可改用 `--settings`。仅手动领取时指定 `--mode manual` 并省略目录参数。保密、备份、吊销和重新配对约定见 [通用说明](index.md#配对与本地身份)。
 
 ## 当前会话 MCP
 
