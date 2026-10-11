@@ -223,14 +223,17 @@ async def test_cancelled_continuation_stays_unresumable_after_restart(tmp_path: 
     try:
         assert (await run(client, task("first")))["status"] == "completed"
         fake_cli(tmp_path, codex_success(), hang=True)
+        observation = tmp_path / "observed.json"
+        observation.unlink()
         command = task("interrupted", "first")
         await client.store.accept(command)
         running = asyncio.create_task(client._execute(command))
         async with asyncio.timeout(10):
-            while "Task ID: interrupted" not in observed(tmp_path)["stdin"]:
+            while not observation.exists():
                 if running.done():
                     running.result()
                 await asyncio.sleep(0.01)
+        assert "Task ID: interrupted" in observed(tmp_path)["stdin"]
         running.cancel()
         with pytest.raises(asyncio.CancelledError):
             await running

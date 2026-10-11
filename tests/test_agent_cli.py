@@ -177,7 +177,9 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     monkeypatch.setattr("httpx.AsyncClient", network)
     monkeypatch.setattr("httpx.Client", network)
     monkeypatch.setattr("socket.create_connection", network)
-    monkeypatch.setattr("socket.socket.connect", network)
+    monkeypatch.setattr("asyncio.BaseEventLoop.create_connection", network)
+    # Windows asyncio uses socket.connect internally to create its wakeup socket pair.
+    # Guard application connection APIs without blocking event-loop initialization.
 
     command(["doctor", "--state", str(state_path), "--settings", str(settings_path)], monkeypatch)
 

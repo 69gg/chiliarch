@@ -119,7 +119,10 @@ def main(fixture: JsonObject) -> None:
             observed["mcp_path"] = str(config_path)
             observed["mcp_config"] = json.loads(config_path.read_text(encoding="utf-8"))
             observed["mcp_mode"] = config_path.stat().st_mode & 0o777
-    Path("observed.json").write_text(json.dumps(observed), encoding="utf-8")
+    # Readers use appearance of the file as readiness; publish only complete JSON.
+    observation = Path("observed.json.tmp")
+    observation.write_text(json.dumps(observed), encoding="utf-8")
+    observation.replace("observed.json")
     if fixture["child"]:
         process = subprocess.Popen(
             [

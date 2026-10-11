@@ -291,6 +291,9 @@ def test_windows_startup_applies_environment_in_same_process_without_shell(
     )
     inherited = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
     inherited.update({"CODEX_HOME": "different-login-default", "UNRELATED_RUNTIME": "retained"})
+    # A Windows venv launcher can have a different PID from its Python interpreter.
+    # Measure inside that interpreter, immediately before running the real bootstrap.
+    command[2] = "import os;print(os.getpid(),flush=True);" + command[2]
     process = subprocess.Popen(
         [sys.executable, *command[1:]],
         cwd=tmp_path,
@@ -302,8 +305,9 @@ def test_windows_startup_applies_environment_in_same_process_without_shell(
     )
     stdout, stderr = process.communicate(timeout=10)
     assert process.returncode == 0, stderr
-    received = json.loads(stdout)
-    assert received["pid"] == process.pid
+    bootstrap_pid, payload = stdout.split("\n", 1)
+    received = json.loads(payload)
+    assert received["pid"] == int(bootstrap_pid)
     assert received["arguments"] == service.command[3:]
     assert received["environment"].items() >= definition_environment(service).items()
     assert received["environment"]["UNRELATED_RUNTIME"] == "retained"
