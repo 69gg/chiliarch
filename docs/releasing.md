@@ -30,18 +30,20 @@ SSE 离线检测测试持续消费服务端事件，但不发送 agent 心跳，
 
 网络测试等待任务状态时直接读取持久记录，不反复发起会写入审计记录的管理操作，避免观察本身增加 SQLite 写入争用。降级测试校验 WS → SSE → 长轮询的完整顺序，并允许同一传输重连；仍需确认最终任务结果、处理次数、在线状态和消息 ACK，不能把正常重连误判为失败。
 
+自动更新测试使用隔离安装环境、可控元数据和安装子进程，验证版本与 Python 约束、来源识别、并发选择、失败时保留旧运行环境、原子发布及日志脱敏；CLI 测试覆盖实际参数解析和进程转交。测试不得更新开发者真实 uv 工具环境或向原生 agent 发起推理。
+
 生产静态资源为生成文件，不提交到 Git；`static/.gitkeep` 保留构建目录。前端 build 输出到 Python package，Hatch wheel/sdist 强制包含该目录；协议 Schema 为受版本管理的公开契约，修改模型后重新导出并验证。
 
 ## 升级版本
 
 ```bash
-uv run python scripts/bump_version.py 0.2.0 --dry-run
-uv run python scripts/bump_version.py 0.2.0
+uv run python scripts/bump_version.py 0.3.0 --dry-run
+uv run python scripts/bump_version.py 0.3.0
 ```
 
 脚本使用 uv version 同步 pyproject 与 uv.lock，再同步 web/package.json；JSON 报告中的仓库相对路径在各系统统一使用 `/`。包 `__version__` 来自安装元数据，不再维护第二个源码版本字符串。同版本重跑可以修复前端版本不一致；失败时恢复受管理文件。脚本不自动提交、打 tag 或推送。
 
-支持公开三段 PEP 440 版本，例如 0.2.0、0.2.0rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
+支持公开三段 PEP 440 版本，例如 0.3.0、0.3.0rc1；拒绝本地版本号和 epoch。CHANGELOG 标题使用 `## v<版本> 标题`，下方写概要、按用户影响分组的要点和 `---`。不要自动拼接提交历史，也不要把文档同步/测试数量当作发布主题。
 
 预发布标签会生成 GitHub prerelease，并且不更新 latest。wheel 与 sdist 明确使用 Core Metadata 2.4，兼容当前 Twine 校验器，同时保留 MIT SPDX 许可证信息。
 
@@ -54,8 +56,8 @@ uv build
 uv run twine check dist/*
 uv run --isolated --no-project --with dist/*.whl scripts/smoke_test.py
 uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_test.py
-uv run python scripts/release_notes.py validate --tag v0.2.0
-uv run python scripts/release_notes.py extract --tag v0.2.0
+uv run python scripts/release_notes.py validate --tag v0.3.0
+uv run python scripts/release_notes.py extract --tag v0.3.0
 ```
 
 隔离 smoke test 从实际分发包导入模块，验证 UI、协议 Schema、密码登录和 API。sdist 同样含已构建 UI，安装它时无需 Node；重新开发 UI 仍需 pnpm。
@@ -91,13 +93,13 @@ build 不拥有 PyPI OIDC 凭证；只有 publish job 有 id-token:write，GitHu
 
 确认版本、CHANGELOG、测试和签名提交后，项目维护者才执行 tag 和 push。代码完成或本地构建成功不等于已经上传 PyPI；未设置 publisher 或未推送 tag 时不会发布。
 
-以 v0.2.0 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
+以 v0.3.0 为例，先将代码推送到上述 GitHub 仓库，确认该提交的三系统 CI 全部通过后，再推送签名标签。以下第一条命令只在尚未配置 `origin` 时执行：
 
 ```bash
 git remote add origin https://github.com/69gg/chiliarch.git
 git push -u origin main
-git tag -s v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+git tag -s v0.3.0 -m "v0.3.0"
+git push origin v0.3.0
 ```
 
 在 GitHub **Actions → Release** 查看运行结果；若设置了环境审核，批准 `pypi` 部署后继续发布。成功后用户及 agent 均默认使用 `uv tool install chiliarch` 从 PyPI 安装。

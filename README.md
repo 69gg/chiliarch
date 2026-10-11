@@ -2,7 +2,7 @@
 
 连接、管理与统一调度 agents 的平台。内置 Chiliarch AI 总管，提供手动管理、持久对话、工具调用和 ask / auto / yolo 审批模式。
 
-所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.2.0 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
+所有连接都由 agent 主动出站发起，服务端永远不主动连接 agent。v0.3.0 提供平台框架、独立协议、跨平台共享守护进程、MCP 会话桥和本地 CLI 执行器。
 
 ## 支持的 agents
 
@@ -35,6 +35,8 @@ chiliarch serve
 `init` 交互设置单用户登录密码并创建 `chiliarch.toml`；POSIX 权限为 0600，Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。配置保存支持三系统的原子替换与热重载。浏览器访问 `http://127.0.0.1:8000`。需要其他机器访问时，在配置中修改监听地址和公开地址，或使用 `serve --host <监听地址>`；HTTPS 可选。
 
 停止平台或本机守护进程时，默认等待 HTTP/SSE 请求结束最多 15 秒，随后进入资源清理，避免长连接无限阻塞关闭。平台使用 `server.graceful_shutdown_seconds`，守护进程使用 `daemon.json` 中的同名字段；修改后重启生效。该期限不限制后续 agent 任务及进程树清理，详见 [部署文档](docs/deployment.md)。
+
+v0.3.0 起，标准 uv 工具安装默认在平台或 agent 服务启动时检查并自动安装兼容的正式新版；离线或更新失败继续使用已有版本。已运行的守护进程和任务不会被自动重启。`CHILIARCH_AUTO_UPDATE=0` 可关闭检查与安装；旧版先手动 `uv tool upgrade chiliarch` 并重启一次。具体生效时机、版本约束与维护见 [自动升级](docs/upgrading.md)。
 
 源码开发与本地构建见 [开发、测试与发版](docs/releasing.md)；用户部署见 [部署文档](docs/deployment.md)。
 
@@ -119,7 +121,7 @@ uv run pytest
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web build
-uv run python scripts/bump_version.py 0.2.0 --dry-run
+uv run python scripts/bump_version.py 0.3.0 --dry-run
 uv run chiliarch schema --output src/chiliarch/protocol/schema.json
 uv build
 ```
@@ -129,6 +131,7 @@ uv build
 ## 文档
 
 - [部署、初始化与维护](docs/deployment.md)
+- [启动检查、自动升级与关闭开关](docs/upgrading.md)
 - [配置、热重载与日志](docs/configuration.md)
 - [架构与保证边界](docs/architecture.md)
 - [目标、任务依赖、产物与验收](docs/coordination.md)

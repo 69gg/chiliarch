@@ -10,7 +10,9 @@ chiliarch --config ./chiliarch.toml init
 chiliarch --config ./chiliarch.toml serve
 ```
 
-需要固定版本时，使用 `uv tool install chiliarch==<版本>`。
+需要固定版本时，使用 `uv tool install chiliarch==<版本>`。启动检查保留该约束，固定版本不会被自动跨越。
+
+v0.3.0 起，标准 uv 工具安装在 `serve` 和 agent 服务启动时默认检查并安装兼容的正式新版，通过校验后使用新的独立运行环境。检查或安装失败时继续启动已有版本，不中断运行中的实例。旧版先手动升级一次，详见 [自动升级与开关](upgrading.md)。
 
 `init` 交互输入并确认至少 8 字符的密码，服务端保存 scrypt 哈希，不保存明文。没有默认密码。已有配置不会被覆盖，除非显式指定 `init --force`。不要对正在使用的配置随意重新初始化；日常修改使用 WebUI 或编辑 TOML。
 
@@ -62,7 +64,7 @@ chiliarch agent doctor --agent codex-main
 
 任务表单可填写 agent 机器上的已有绝对目录，留空使用本机默认值；总管和下级请求同样支持 `workdir`。默认无人值守保持原生权限，Codex App 的自动工作由本机 CLI 执行，不唤醒当前 App 会话。默认目录调整、任务续接与重试规则见 [Agent 目录配置](agents/index.md#默认目录与任务目录)，安装提示词见 [自助接入指南](agents/onboarding.md)。
 
-已安装用户先结束正在执行的任务，再运行 `uv tool upgrade chiliarch`；更新平台后重启平台进程，更新 agent 机器后运行 `chiliarch daemon restart`。若 uv 更新改变了服务记录的解释器路径，按 [重新安装服务](daemon.md#原生配置目录与环境) 先 `daemon uninstall` 再 `daemon install` 刷新启动项；保留登记和状态库。已有 manual 登记保持原状，需要转为托管时准备 runner TOML 并使用 `daemon register --settings` 更新，不必重新配对。
+已有健康且本地 API 兼容的 daemon 会被复用，即使新 CLI 已更新，也不强制重启正在工作的守护进程。需要应用新运行版本时，等本机所有托管任务结束，再运行 `chiliarch daemon restart`；先前的登记与状态库保留，不必重新配对。自动更新不升级原生 Codex／Claude／OpenCode，不切换原有 manual 身份；需要转为托管时准备 runner TOML 并使用 `daemon register --settings` 更新。v0.2.0 及更早版本首次升级、固定版本和关闭检查的步骤见 [升级文档](upgrading.md)。
 
 ## HTTP、HTTPS 与反向代理
 
@@ -125,3 +127,4 @@ chiliarch backup --database /实际运行的数据库路径/chiliarch.db --outpu
 | 任务 cancel_requested | agent 尚未确认取消；不能等同于已经停止                    |
 | interrupted           | 执行结果未知，先检查任务/操作记录，避免重复副作用         |
 | 热重载拒绝            | 修正配置类型和取值，上一份有效配置继续生效                |
+| 自动更新失败但仍启动旧版 | 检查 uv、网络及启动提示；下一次启动会再检查，见 [升级文档](upgrading.md) |

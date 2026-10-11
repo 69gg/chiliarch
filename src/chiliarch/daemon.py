@@ -24,6 +24,7 @@ from chiliarch.adapters.mailbox import AgentMailbox
 from chiliarch.adapters.runtime import outbound_client
 from chiliarch.client import AgentClient, ClientStore
 from chiliarch.daemon_models import (
+    DAEMON_API_VERSION,
     AgentRegistration,
     DaemonError,
     MailboxRequest,
@@ -291,6 +292,7 @@ def create_daemon_app(runtime: DaemonRuntime) -> FastAPI:
         return {
             "status": "ok",
             "version": __version__,
+            "api_version": DAEMON_API_VERSION,
             "pid": os.getpid(),
             "directory": str(runtime.directory),
             "agent_count": len(runtime.sessions),
@@ -383,6 +385,7 @@ async def run_daemon(directory: Path) -> None:
                 "token": runtime.admin_token,
                 "pid": os.getpid(),
                 "version": __version__,
+                "api_version": DAEMON_API_VERSION,
             },
         )
 

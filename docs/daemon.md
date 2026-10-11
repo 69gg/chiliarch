@@ -20,13 +20,17 @@ chiliarch daemon status
 
 `install` 登记当前用户登录后的自启动，并启动本地守护进程。后续 `agent pair` 使用同一发现与复用流程：已有健康服务复用，没有时安装或启动；健康检查失败不兑换注册码。
 
-健康检查验证经过认证的本地接口和版本，不能仅凭进程、端口或启动项存在判断已接入。探测使用独立短超时，不与领取任务等较长操作共用等待时间；接口不可达但守护目录仍被进程占用时，停止操作报错，不能宣称已经停止。多个安装流程由单实例锁协调；已有身份不会自动重新配对，数据与其他 agent 登记不会被覆盖。系统管理器不可用时可启动后台进程，但状态明确显示自启动尚未启用；容器或非登录环境也可运行 `chiliarch daemon run` 前台入口。
+健康检查验证经过认证的本地接口和独立的本地 API 版本；软件版本不同但 API 兼容时仍可复用，不能仅凭进程、端口或启动项存在判断已接入。探测使用独立短超时，不与领取任务等较长操作共用等待时间；接口不可达但守护目录仍被进程占用时，停止操作报错，不能宣称已经停止。多个安装流程由单实例锁协调；已有身份不会自动重新配对，数据与其他 agent 登记不会被覆盖。系统管理器不可用时可启动后台进程，但状态明确显示自启动尚未启用；容器或非登录环境也可运行 `chiliarch daemon run` 前台入口。
 
 系统启动项记录实际 Python 解释器的绝对路径、工作目录和必要环境，不依赖调用时的 shell 或项目 cwd。优先用 `uv tool install` 的持久环境；修改或删除其安装环境后应重新检查启动配置。[uv 工具管理](https://docs.astral.sh/uv/concepts/tools/)
 
+`runtime.json` 和经过认证的 `/health` 返回 `api_version=1`，同时保留软件 `version`；本地 API 版本与 agent 对平台的消息协议版本分别管理。缺少 `api_version` 的旧 daemon 继续要求精确的软件版本一致，因此从 v0.2.0 首次升级后要重启 daemon 才能使用新兼容机制。
+
+v0.3.0 起，标准 uv 工具安装在 daemon 启动时检查并自动安装兼容的正式新版，使用独立运行环境，不覆盖正在运行的 Python 文件。`install`、`start` 和 `agent pair` 仍复用健康且 API 兼容的旧 daemon，不自动中断任务；需要马上应用新版时，确认所有托管任务空闲后再 `daemon restart`。检查或安装失败保留原版本，关闭开关和旧版首次升级见 [自动升级](upgrading.md)。
+
 ## 原生配置目录与环境
 
-托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude／OpenCode 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`OPENCODE_CONFIG_DIR`、`OPENCODE_GIT_BASH_PATH`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由本轮实际 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
+托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude／OpenCode 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`OPENCODE_CONFIG_DIR`、`OPENCODE_GIT_BASH_PATH`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。同时保存启动更新开关 `CHILIARCH_AUTO_UPDATE`，以及已设置的 uv 路径变量 `UV_TOOL_DIR`、`UV_TOOL_BIN_DIR`、`UV_CACHE_DIR`、`UV_CONFIG_FILE`、`UV_PYTHON_INSTALL_DIR`、`XDG_BIN_HOME`，供登录启动使用；不保存索引认证。项目级配置与指令由本轮实际 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
 
 启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。`OPENCODE_CONFIG_CONTENT` 可能包含秘密，不自动写入自启动项；需要跨登录保留配置时，使用原生私有配置文件与 `OPENCODE_CONFIG` 路径。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
 
@@ -180,6 +184,6 @@ WebUI 将目录不可访问、目录占用、旧执行未确认及缺少执行�
 
 `daemon.json` 顶层的 `graceful_shutdown_seconds` 控制停止时等待本地 HTTP 连接与请求结束的上限，默认 15 秒，必须为正整数，修改后重启生效。超时后取消剩余请求并继续应用资源清理；这不是完整退出流程的总时限，不会缩短或跳过托管 agent 任务及进程树清理。
 
-卸载移除当前用户服务及自启动，保留守护目录、登记、凭证和日志；下次安装可恢复登记。需要清理数据时先核对未上传结果、未知执行副作用与平台身份。升级前停止或排空工作，备份登记、状态库和设置，再更新 uv 工具环境与启动配置。
+卸载移除当前用户服务及自启动，保留守护目录、登记、凭证和日志；下次安装可恢复登记。需要清理数据时先核对未上传结果、未知执行副作用与平台身份。自动更新会保留旧运行环境，避免破坏现有进程和服务路径；不要在使用期间删除它们。需要手动更新 uv 工具环境、刷新启动项或清理安装时，先排空工作并备份登记、状态库和设置，详见 [升级维护](upgrading.md)。
 
 结构化日志按大小轮换，目录为守护目录下的 `logs`，stdio MCP 的 stdout 只承载协议。保留共享状态库与日志的权限，勿复制同一凭证到另一机器并发运行。详见 [日志配置](configuration.md#日志存储与轮换) 和 [部署维护](deployment.md)。

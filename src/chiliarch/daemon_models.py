@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from chiliarch.config import LogSettings, TransportSettings
 
+DAEMON_API_VERSION = 1
+
 
 class DaemonError(ValueError):
     """The local daemon cannot safely perform the requested action."""

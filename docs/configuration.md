@@ -10,6 +10,10 @@
 
 密钥可只通过环境变量提供，保存 WebUI 配置不会把环境变量密钥写回 TOML。环境变量在进程启动时提供；修改另一个终端里的变量不会改变已有进程的环境。
 
+## 启动更新开关
+
+标准 uv 工具安装默认在平台或 agent 服务启动时检查并自动安装兼容正式新版。`CHILIARCH_AUTO_UPDATE=0` 关闭新的检查与安装，仍使用已选中的运行版本；在实际进程启动环境设置，不属于平台 TOML 或 WebUI 热重载字段。当前用户自启动项保存安装时的该变量，修改既有启动项环境需按 [守护进程维护](daemon.md#原生配置目录与环境) 刷新；只修改终端变量不会改变已有服务。版本约束、离线行为和旧版首次升级见 [自动升级](upgrading.md)。
+
 ## 保存与热重载
 
 WebUI 修改先校验整份候选配置，然后将临时文件 fsync 后原子替换；POSIX 还会同步父目录，Windows 不使用不受支持的目录文件描述符。POSIX 配置权限为 0600；Windows 继承配置所在目录的 ACL，请保存在当前用户私有目录。文件监视按 `server.config_poll_seconds` 检查修改；无效 TOML、未知字段、错误类型或不合理参数均保留上一份有效配置。
@@ -59,6 +63,8 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 | max_message_bytes                              | 单条信封大小上限                                   |
 | reconnect_base_seconds / reconnect_max_seconds | 客户端退避范围，加入抖动                           |
 | upgrade_interval_seconds                       | 降级传输定期重新尝试 WS 的间隔                     |
+
+`upgrade_interval_seconds` 是传输恢复间隔，不是软件版本更新间隔。
 
 这些客户端字段只有使用对应配置启动参考客户端时才影响其行为。跨语言插件应使用自己的配置或协商默认值；本版不自动向任意插件推送所有服务端设置。
 
@@ -136,6 +142,8 @@ Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新�
 完整 TOML 和运行流程见 [Codex](agents/codex.md#托管-cli-执行)、[Claude Code](agents/claude-code.md#托管-runner-配置) 与 [OpenCode](agents/opencode.md#托管-runner-配置)。修改本地 TOML 后重新执行 `daemon register --settings <路径>` 更新对应身份；先确认正在执行的工作已结束，避免更新时中断托管任务。
 
 ## 日志存储与轮换
+
+启动更新器在服务日志初始化前工作，单独写入默认状态根目录的 `updates/<安装标识>/update.log`，1 MiB 轮换并保留 2 个备份，不受下方 `logs` 配置控制。来源、时限和位置见 [升级日志](upgrading.md#运行环境与更新日志)。
 
 `logs.directory` 下的 `chiliarch.jsonl` 为 UTF-8 JSON Lines，每行包含 UTC timestamp、level、logger、message 以及事件相关 ID、状态或耗时。记录平台启停、HTTP 路径/状态/耗时、操作执行/审批、agent 连接/消息/任务状态、配置更新和总管运行事件。
 

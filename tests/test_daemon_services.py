@@ -246,6 +246,12 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",
             "XDG_CACHE_HOME",
+            "XDG_BIN_HOME",
+            "UV_TOOL_DIR",
+            "UV_TOOL_BIN_DIR",
+            "UV_CACHE_DIR",
+            "UV_CONFIG_FILE",
+            "UV_PYTHON_INSTALL_DIR",
             "USERPROFILE",
             "APPDATA",
             "LOCALAPPDATA",
@@ -254,12 +260,17 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
     service.environment.update(
         {
             **directories,
+            "CHILIARCH_AUTO_UPDATE": "false",
             "OPENAI_API_KEY": "secret-openai",
             "ANTHROPIC_API_KEY": "secret-anthropic",
             "CLAUDE_CODE_OAUTH_TOKEN": "secret-oauth",
             "OPENCODE_API_KEY": "secret-opencode",
             "OPENCODE_CONFIG_CONTENT": '{"provider":{"options":{"apiKey":"secret"}}}',
             "HTTPS_PROXY": "https://user:password@proxy.invalid",
+            "UV_INDEX_URL": "https://user:password@index.invalid/simple",
+            "UV_EXTRA_INDEX_URL": "https://user:password@extra.invalid/simple",
+            "UV_DEFAULT_INDEX": "https://user:password@default.invalid/simple",
+            "UV_INDEX_PRIVATE_PASSWORD": "private-index-password",
             "UNRELATED_CONFIG_DIR": "/unrelated",
         }
     )
@@ -269,6 +280,7 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
         "PATH": "/custom bin:/usr/bin",
         "LANG": "zh_CN.UTF-8",
         **directories,
+        "CHILIARCH_AUTO_UPDATE": "false",
     }
 
 

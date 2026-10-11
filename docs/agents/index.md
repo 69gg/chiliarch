@@ -22,7 +22,7 @@
 
 OpenCode 的两代运行时使用各自的原生 MCP 配置格式，托管任务统一通过 ACP v1 驱动；详见 [版本选择与安装](opencode.md#版本选择与安装)。Undefined 可以按 [扩展接口](../extensions.md) 与 [公开协议](../protocol.md) 实现适配，本版尚未包含其厂商适配器。
 
-当前版本为 v0.2.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
+当前版本为 v0.3.0。官方仓库为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
 本机接入默认先发现并复用当前用户守护进程，再配对并登记无人值守身份，配置当前会话 MCP 用于查询和协调。它共用进程，不共用 agent 凭证；默认用户登录后自动启动。Windows、macOS、Linux 的管理入口和维护见 [本机共享守护进程](../daemon.md)。
 
@@ -33,6 +33,8 @@ OpenCode 的两代运行时使用各自的原生 MCP 配置格式，托管任务
 ```bash
 uv tool install chiliarch
 ```
+
+v0.3.0 起，标准 uv 工具安装默认在服务启动时检查并自动安装兼容正式新版；已健康且本地 API 兼容的 daemon 会被复用，不为更新强行重启。接入新身份前先检查服务和正在执行的任务；需要让现有 daemon 应用新版时，待全部任务结束再重启。旧版首次升级、关闭检查与版本约束见 [自动升级](../upgrading.md)。
 
 安装后运行 `chiliarch daemon install`，默认登记当前用户登录自启动并检查本地健康。无可用系统管理器时使用后台或前台入口，状态明确显示未启用自启动。CLI runner 复用本机 `codex`、`claude` 或 `opencode` 和原生认证，不安装或登录它们，也不上传认证文件。MCP 与托管执行支持 Windows、macOS、Linux；Windows 原生入口及进程树清理边界见 [守护进程文档](../daemon.md#当前会话与托管执行)。
 

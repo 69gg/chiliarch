@@ -10,6 +10,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -25,6 +26,7 @@ from chiliarch.client import AgentClient, ClientStore
 from chiliarch.daemon import AgentSession, DaemonRuntime, run_daemon
 from chiliarch.daemon_client import DaemonClient, RemoteMailbox, ensure_daemon, stop_daemon
 from chiliarch.daemon_models import (
+    DAEMON_API_VERSION,
     AgentRegistration,
     DaemonError,
     private_write,
@@ -352,14 +354,20 @@ class DisabledService(UnavailableService):
         raise AssertionError("Disabled login tasks must use manual background startup")
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 async def test_explicit_stop_can_authenticate_an_old_version_and_wait_for_cleanup(
     daemon: tuple[Path, dict[Path, AgentClient]],
     monkeypatch: pytest.MonkeyPatch,
+    legacy: bool,
 ) -> None:
     directory, _ = daemon
     runtime_file = directory / "runtime.json"
     runtime = json.loads(runtime_file.read_text())
     runtime["version"] = "old-installation"
+    if legacy:
+        runtime.pop("api_version")
+    else:
+        runtime["api_version"] = DAEMON_API_VERSION + 1
     private_write(runtime_file, runtime)
     monkeypatch.setattr("chiliarch.daemon_client.ServiceManager", UnavailableService)
     async with DaemonClient(directory) as client:
@@ -367,6 +375,94 @@ async def test_explicit_stop_can_authenticate_an_old_version_and_wait_for_cleanu
             await client.health()
     assert (await stop_daemon(directory))["status"] == "stopped"
     assert not runtime_file.exists()
+
+
+async def test_compatible_api_reuses_daemon_across_software_updates(
+    daemon: tuple[Path, dict[Path, AgentClient]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory, clients = daemon
+    runtime_file = directory / "runtime.json"
+    runtime = json.loads(runtime_file.read_text())
+    assert runtime["api_version"] == DAEMON_API_VERSION
+    runtime["version"] = "different-software-version"
+    private_write(runtime_file, runtime)
+    monkeypatch.setattr("chiliarch.daemon.__version__", "different-software-version")
+    monkeypatch.setattr("chiliarch.daemon_client.ServiceManager", UnavailableService)
+    healthy = await ensure_daemon(directory)
+    assert healthy["api_version"] == DAEMON_API_VERSION
+    assert healthy["version"] == "different-software-version"
+    assert healthy["pid"] == runtime["pid"]
+    assert healthy["reused"] is True
+    state = directory / "compatible.db"
+    await paired_state(state, "compatible")
+    async with DaemonClient(directory) as admin:
+        await admin.register(state, handle="compatible")
+        mailbox = RemoteMailbox(directory, "compatible")
+        try:
+            await mailbox.send_message("the updated MCP can still communicate")
+        finally:
+            await mailbox.client.http.aclose()
+    messages = await clients[state].store.pending()
+    assert len(messages) == 1
+    assert messages[0].payload["message"] == "the updated MCP can still communicate"
+
+
+@pytest.mark.parametrize("api_version", [2, "1", True, None])
+async def test_runtime_with_incompatible_api_cannot_be_used(
+    daemon: tuple[Path, dict[Path, AgentClient]],
+    api_version: object,
+) -> None:
+    directory, _ = daemon
+    runtime_file = directory / "runtime.json"
+    original = json.loads(runtime_file.read_text())
+    private_write(runtime_file, {**original, "api_version": api_version})
+    try:
+        async with DaemonClient(directory) as client:
+            with pytest.raises(DaemonError, match="API version"):
+                await client.health()
+    finally:
+        private_write(runtime_file, original)
+
+
+async def test_health_response_must_match_api_and_directory(
+    daemon: tuple[Path, dict[Path, AgentClient]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory, _ = daemon
+    async with DaemonClient(directory) as client:
+        monkeypatch.setattr("chiliarch.daemon.DAEMON_API_VERSION", DAEMON_API_VERSION + 1)
+        with pytest.raises(DaemonError, match="API version"):
+            await client.health()
+        monkeypatch.setattr("chiliarch.daemon.DAEMON_API_VERSION", DAEMON_API_VERSION)
+        other_directory = directory / "other daemon"
+        other_directory.mkdir()
+        private_write(
+            other_directory / "runtime.json",
+            json.loads((directory / "runtime.json").read_text()),
+        )
+        async with DaemonClient(other_directory, allow_version_mismatch=True) as other:
+            with pytest.raises(DaemonError, match="identity"):
+                await other.health()
+
+
+async def test_legacy_runtime_requires_exact_software_version(
+    daemon: tuple[Path, dict[Path, AgentClient]],
+) -> None:
+    directory, _ = daemon
+    runtime_file = directory / "runtime.json"
+    original = json.loads(runtime_file.read_text())
+    legacy = {key: value for key, value in original.items() if key != "api_version"}
+    private_write(runtime_file, legacy)
+    try:
+        async with DaemonClient(directory) as client:
+            assert (await client.health())["status"] == "ok"
+        private_write(runtime_file, {**legacy, "version": "different-software-version"})
+        async with DaemonClient(directory) as client:
+            with pytest.raises(DaemonError, match="version"):
+                await client.health()
+    finally:
+        private_write(runtime_file, original)
 
 
 @pytest.mark.parametrize("manager", [UnavailableService, DisabledService])
@@ -393,6 +489,43 @@ async def test_concurrent_ensure_starts_once_and_preserves_autostart_preference(
     assert sorted(result["reused"] for result in results) == [False, True]
     assert all(result["autostart"]["enabled"] is False for result in results)
     assert started[0][-2:] == ["--directory", str(tmp_path)]
+
+
+@pytest.mark.parametrize("update_budget", [0, 180])
+async def test_startup_update_budget_is_separate_from_configured_health_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    update_budget: float,
+) -> None:
+    monkeypatch.setattr("chiliarch.daemon_client.ServiceManager", UnavailableService)
+    monkeypatch.setattr("chiliarch.updates.startup_budget", lambda: update_budget)
+    clock_values = iter([0.0, 0.0, 21.0])
+    monkeypatch.setattr(
+        "chiliarch.daemon_client.time", SimpleNamespace(monotonic=lambda: next(clock_values))
+    )
+    attempts = 0
+    started: list[list[str]] = []
+
+    async def health(directory: Path) -> dict[str, Any] | None:
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 3:
+            return {"status": "ok", "directory": str(directory)}
+        return None
+
+    def spawn(command: list[str], **options: Any) -> Any:
+        started.append(command)
+        return SimpleNamespace(poll=lambda: None)
+
+    monkeypatch.setattr("chiliarch.daemon_client._health", health)
+    monkeypatch.setattr("chiliarch.daemon_client._spawn_background", spawn)
+    if update_budget:
+        assert (await ensure_daemon(tmp_path))["status"] == "ok"
+    else:
+        with pytest.raises(DaemonError, match="startup timeout"):
+            await ensure_daemon(tmp_path)
+    assert len(started) == 1
+    assert read_configuration(tmp_path).startup_timeout_seconds == 20
 
 
 async def test_first_install_without_native_manager_starts_real_detached_daemon_once(

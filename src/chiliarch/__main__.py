@@ -1,4 +1,4 @@
-from chiliarch.cli import main
+from chiliarch.bootstrap import main
 
 if __name__ == "__main__":
     main()

@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.scripts]
-chiliarch = "chiliarch.cli:main"
+chiliarch = "chiliarch.bootstrap:main"
 
 [project.urls]
 Repository = "https://github.com/69gg/chiliarch"

@@ -31,11 +31,13 @@
 
 本机接入使用同一个当前用户守护进程，由它管理各 agent 独立的身份、状态库和出站连接。先运行 `chiliarch daemon status`；不要仅凭 PID、端口或启动项存在判断健康。已安装且健康时复用；存在但未运行时用 `chiliarch daemon start`；尚未安装时默认执行 `uv tool install chiliarch` 从 PyPI 安装，然后执行 `chiliarch daemon install`。
 
+v0.3.0 起，标准 uv 工具安装会在服务启动时自动检查兼容的正式新版，离线或更新失败继续使用已有版本。已健康且本地 API 兼容的守护进程仍应复用，不能因为 CLI 显示更新版本就擅自重启。先用 `daemon agents` 核对本机全部身份的工作状态；需要重启应用新版时，说明影响并等正在执行的任务结束。v0.2.0 及更早版本没有更新器，按 <https://raw.githubusercontent.com/69gg/chiliarch/main/docs/upgrading.md> 先完成一次手动升级；保留原版本约束和配对数据，不升级原生宿主。不要为接入自动停止其他 agent 的工作。
+
 安装默认登记当前用户登录后自启动，并启动、检查本地服务；它不是开机时以系统账户运行的服务，不需要管理员权限。Windows 使用当前用户登录任务，macOS 使用 LaunchAgent，Linux 使用 systemd 用户服务。系统管理器不可用时明确告知用户，用 `chiliarch daemon run` 前台运行或接入用户已有管理器，不能宣称已登记自启动。
 
-读取 <https://raw.githubusercontent.com/69gg/chiliarch/main/docs/daemon.md> 核对管理入口、目录和故障处理。默认目录由操作系统和当前用户解析；用户指定独立目录时后续命令一致传入 `--directory` 或 `--daemon-directory`。不得覆盖其他 agent 的登记、状态库、执行策略或 MCP 配置。健康检查失败或版本不兼容时先处理阻塞，保留已有数据。
+读取 <https://raw.githubusercontent.com/69gg/chiliarch/main/docs/daemon.md> 核对管理入口、目录和故障处理。默认目录由操作系统和当前用户解析；用户指定独立目录时后续命令一致传入 `--directory` 或 `--daemon-directory`。不得覆盖其他 agent 的登记、状态库、执行策略或 MCP 配置。健康检查失败或本地 API 不兼容时先处理阻塞，保留已有数据；不能把软件版本号不同直接当作必须停止服务的理由。
 
-检查原生配置目录是否通过 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`OPENCODE_CONFIG_DIR` 或 XDG／Windows 用户目录环境指定，只核对路径，不读取认证内容。自启动会保存安装时的非秘密配置路径变量；复用健康守护进程不会自动获得当前终端的新环境。`OPENCODE_CONFIG_CONTENT` 可能包含秘密，不自动复制到自启动项；需要持久配置时让用户选择原生私有配置文件。已有服务需要刷新时，按守护进程文档先排空托管任务再重新安装服务，保留原登记与状态库。不把 API Key 写入启动项，不 source 用户 shell 配置，不为接入更换原生认证方式。
+检查原生配置目录是否通过 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`OPENCODE_CONFIG_DIR` 或 XDG／Windows 用户目录环境指定，只核对路径，不读取认证内容。自启动会保存安装时的非秘密配置路径变量；复用健康守护进程不会自动获得当前终端的新环境。`OPENCODE_CONFIG_CONTENT` 可能包含秘密，不自动复制到自启动项；需要持久配置时让用户选择原生私有配置文件。启动项还会保存安装时的 `CHILIARCH_AUTO_UPDATE` 与 uv 路径变量；尊重用户是否关闭自动更新的选择，不自行改回默认。已有服务需要刷新时，按守护进程文档先排空托管任务再重新安装服务，保留原登记与状态库。不把 API Key 写入启动项，不 source 用户 shell 配置，不为接入更换原生认证方式。
 
 ## 4. 配对、登记当前身份并配置 MCP
 

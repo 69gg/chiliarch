@@ -18,6 +18,7 @@ from filelock import FileLock, Timeout
 
 from chiliarch import __version__
 from chiliarch.daemon_models import (
+    DAEMON_API_VERSION,
     AgentRegistration,
     DaemonConfiguration,
     DaemonError,
@@ -53,6 +54,20 @@ class DaemonClient:
     async def __aexit__(self, *arguments: object) -> None:
         await self.http.aclose()
 
+    def _check_compatibility(self, payload: JsonObject) -> None:
+        if self.allow_version_mismatch:
+            return
+        if "api_version" in payload:
+            api_version = payload["api_version"]
+            if type(api_version) is not int or api_version != DAEMON_API_VERSION:
+                raise DaemonError(
+                    "Daemon API version differs from this installation; restart the daemon"
+                )
+        elif payload.get("version") != __version__:
+            # Older daemons had no independent API contract. Do not infer
+            # compatibility from software version ordering or a missing field.
+            raise DaemonError("Daemon version differs from this installation; restart the daemon")
+
     async def request(
         self,
         method: str,
@@ -75,10 +90,7 @@ class DaemonClient:
                 or parsed.fragment
             ):
                 raise DaemonError("Daemon runtime endpoint is not a loopback address")
-            if runtime["version"] != __version__ and not self.allow_version_mismatch:
-                raise DaemonError(
-                    "Daemon version differs from this installation; restart the daemon"
-                )
+            self._check_compatibility(runtime)
             response = await self.http.request(
                 method,
                 runtime["url"] + path,
@@ -109,9 +121,8 @@ class DaemonClient:
         result: JsonObject = await self.request(
             "GET", "/health", request_timeout=self.health_timeout
         )
-        if result.get("directory") != str(self.directory) or (
-            result.get("version") != __version__ and not self.allow_version_mismatch
-        ):
+        self._check_compatibility(result)
+        if result.get("directory") != str(self.directory):
             raise DaemonError("Daemon identity does not match this installation/directory")
         return result
 
@@ -399,10 +410,15 @@ def _spawn_background(command: list[str], **options: Any) -> subprocess.Popen[by
 
 async def ensure_daemon(directory: Path | None = None, *, autostart: bool = True) -> JsonObject:
     """Reuse a healthy daemon, or install/start once under an interprocess lock."""
+    from chiliarch.updates import startup_budget
+
     directory = (directory or default_daemon_directory()).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    lock = FileLock(str(directory / "install.lock"), timeout=120, thread_local=False)
+    update_budget = startup_budget()
+    lock = FileLock(
+        str(directory / "install.lock"), timeout=120 + update_budget, thread_local=False
+    )
     await asyncio.to_thread(lock.acquire)
     try:
         manager = ServiceManager(directory)
@@ -441,7 +457,7 @@ async def ensure_daemon(directory: Path | None = None, *, autostart: bool = True
                 cwd=directory,
                 **options,
             )
-        deadline = time.monotonic() + configuration.startup_timeout_seconds
+        deadline = time.monotonic() + configuration.startup_timeout_seconds + update_budget
         while time.monotonic() < deadline:
             healthy = await _health(directory)
             if healthy is not None:
