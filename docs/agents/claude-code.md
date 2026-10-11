@@ -86,17 +86,14 @@ MCP 连接本身不会保证空闲原生会话持续自动领取；长期无人�
 ```toml
 kind = "claude-code"
 workdir = "/绝对路径/已有项目目录"
-claude_permission_mode = "plan"
-claude_allowed_tools = []
 timeout_seconds = 1800
 terminate_grace_seconds = 2
 max_input_bytes = 1048576
 max_output_bytes = 524288
 max_line_bytes = 262144
 
-# 可选：复用本机程序和模型；省略时用原生默认值。
+# 可选：指定本机可执行程序；省略时查找 claude。
 # executable = "/绝对路径/claude"
-# model = "你的模型名称"
 ```
 
 先为该 runner 配对独立状态库及本机标识（例如 `--agent claude-worker`），再登记给现有守护进程：
@@ -110,21 +107,21 @@ chiliarch daemon register \
 chiliarch agent doctor --agent claude-worker --settings "/绝对路径/local-agent.toml"
 ```
 
-`plan` 默认用于分析和规划，并不适合需要修改文件的调度。机器所有者可以选择 `dontAsk`、`default` 或 `acceptEdits`，并设置 `claude_allowed_tools`。例如只自动允许某些明确工具，按 Claude 官方规则填写数组；不要添加泛化的 shell 通配规则作为默认值。
+模型、服务商、权限和工具允许规则由 Claude Code 的原生配置管理。runner 不传 `--model`、`--permission-mode` 或 `--allowedTools`，也不自动允许 Chiliarch MCP 工具。旧 runner 的 `model`、`claude_permission_mode`、`claude_allowed_tools` 等键兼容读取但不再生效；迁移时先核对原生设置，再删除旧键，见 [runner 配置迁移](../configuration.md#本机-runner-与原生配置)。[Claude CLI 参数](https://code.claude.com/docs/en/cli-reference)
 
-`dontAsk` 对需要交互但未允许的工具会拒绝；`default` 可能因无人值守时不能回答权限请求而阻塞/失败；`acceptEdits` 对文件编辑的授权更宽，应结合工作目录、项目可信度和原生策略选择。这些本地选项不由远端 task.parameters 控制。[Claude CLI 参数](https://code.claude.com/docs/en/cli-reference)
-
-运行器自动允许 Chiliarch MCP 工具进行平台协作；它们的操作仍经总管/用户和统一操作服务，不会直接越权修改平台。额外原生允许规则与该前缀合并，而不是把总管 yolo 模式映射为 Claude 原生 bypassPermissions。
+原生权限、项目信任与组织策略继续生效。当前 Chiliarch 尚无跨平台原生审批或用户输入回复桥；print 模式中需要交互的操作可能被原生拒绝。Claude 可以在已有权限内换一种方法继续，单个工具被拒绝不等于整个任务失败；runner 记录拒绝次数，最终按原生终态判断任务成功或失败。平台 ask/auto/yolo 只管理平台业务操作，不替你批准原生工具，也不改为跳过权限检查。需要人工交互的工作可以使用当前会话 MCP，在 Claude Code 内处理。
 
 ## 执行与结果
 
-默认调度创建全新的原生会话，使用普通 stdin 输入任务，选择 `--print`、`--output-format stream-json`、`--verbose`、`--include-partial-messages`。临时 `--mcp-config` 配合 `--strict-mcp-config` 只注入当前 Chiliarch mailbox 服务；不改写原生全局配置。认证、原生项目指令和其他本地设置仍可继承，不启用会改变认证来源的 `--bare`。[官方程序化运行](https://code.claude.com/docs/en/headless)
+默认调度创建全新的原生会话，使用普通 stdin 输入任务，选择 `--print`、`--output-format stream-json`、`--verbose`、`--include-partial-messages`。临时 `--mcp-config` 只追加一个任务专用、名称唯一的 Chiliarch mailbox MCP，任务提示明确指定该名称；不替换用户已有的 `chiliarch` 或其他 MCP 服务。runner 不使用 `--strict-mcp-config` 或 `--bare`，按原生规则保留已有 MCP、skills、hooks、`CLAUDE.md`、认证和其他设置，也不改写全局配置。[官方程序化运行](https://code.claude.com/docs/en/headless)
 
-平台 `dispatch_task` 可用 `continue_task_id` 指向当前身份最近成功完成的托管任务。runner 只从自己的本地持久记录读取原生 session ID，以 `claude --print --resume <session-id>` 启动独立后续轮次，沿用本地权限、MCP 与流式输出参数。每轮有独立平台 task ID，结果提供 `continued_task_id`；不枚举、不接管用户的交互会话，不接受远端任意 session ID。[官方会话续接](https://code.claude.com/docs/en/sessions)
+原生配置是否可见取决于守护进程的用户、固定工作目录与配置目录环境，见 [守护进程环境](../daemon.md#原生配置目录与环境)。Claude Code 已原生登录且没有更高优先级 API 来源时可由原生工具使用订阅；API Key、第三方服务商或组织配置仍按原生优先级选择。Chiliarch 不切换认证方式，也不保证任务一定使用订阅额度。
+
+平台 `dispatch_task` 可用 `continue_task_id` 指向当前身份最近成功完成的托管任务。runner 只从自己的本地持久记录读取原生 session ID，以 `claude --print --resume <session-id>` 启动独立后续轮次，遵循原生续接语义并追加本轮专用 mailbox。每轮有独立平台 task ID，结果提供 `continued_task_id`；不枚举、不接管用户的交互会话，不接受远端任意 session ID。[官方会话续接](https://code.claude.com/docs/en/sessions)
 
 续接要求平台身份、适配器与工作目录一致，前任务成功且原生进程树已确认停止。关联持久化在该身份 SQLite 中，支持守护进程重启；新的续轮启动后必须引用最新成功任务继续，失败、取消或结果未知时不能借更早的成功 task ID 绕过恢复核查。若原生会话文件被删除，失败会正常上报，不静默新建对话。
 
-runner 按结构化原生结果汇报：要求最终 `result` 为成功 subtype、`is_error=false` 且进程退出成功。限制超时、输出总量和单行大小；无终态、无效 JSONL、非零退出或原生失败事件均不会假报完成。结果包含答案、原生会话 ID、可解析的用量与费用/权限拒绝信息。[原生终态说明](https://code.claude.com/docs/en/agent-sdk/agent-loop)
+runner 按结构化原生结果汇报：要求最终 `result` 为成功 subtype、`is_error=false` 且进程退出成功。限制超时、输出总量和单行大小；无终态、无效 JSONL、非零退出或原生失败事件均不会假报完成。结果包含答案、原生会话 ID、可解析的用量与原生返回的费用统计/权限拒绝信息。usage 和费用估算不是实际扣费凭证，具体额度与账单以原生服务商为准。[原生终态说明](https://code.claude.com/docs/en/agent-sdk/agent-loop)
 
 任务内 MCP 可联系总管、用 `list_agents` 发现同伴、用 `send_peer_message` 通气，或申请 `dispatch_task` 协作；读取回信和操作结果时保留各请求 ID。初始提示要求在开始与合适的工作间隙读取当前任务的协作消息。消息驱动的任务应通过 `reply_to` 关联原消息，并向其发送者回信，普通回复保持 `wake=false`，避免自动循环。需等待同伴且对方需要当前执行槽或工作目录时，报告依赖并结束本轮，之后由独立任务续接。临时 mailbox 通过 `--managed-task` 绑定当前任务，不导出 `claim_task`、`report_progress`、`complete_task`、`fail_task`，不能跨任务冒用身份。任务最终状态由父 runner 在原生过程结束后确认，不应要求任务内模型提前标记完成。输出里的文件路径只是汇报，不自动上传文件。
 

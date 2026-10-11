@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import configparser
 import json
 import os
 import plistlib
 import shlex
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
@@ -200,11 +202,164 @@ def test_windows_definition_is_user_bound_unprivileged_and_suitable_for_daemon(
     assert settings.findtext("t:RestartOnFailure/t:Interval", namespaces=NS) == "PT1M"
     assert task.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(service.python)
     assert task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS) == subprocess.list2cmdline(
-        service.command[1:]
+        service._windows_command()[1:]
     )
     assert task.findtext("t:Actions/t:Exec/t:WorkingDirectory", namespaces=NS) == str(
         service.directory
     )
+
+
+def definition_environment(service: ServiceManager) -> dict[str, str]:
+    content = service.definition()
+    if service.platform == "linux":
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(content.decode("utf-8"))
+        return dict(
+            part.replace("%%", "%").split("=", 1)
+            for part in shlex.split(parser["Service"]["Environment"])
+        )
+    if service.platform == "darwin":
+        variables: dict[str, str] = plistlib.loads(content)["EnvironmentVariables"]
+        return variables
+    arguments = ET.fromstring(content).findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+    assert arguments is not None
+    environment: dict[str, str]
+    environment, command = json.loads(base64.b64decode(arguments.rsplit(" ", 1)[1]))
+    assert command == service.command[2:]
+    return environment
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_startup_inherits_only_nonsecret_configuration_directories(
+    tmp_path: Path, platform: str
+) -> None:
+    service, _ = manager(tmp_path, platform)
+    directories = {
+        key: str(tmp_path / f"用户 {key} %PATH% $literal `literal` 'quoted' \"double\" ")
+        for key in (
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        )
+    }
+    service.environment.update(
+        {
+            **directories,
+            "OPENAI_API_KEY": "secret-openai",
+            "ANTHROPIC_API_KEY": "secret-anthropic",
+            "CLAUDE_CODE_OAUTH_TOKEN": "secret-oauth",
+            "HTTPS_PROXY": "https://user:password@proxy.invalid",
+            "UNRELATED_CONFIG_DIR": "/unrelated",
+        }
+    )
+    assert definition_environment(service) == {
+        "HOME": str(service.home),
+        "PYTHONUTF8": "1",
+        "PATH": "/custom bin:/usr/bin",
+        "LANG": "zh_CN.UTF-8",
+        **directories,
+    }
+
+
+def test_windows_startup_applies_environment_in_same_process_without_shell(
+    tmp_path: Path,
+) -> None:
+    service, _ = manager(tmp_path, "win32")
+    literal = "C:\\用户 data\\%PATH%\\$value\\`value`\\'single'\\\"double\"\\"
+    service.environment.update(
+        {"CODEX_HOME": literal, "CLAUDE_CONFIG_DIR": literal, "XDG_CONFIG_HOME": literal}
+    )
+    # A harmless package stands in for the CLI; no daemon or agent is started.
+    package = tmp_path / "chiliarch"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__main__.py").write_text(
+        "import json, os, sys\n"
+        "print(json.dumps({'environment': dict(os.environ), 'arguments': sys.argv[1:], 'pid': os.getpid()}))\n",
+        encoding="utf-8",
+    )
+    command = service._windows_command()
+    task = ET.fromstring(service.definition())
+    assert task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS) == subprocess.list2cmdline(
+        command[1:]
+    )
+    inherited = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+    inherited.update({"CODEX_HOME": "different-login-default", "UNRELATED_RUNTIME": "retained"})
+    process = subprocess.Popen(
+        [sys.executable, *command[1:]],
+        cwd=tmp_path,
+        env=inherited,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr
+    received = json.loads(stdout)
+    assert received["pid"] == process.pid
+    assert received["arguments"] == service.command[3:]
+    assert received["environment"].items() >= definition_environment(service).items()
+    assert received["environment"]["UNRELATED_RUNTIME"] == "retained"
+    assert "API_KEY" not in received["environment"]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_installed_service_remains_owned_after_configuration_directory_changes(
+    tmp_path: Path, platform: str
+) -> None:
+    service, _ = manager(tmp_path, platform)
+    service.environment["CODEX_HOME"] = str(tmp_path / "original")
+    assert service.install().installed
+    service.environment["CODEX_HOME"] = str(tmp_path / "updated")
+    assert service.status().installed
+    assert service.install().installed
+    assert definition_environment(service)["CODEX_HOME"] == str(tmp_path / "updated")
+
+
+def test_windows_legacy_task_can_be_identified_and_upgraded(tmp_path: Path) -> None:
+    service, native = manager(tmp_path, "win32")
+    task = ET.fromstring(service.definition())
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", NS)
+    assert arguments is not None
+    arguments.text = subprocess.list2cmdline(service.command[1:])
+    native.task = {"xml": ET.tostring(task, encoding="unicode")}
+    assert service.status().installed
+    service.environment["CODEX_HOME"] = str(tmp_path / "native config")
+    assert service.install().installed
+    assert definition_environment(service)["CODEX_HOME"] == str(tmp_path / "native config")
+    assert "/F" in next(call for call in native.calls if "/Create" in call)
+
+
+@pytest.mark.parametrize("tampering", ["bootstrap", "environment", "arguments", "encoding"])
+def test_windows_task_with_altered_startup_is_not_owned(tmp_path: Path, tampering: str) -> None:
+    service, native = manager(tmp_path, "win32")
+    task = ET.fromstring(service.definition())
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", NS)
+    assert arguments is not None
+    command = service._windows_command()
+    payload = json.loads(base64.b64decode(command[-1]))
+    if tampering == "bootstrap":
+        command[2] += ";print('injected')"
+    elif tampering == "environment":
+        payload[0]["PYTHONPATH"] = "/untrusted"
+        command[-1] = base64.b64encode(json.dumps(payload).encode()).decode()
+    elif tampering == "arguments":
+        payload[1][-1] = "/another-daemon"
+        command[-1] = base64.b64encode(json.dumps(payload).encode()).decode()
+    else:
+        command[-1] = "invalid-base64"
+    arguments.text = subprocess.list2cmdline(command[1:])
+    native.task = {"xml": ET.tostring(task, encoding="unicode")}
+    with pytest.raises(ServiceError, match="unowned|another application"):
+        service.install()
+    assert not any("/Create" in call for call in native.calls)
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])

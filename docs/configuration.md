@@ -107,6 +107,31 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 模型字段的 API 映射、压缩过程与失败处理见 [模型文档](models.md#上下文窗口与自动压缩)。
 
+## 本机 runner 与原生配置
+
+托管 agent 的本地 runner TOML 独立于平台 `chiliarch.toml`。平台 `[model]` 配置只供 Chiliarch AI 总管使用，不会下发给 Codex／Claude，也不会覆盖它们的模型、服务商或认证。runner 字段如下：
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| kind | 必填 | `codex` 或 `claude-code` |
+| workdir | 必填 | 已存在的固定项目目录；相对路径按 runner TOML 所在目录解析 |
+| executable | 未指定 | 可选的本机程序路径；否则查找对应原生工具 |
+| timeout_seconds | 1800 | 一次托管任务最长运行秒数 |
+| terminate_grace_seconds | 2 | 终止原生进程树时的宽限秒数 |
+| max_input_bytes | 1048576 | 输入大小上限，字节 |
+| max_output_bytes | 524288 | 输出总量上限，字节 |
+| max_line_bytes | 262144 | 单行输出上限，字节，不得大于输出总量上限 |
+
+这些字节限额用于本地协议与资源控制，不是模型输出 token 设置。并发与传输通过 `daemon register` 参数配置。runner 不再提供模型或权限覆盖；模型、provider、沙箱、审批、工具规则、原生指令、skills、hooks 与 MCP 均按对应原生工具的配置和优先级加载。固定 workdir 只决定启动目录及项目配置发现位置，不构成额外操作系统沙盒。
+
+旧 TOML 中的 `model`、`codex_sandbox`、`codex_skip_git_repo_check`、`claude_permission_mode`、`claude_allowed_tools` 兼容读取但全部忽略。迁移时先核对 Codex／Claude 当前原生配置中的模型与权限；若仍需要旧行为，由机器所有者在原生工具内明确配置，再从 runner TOML 删除这些键。旧 `read-only`、`plan` 或工具白名单不能再作为有效限制来判断任务权限。其他未知字段仍视为配置错误。
+
+Codex runner 通过独立本机 `codex app-server` stdio 完成初始化、新建或续接线程与启动回合；Claude Code runner 使用 `--print` JSONL，保留原生配置加载。两者只动态追加本任务唯一名称的 Chiliarch mailbox MCP，任务提示指定该名称，不覆盖用户已有的 `chiliarch` 服务。Codex `thread/resume` 遵循原生语义，可能保留原线程设置，并非每轮强制刷新所有当前用户值。
+
+平台 ask/auto/yolo 只管理平台业务审批，不调整原生权限。当前没有跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，不自动批准、不偷偷变更审批模式。配置目录与原生认证的可见性取决于守护进程环境；安装时保存的非秘密目录变量、已有服务的刷新步骤见 [守护进程环境](daemon.md#原生配置目录与环境)。用量统计不是收费凭证，订阅与 API 来源由原生工具选择。
+
+完整 TOML 和运行流程见 [Codex](agents/codex.md#托管-cli-执行) 与 [Claude Code](agents/claude-code.md#托管-runner-配置)。修改本地 TOML 后重新执行 `daemon register --settings <路径>` 更新对应身份；先确认正在执行的工作已结束，避免更新时中断托管任务。
+
 ## 日志存储与轮换
 
 `logs.directory` 下的 `chiliarch.jsonl` 为 UTF-8 JSON Lines，每行包含 UTC timestamp、level、logger、message 以及事件相关 ID、状态或耗时。记录平台启停、HTTP 路径/状态/耗时、操作执行/审批、agent 连接/消息/任务状态、配置更新和总管运行事件。

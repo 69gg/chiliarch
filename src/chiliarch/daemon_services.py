@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import configparser
 import csv
 import hashlib
@@ -21,7 +22,29 @@ from typing import Any
 
 _TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 _TASK_NS = {"t": _TASK_NAMESPACE}
-_SAFE_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE")
+_SAFE_ENVIRONMENT = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+)
+# Task Scheduler has no per-action environment. Apply only the captured whitelist
+# in the same Python process before entering the CLI, without invoking a shell.
+_WINDOWS_BOOTSTRAP = (
+    "import base64,json,os,runpy,sys;"
+    "environment,sys.argv=json.loads(base64.b64decode(sys.argv[1]));"
+    "os.environ.update(environment);"
+    "runpy.run_module('chiliarch',run_name='__main__',alter_sys=True)"
+)
 
 
 class ServiceError(RuntimeError):
@@ -289,12 +312,40 @@ class ServiceManager:
             "Exec",
             {
                 "Command": str(self.python),
-                "Arguments": subprocess.list2cmdline(self.command[1:]),
+                "Arguments": subprocess.list2cmdline(self._windows_command()[1:]),
                 "WorkingDirectory": str(self.directory),
             },
         )
         content: bytes = ET.tostring(task, encoding="utf-16", xml_declaration=True)
         return content
+
+    def _windows_command(self) -> list[str]:
+        # Encode data separately from the fixed code and Windows argument quoting.
+        # This also prevents Task Scheduler from expanding %NAME% in CLI arguments.
+        payload = json.dumps([self._environment(), self.command[2:]]).encode("utf-8")
+        return [
+            str(self.python),
+            "-c",
+            _WINDOWS_BOOTSTRAP,
+            base64.b64encode(payload).decode("ascii"),
+        ]
+
+    def _owns_windows_arguments(self, arguments: str | None) -> bool:
+        if arguments == subprocess.list2cmdline(self.command[1:]):
+            return True  # Entries installed before environment inheritance remain manageable.
+        prefix = subprocess.list2cmdline(["-c", _WINDOWS_BOOTSTRAP]) + " "
+        if arguments is None or not arguments.startswith(prefix):
+            return False
+        payload = json.loads(base64.b64decode(arguments[len(prefix) :], validate=True))
+        if not isinstance(payload, list) or len(payload) != 2:
+            return False
+        environment, command = payload
+        return (
+            command == self.command[2:]
+            and isinstance(environment, dict)
+            and environment.keys() <= {*_SAFE_ENVIRONMENT, "HOME", "PYTHONUTF8"}
+            and all(isinstance(value, str) for value in environment.values())
+        )
 
     def definition(self) -> bytes:
         """Render the native startup definition, without installing or starting it."""
@@ -335,8 +386,9 @@ class ServiceManager:
                 owned = (
                     task.findtext("t:RegistrationInfo/t:Description", namespaces=_TASK_NS)
                     == self.marker
-                    and task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=_TASK_NS)
-                    == subprocess.list2cmdline(self.command[1:])
+                    and self._owns_windows_arguments(
+                        task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=_TASK_NS)
+                    )
                     and command_text is not None
                     and Path(command_text).is_absolute()
                     and task.findtext("t:Principals/t:Principal/t:UserId", namespaces=_TASK_NS)

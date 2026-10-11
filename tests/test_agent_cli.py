@@ -108,14 +108,50 @@ def test_relative_workdir_is_bound_to_local_settings_file_not_launch_cwd(
     assert first == second
     assert first.workdir == workspace.resolve()
     assert first.timeout_seconds == 40
-    assert first.codex_sandbox == "read-only"
-    assert first.claude_permission_mode == "plan"
 
 
+@pytest.mark.parametrize("kind", ["codex", "claude-code"])
+@pytest.mark.parametrize(
+    "legacy_settings",
+    [
+        'model = "legacy-model"\n'
+        'codex_sandbox = "read-only"\n'
+        "codex_skip_git_repo_check = true\n"
+        'claude_permission_mode = "plan"\n'
+        'claude_allowed_tools = ["Read", "Glob", "Grep"]\n',
+        'model = "another-legacy-model"\n'
+        'codex_sandbox = "danger-full-access"\n'
+        "codex_skip_git_repo_check = false\n"
+        'claude_permission_mode = "bypassPermissions"\n'
+        'claude_allowed_tools = ["Bash"]\n',
+    ],
+    ids=["restrictive", "permissive"],
+)
+def test_legacy_native_overrides_are_ignored_when_loading_local_settings(
+    tmp_path: Path, kind: str, legacy_settings: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    settings_path = tmp_path / "local-agent.toml"
+    current_settings = f'kind = "{kind}"\nworkdir = "workspace"\ntimeout_seconds = 40\n'
+    settings_path.write_text(current_settings, encoding="utf-8")
+    expected = load_runner_settings(settings_path)
+    legacy_content = current_settings + legacy_settings
+    settings_path.write_text(legacy_content, encoding="utf-8")
+
+    loaded = load_runner_settings(settings_path)
+
+    assert loaded == expected
+    assert not set(tomllib.loads(legacy_settings)) & loaded.model_dump().keys()
+    assert settings_path.read_text(encoding="utf-8") == legacy_content
+
+
+@pytest.mark.parametrize("kind", ["codex", "claude-code"])
 def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    kind: str,
 ) -> None:
     state_path = tmp_path / "agent.sqlite"
     identity = asyncio.run(create_identity(state_path))
@@ -123,7 +159,12 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     workspace.mkdir()
     settings_path = tmp_path / "local-agent.toml"
     settings_path.write_text(
-        'kind = "codex"\nworkdir = "workspace"\nexecutable = "fixture-native"\n',
+        f'kind = "{kind}"\nworkdir = "workspace"\nexecutable = "fixture-native"\n'
+        'model = "legacy-model-never-reported"\n'
+        'codex_sandbox = "read-only"\n'
+        "codex_skip_git_repo_check = true\n"
+        'claude_permission_mode = "plan"\n'
+        'claude_allowed_tools = ["Read"]\n',
         encoding="utf-8",
     )
     which = Mock(side_effect=lambda executable: str(tmp_path / executable))
@@ -134,6 +175,9 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
     monkeypatch.setattr("subprocess.run", native)
     monkeypatch.setattr("asyncio.create_subprocess_exec", native)
     monkeypatch.setattr("httpx.AsyncClient", network)
+    monkeypatch.setattr("httpx.Client", network)
+    monkeypatch.setattr("socket.create_connection", network)
+    monkeypatch.setattr("socket.socket.connect", network)
 
     command(["doctor", "--state", str(state_path), "--settings", str(settings_path)], monkeypatch)
 
@@ -144,12 +188,14 @@ def test_doctor_reports_only_public_identity_without_native_or_network_calls(
         key: identity[key] for key in ("agent_id", "name", "machine", "server_url")
     }
     assert report["runner"] == {
-        "kind": "codex",
+        "kind": kind,
         "workdir": str(workspace),
         "executable": str(tmp_path / "fixture-native"),
-        "permission": "read-only",
+        "permission": "native",
+        "configuration_source": "native_user_and_project",
     }
     assert identity["credential"] not in captured.out + captured.err
+    assert "legacy-model-never-reported" not in captured.out + captured.err
     native.assert_not_called()
     network.assert_not_called()
 

@@ -209,9 +209,8 @@ async def _doctor(arguments: argparse.Namespace) -> dict[str, Any]:
             "executable": shutil.which(
                 settings.executable or ("codex" if settings.kind == "codex" else "claude")
             ),
-            "permission": settings.codex_sandbox
-            if settings.kind == "codex"
-            else settings.claude_permission_mode,
+            "permission": "native",
+            "configuration_source": "native_user_and_project",
         }
     if arguments.state is not None:
         state_path = arguments.state.expanduser().resolve()

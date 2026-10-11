@@ -33,13 +33,15 @@
 
 读取 <https://raw.githubusercontent.com/69gg/chiliarch/main/docs/daemon.md> 核对管理入口、目录和故障处理。默认目录由操作系统和当前用户解析；用户指定独立目录时后续命令一致传入 `--directory` 或 `--daemon-directory`。不得覆盖其他 agent 的登记、状态库、执行策略或 MCP 配置。健康检查失败或版本不兼容时先处理阻塞，保留已有数据。
 
+检查原生配置目录是否通过 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 或 XDG／Windows 用户目录环境指定，只核对路径，不读取认证内容。自启动会保存安装时的非秘密配置目录变量；复用健康守护进程不会自动获得当前终端的新环境。已有服务需要刷新时，按守护进程文档先排空托管任务再重新安装服务，保留原登记与状态库。不把 API Key 写入启动项，不 source 用户 shell 配置，不为接入更换原生认证方式。
+
 ## 4. 配对、登记当前身份并配置 MCP
 
 选择一个便于当前宿主引用的本地 `--agent` 标识，用已确认的信息执行 `chiliarch agent pair` 完成配对。该命令先确认守护进程健康，配对后登记独立状态库；后续 MCP 通过这个标识调用已有守护进程，不再为每个会话启动平台连接。当前宿主为 Codex App 时使用 `codex-app` 身份，Codex CLI 使用 `codex`，Claude Code 使用 `claude-code`。通过命令的交互输入提供注册码；当前宿主无法提供用户可操作的私密输入时，请用户亲自完成配对命令，随后继续其余步骤。注册码和长期凭证不得写入聊天、日志、shell 历史、MCP 配置或版本库。
 
 用 `chiliarch agent config --agent <本地标识>` 生成当前宿主对应的 MCP 配置，按用户选择的作用范围合并 `chiliarch` 一项，保留已有服务和其他配置。使用生成器输出的真实程序路径与参数，不凭空拼装其他宿主格式：
 
-- Codex 按专用文档合并标准 MCP TOML；不读取 `auth.json`，不启动 `app-server`，不运行 `codex exec` 做安装验收。
+- Codex 按专用文档合并标准 MCP TOML；不读取 `auth.json`，不启动原生推理做安装验收。托管执行实际通过本机 app-server stdio，新建或续接 Chiliarch 自己创建的原生线程；当前会话 MCP 的安装不需要启动 app-server。
 - Claude Code 按专用文档配置项目或用户作用域的 stdio MCP；不覆盖整个 `~/.claude.json` 或项目配置，不读取原生认证文件，不运行真实推理做安装验收。
 
 全部网络连接由 agent 侧主动出站发起。不要让平台主动连接本机，也不要为接入开放本机入站端口；WS、SSE＋HTTP POST、长轮询降级由 Chiliarch 客户端处理。
@@ -68,7 +70,11 @@
 
 只有用户明确选择无人值守时，才另设独立身份和状态库、创建本地 runner TOML，并通过 `chiliarch daemon register --settings` 登记给共享守护进程。先确认固定工作目录、原生工具权限、并发上限和可能产生的模型费用。Windows、macOS、Linux 复用同一登记流程；原生进程树由本机适配层负责取消、超时和退出清理。
 
-- Codex CLI 使用 `kind="codex"`，确认 `read-only` 或 `workspace-write` 权限，不使用 sandbox 绕过。
-- Claude Code 使用 `kind="claude-code"`，说明默认 `plan` 权限及需要变更时的工具允许规则；不使用 `--dangerously-skip-permissions`，不默认启用 `--bare`。
+- Codex CLI 使用 `kind="codex"`，通过本地 `codex app-server` stdio 运行；模型、provider、沙箱、审批、原生指令与 MCP 沿用原生配置。续接遵循原生 resume 语义，可能保留之前的线程设置，不承诺每轮重新应用所有用户配置。
+- Claude Code 使用 `kind="claude-code"`，保留 print JSONL；模型、权限、工具规则、MCP、skills、hooks 和 `CLAUDE.md` 按原生配置加载。不添加 `--permission-mode`、`--allowedTools`、`--model`、`--strict-mcp-config` 或 `--bare`。
+
+runner TOML 只填写工具类型、固定工作目录、可选可执行程序、超时及输入输出限额。旧 `model`、`codex_sandbox`、`codex_skip_git_repo_check`、`claude_permission_mode`、`claude_allowed_tools` 兼容读取但忽略；需要迁移时核对原生设置，不把旧值当成仍在生效的权限保障。每个任务动态追加一个名称唯一的 Chiliarch mailbox MCP，任务提示指定该名称；保留用户已有的 `chiliarch` 及其他服务。
+
+明确告知用户：平台 ask/auto/yolo 不改变原生权限，当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，不自动批准或放宽权限。已原生登录且没有更高优先级 API 来源时，可由原生工具使用订阅，否则按原生配置选择；不承诺具体计费，不把 usage 或费用估算当作扣费凭证。
 
 不要让远端任务改写本地启动策略或权限。无人值守 runner 的网络连接由守护进程持有，任务内 MCP 使用 mailbox 模式；同一状态库不能再由 legacy standalone MCP 或独立 runner 并发连接。

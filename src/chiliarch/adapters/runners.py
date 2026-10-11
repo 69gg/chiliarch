@@ -20,9 +20,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from chiliarch.adapters.codex import CodexProtocol, CodexProtocolError
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
 from chiliarch.client import TaskExecutionError, TaskHandler
@@ -40,7 +42,7 @@ class RunnerSettings(BaseModel):
     """Trusted machine-local settings; dispatched parameters cannot override them.
 
     Native permissions and Chiliarch approval are separate boundaries. This
-    worker deliberately offers no permission/sandbox bypass option.
+    worker delegates model selection and permissions to the native user's settings.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -48,16 +50,27 @@ class RunnerSettings(BaseModel):
     kind: Literal["codex", "claude-code"]
     workdir: Path
     executable: str | None = Field(default=None, min_length=1, max_length=4096)
-    model: str | None = Field(default=None, min_length=1, max_length=256)
     timeout_seconds: float = Field(default=1800, gt=0, le=86400)
     terminate_grace_seconds: float = Field(default=2, gt=0, le=30)
     max_input_bytes: int = Field(default=1048576, ge=1024)
     max_output_bytes: int = Field(default=524288, ge=1024)
     max_line_bytes: int = Field(default=262144, ge=1024)
-    codex_sandbox: Literal["read-only", "workspace-write"] = "read-only"
-    codex_skip_git_repo_check: bool = False
-    claude_permission_mode: Literal["plan", "dontAsk", "default", "acceptEdits"] = "plan"
-    claude_allowed_tools: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def inherit_native_settings(cls, value: Any) -> Any:
+        # Old examples wrote these defaults into local TOML. Loading those files
+        # must not silently keep overriding the user's native settings.
+        obsolete = {
+            "model",
+            "codex_sandbox",
+            "codex_skip_git_repo_check",
+            "claude_permission_mode",
+            "claude_allowed_tools",
+        }
+        if isinstance(value, dict):
+            return {key: item for key, item in value.items() if key not in obsolete}
+        return value
 
     @field_validator("workdir")
     @classmethod
@@ -67,21 +80,11 @@ class RunnerSettings(BaseModel):
             raise ValueError("Runner workdir must be an existing local directory")
         return directory
 
-    @field_validator("executable", "model")
+    @field_validator("executable")
     @classmethod
     def no_control_characters(cls, value: str | None) -> str | None:
         if value is not None and (not value.strip() or any(ord(char) < 32 for char in value)):
             raise ValueError("Runner launch settings cannot contain control characters")
-        return value
-
-    @field_validator("claude_allowed_tools")
-    @classmethod
-    def valid_tool_rules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) > 100 or any(
-            not item.strip() or len(item) > 512 or any(ord(char) < 32 for char in item)
-            for item in value
-        ):
-            raise ValueError("Runner tool permission rules must be bounded non-empty strings")
         return value
 
     @model_validator(mode="after")
@@ -382,7 +385,7 @@ class RunnerHandler:
             raise RunnerError("Continuation must name a different bounded platform task ID")
         return parent_task_id
 
-    def _prompt(self, payload: JsonObject) -> bytes:
+    def _prompt(self, payload: JsonObject, mcp_name: str) -> bytes:
         instruction = payload.get("instruction")
         if not isinstance(instruction, str) or not instruction.strip():
             raise RunnerError("Dispatched task must contain a non-empty instruction")
@@ -397,7 +400,8 @@ class RunnerHandler:
         if not isinstance(task_id, str) or not task_id or len(task_id) > 256:
             raise RunnerError("Dispatched task must contain a bounded task ID")
         prompt = (
-            "You are executing a Chiliarch task. Use the chiliarch MCP tools to contact "
+            f"You are executing a Chiliarch task. Use the {mcp_name} MCP server's tools for this task, "
+            "rather than another Chiliarch identity in your existing MCP configuration. Contact "
             "the supervisor for help or permission requests, and use list_agents and "
             "send_peer_message to coordinate with peers. Read your task's collaboration "
             "messages at the start and at useful checkpoints. When parameters include "
@@ -434,43 +438,18 @@ class RunnerHandler:
             ],
         }
 
-    def _command(self, temporary: Path, task_id: str, session_id: str | None = None) -> list[str]:
+    def _command(
+        self, temporary: Path, task_id: str, mcp_name: str, session_id: str | None = None
+    ) -> list[str]:
         settings = self.settings
         executable = settings.executable or ("codex" if settings.kind == "codex" else "claude")
         if settings.kind == "codex":
-            mcp = self._mcp(task_id)
-            # Whole-table override avoids retaining a previous chiliarch URL/env.
-            inline = (
-                "{command = "
-                + json.dumps(mcp["command"])
-                + ", args = "
-                + json.dumps(mcp["args"])
-                + ", enabled = true, required = true}"
-            )
-            command = [
-                executable,
-                "exec",
-                "--json",
-                "--sandbox",
-                settings.codex_sandbox,
-                "--cd",
-                str(settings.workdir),
-                "-c",
-                'approval_policy="never"',
-                "-c",
-                "mcp_servers.chiliarch=" + inline,
-            ]
-            if settings.codex_skip_git_repo_check:
-                command.append("--skip-git-repo-check")
-            if settings.model:
-                command.append("--model=" + settings.model)
-            if session_id is not None:
-                command.extend(["resume", session_id])
-            command.append("-")
-            return command
+            # exec forces its own approval policy even without CLI overrides.
+            # App Server resolves the native configuration and exposes turn events.
+            return [executable, "app-server"]
         config_path = temporary / "mcp.json"
         config_path.write_text(
-            json.dumps({"mcpServers": {"chiliarch": {"type": "stdio", **self._mcp(task_id)}}}),
+            json.dumps({"mcpServers": {mcp_name: {"type": "stdio", **self._mcp(task_id)}}}),
             encoding="utf-8",
         )
         config_path.chmod(0o600)
@@ -483,21 +462,16 @@ class RunnerHandler:
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--permission-mode",
-            settings.claude_permission_mode,
             "--mcp-config",
             str(config_path),
-            "--strict-mcp-config",
-            "--allowedTools=" + ",".join(("mcp__chiliarch__*", *settings.claude_allowed_tools)),
         ]
-        if settings.model:
-            command.append("--model=" + settings.model)
         if session_id is not None:
             command.extend(["--resume", session_id])
         return command
 
     async def __call__(self, payload: JsonObject, progress: Progress) -> JsonObject:
-        prompt = self._prompt(payload)
+        mcp_name = "chiliarch_" + uuid4().hex
+        prompt = self._prompt(payload, mcp_name)
         # Verify again: a configured directory can disappear between dispatches.
         if not self.settings.workdir.is_dir():
             raise RunnerError("Configured local workspace is no longer available")
@@ -517,7 +491,9 @@ class RunnerHandler:
                 self._waiting_tasks.discard(task_id)
                 self._running_tasks.add(task_id)
                 session_id = await asyncio.to_thread(self._prepare_session, task_id, parent_task_id)
-                result = await self._run_owned(payload, prompt, progress, lease, session_id)
+                result = await self._run_owned(
+                    payload, prompt, progress, lease, mcp_name, session_id
+                )
                 if session_id is not None and result["session_id"] != session_id:
                     raise RunnerError("Native CLI did not confirm the expected managed session")
                 await asyncio.to_thread(self._complete_session, task_id, result["session_id"])
@@ -534,10 +510,22 @@ class RunnerHandler:
         prompt: bytes,
         progress: Progress,
         lease: WorkspaceLease,
+        mcp_name: str,
         session_id: str | None = None,
     ) -> JsonObject:
         with tempfile.TemporaryDirectory(prefix="chiliarch-runner-") as directory:
-            command = self._command(Path(directory), payload["task_id"], session_id)
+            command = self._command(Path(directory), payload["task_id"], mcp_name, session_id)
+            protocol = (
+                CodexProtocol(
+                    prompt=prompt.decode(),
+                    cwd=self.settings.workdir,
+                    mcp_name=mcp_name,
+                    mcp={**self._mcp(payload["task_id"]), "enabled": True, "required": True},
+                    session_id=session_id,
+                )
+                if self.settings.kind == "codex"
+                else None
+            )
             await lease.begin_execution(payload["task_id"])
             try:
                 tree = await start_process_tree(
@@ -547,6 +535,12 @@ class RunnerHandler:
                 raise RunnerError("Could not start the configured native CLI executable") from None
             process = tree.process
             readers: list[asyncio.Task[None]] = []
+
+            async def send(frame: JsonObject) -> None:
+                assert process.stdin is not None
+                process.stdin.write((json.dumps(frame, ensure_ascii=False) + "\n").encode())
+                await process.stdin.drain()
+
             try:
                 async with asyncio.timeout(self.settings.timeout_seconds):
                     output = _Output(self.settings.kind)
@@ -584,11 +578,18 @@ class RunnerHandler:
                                 ) from None
                             if not isinstance(event, dict):
                                 raise RunnerError("Native CLI emitted an invalid JSONL event")
-                            message = output.accept(event)
-                            now = time.monotonic()
-                            if message and now - last_progress >= 0.5:
-                                await progress(0.0, message)
-                                last_progress = now
+                            events, terminal = (
+                                await protocol.accept(event, send) if protocol else ([event], False)
+                            )
+                            for item in events:
+                                message = output.accept(item)
+                                now = time.monotonic()
+                                if message and now - last_progress >= 0.5:
+                                    await progress(0.0, message)
+                                    last_progress = now
+                            if terminal:
+                                assert process.stdin is not None
+                                process.stdin.close()
 
                     async def read_stderr() -> None:
                         assert process.stderr is not None
@@ -600,12 +601,16 @@ class RunnerHandler:
                     async def write_stdin() -> None:
                         assert process.stdin is not None
                         try:
-                            process.stdin.write(prompt)
-                            await process.stdin.drain()
+                            if protocol:
+                                await send(protocol.initial_request())
+                            else:
+                                process.stdin.write(prompt)
+                                await process.stdin.drain()
                         except (BrokenPipeError, ConnectionResetError):
                             pass  # The native exit/event status explains early failure.
                         finally:
-                            process.stdin.close()
+                            if protocol is None:
+                                process.stdin.close()
 
                     readers = [
                         asyncio.create_task(read_stdout()),
@@ -617,10 +622,27 @@ class RunnerHandler:
                     return output.result(returncode)
             except TimeoutError:
                 raise RunnerError("Native CLI exceeded the local task timeout") from None
+            except CodexProtocolError as error:
+                raise RunnerError(str(error)) from None
             finally:
+
+                async def stop_owned_process() -> None:
+                    try:
+                        if protocol and process.returncode is None:
+                            interrupt = protocol.interrupt_request()
+                            if interrupt is not None:
+                                try:
+                                    await asyncio.wait_for(
+                                        send(interrupt), self.settings.terminate_grace_seconds
+                                    )
+                                except (OSError, RuntimeError, TimeoutError):
+                                    pass
+                    finally:
+                        await self._cleanup(tree, readers)
+
                 # Cancellation is not completion. Kill descendants before releasing
                 # the client's task slot, including when the parent has exited.
-                cleanup = asyncio.create_task(self._cleanup(tree, readers))
+                cleanup = asyncio.create_task(stop_owned_process())
                 interrupted = False
                 try:
                     while not cleanup.done():

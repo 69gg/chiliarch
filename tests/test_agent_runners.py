@@ -8,8 +8,6 @@ import json
 import os
 import signal
 import sys
-import textwrap
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -36,50 +34,17 @@ def fake_cli(
 ) -> Path:
     """Create a fake CLI, not a wrapper invoking a user's installed agent."""
     path = directory / ("fake cli 中文.py" if os.name == "nt" else "fake-cli")
-    script = textwrap.dedent(
-        f"""\
-        import json
-        import os
-        import signal
-        import subprocess
-        import sys
-        import time
-        from pathlib import Path
-        from typing import Any
-
-        sys.stdin.reconfigure(encoding="utf-8")
-        arguments: list[str] = sys.argv[1:]
-        prompt: str = sys.stdin.read()
-        observed: dict[str, Any] = {{"argv": arguments, "stdin": prompt, "cwd": os.getcwd(), "pid": os.getpid()}}
-        if "--mcp-config" in arguments:
-            config_path = Path(arguments[arguments.index("--mcp-config") + 1])
-            observed["mcp_path"] = str(config_path)
-            observed["mcp_config"] = json.loads(config_path.read_text(encoding="utf-8"))
-            observed["mcp_mode"] = config_path.stat().st_mode & 0o777
-        Path("observed.json").write_text(json.dumps(observed), encoding="utf-8")
-        if {child!r}:
-            child_process = subprocess.Popen(
-                [sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"],
-                stdout=subprocess.DEVNULL if {child_has_private_output!r} else None,
-                stderr=subprocess.DEVNULL if {child_has_private_output!r} else None,
-            )
-            Path("child.pid").write_text(str(child_process.pid))
-        if {stderr_bytes!r}:
-            sys.stderr.write("x" * {stderr_bytes!r})
-            sys.stderr.flush()
-        events: list[Any] = {events!r}
-        for event in events:
-            print(json.dumps(event), flush=True)
-        raw: bytes | None = {raw!r}
-        if raw is not None:
-            sys.stdout.buffer.write(raw)
-            sys.stdout.buffer.flush()
-        if {hang!r}:
-            time.sleep(60)
-        sys.exit({exitcode!r})
-        """
-    )
-    path.write_text(f"#!{sys.executable}\n" + script, encoding="utf-8")
+    fixture: JsonObject = {
+        "events": events,
+        "exitcode": exitcode,
+        "stderr_bytes": stderr_bytes,
+        "raw": raw,
+        "hang": hang,
+        "child": child,
+        "child_has_private_output": child_has_private_output,
+    }
+    script = (Path(__file__).parent / "helpers" / "fake_native_cli.py").read_text(encoding="utf-8")
+    path.write_text(f"#!{sys.executable}\n" + script + f"\nmain({fixture!r})\n", encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -133,7 +98,7 @@ async def progress_recorder(records: list[tuple[float, str]], value: float, mess
 
 
 @pytest.mark.parametrize("kind", ["codex", "claude-code"])
-async def test_native_success_receives_fixed_policy_and_stdin_only_task(
+async def test_native_success_inherits_policy_and_receives_stdin_only_task(
     tmp_path: Path, kind: str
 ) -> None:
     workspace = tmp_path / "fixed workspace"
@@ -147,7 +112,10 @@ async def test_native_success_receives_fixed_policy_and_stdin_only_task(
             "workdir": workspace,
             "executable": str(binary),
             "model": "locally-selected-model",
+            "codex_sandbox": "read-only",
             "codex_skip_git_repo_check": True,
+            "claude_permission_mode": "plan",
+            "claude_allowed_tools": ["Read"],
             "terminate_grace_seconds": 0.05,
         }
     )
@@ -181,7 +149,7 @@ async def test_native_success_receives_fixed_policy_and_stdin_only_task(
     assert "remote-model" not in args
     assert "fixture-secret-must-not-enter-prompt" not in observed["stdin"]
     assert not (tmp_path / "should-not-exist").exists()
-    assert "--model=locally-selected-model" in args
+    assert "locally-selected-model" not in str(observed)
     assert result["adapter"] == kind
     assert result["session_id"] == f"native-{'codex' if kind == 'codex' else 'claude'}-session"
     assert result["usage"]["input_tokens"] in {20, 25}
@@ -200,28 +168,47 @@ async def test_native_success_receives_fixed_policy_and_stdin_only_task(
         "platform-task",
     ]
     if kind == "codex":
-        assert args[0] == "exec"
-        assert args[-1] == "-"
-        assert args[args.index("--cd") + 1] == str(workspace)
-        assert args[args.index("--sandbox") + 1] == "read-only"
-        assert 'approval_policy="never"' in args
-        config = next(arg for arg in args if arg.startswith("mcp_servers.chiliarch="))
-        mcp = tomllib.loads(config)["mcp_servers"]["chiliarch"]
+        assert args == ["app-server"]
+        requests = observed["requests"]
+        assert [request["method"] for request in requests] == [
+            "initialize",
+            "initialized",
+            "thread/start",
+            "turn/start",
+        ]
+        thread = requests[2]["params"]
+        assert set(thread) == {"cwd", "config"}
+        assert thread["cwd"] == str(workspace)
+        assert len(thread["config"]) == 1
+        config_key, mcp = next(iter(thread["config"].items()))
+        assert config_key.startswith("mcp_servers.chiliarch_")
+        mcp_name = config_key.removeprefix("mcp_servers.")
+        assert f"Use the {mcp_name} MCP server's tools" in observed["stdin"]
+        assert set(requests[3]["params"]) == {"threadId", "input"}
+        assert requests[3]["params"]["input"] == [
+            {"type": "text", "text": observed["stdin"], "text_elements": []}
+        ]
         assert mcp["command"] == sys.executable
         assert mcp["args"] == expected_mcp_args
+        assert set(mcp) == {"command", "args", "enabled", "required"}
+        assert mcp["enabled"] is True
         assert mcp["required"] is True
         assert result["answer"] == "检查完成，两个任务正在运行。"
     else:
         assert "--print" in args
-        assert args[args.index("--permission-mode") + 1] == "plan"
-        assert "--strict-mcp-config" in args
+        assert "--permission-mode" not in args
+        assert "--strict-mcp-config" not in args
         assert "--verbose" in args
         assert "--include-partial-messages" in args
-        assert "--allowedTools=mcp__chiliarch__*" in args
+        assert not any(arg.startswith(("--allowedTools", "--model")) for arg in args)
         assert "--bare" not in args
         if os.name == "posix":
             assert observed["mcp_mode"] == 0o600
-        mcp = observed["mcp_config"]["mcpServers"]["chiliarch"]
+        servers = observed["mcp_config"]["mcpServers"]
+        assert len(servers) == 1
+        mcp_name, mcp = next(iter(servers.items()))
+        assert mcp_name.startswith("chiliarch_")
+        assert f"Use the {mcp_name} MCP server's tools" in observed["stdin"]
         assert mcp["command"] == sys.executable
         assert mcp["args"] == expected_mcp_args
         assert not await asyncio.to_thread(Path(observed["mcp_path"]).exists)
@@ -230,11 +217,81 @@ async def test_native_success_receives_fixed_policy_and_stdin_only_task(
         assert result["native_permission_denials"] == 0
 
 
+async def test_codex_success_does_not_require_optional_token_usage(tmp_path: Path) -> None:
+    binary = fake_cli(tmp_path, [{"type": "turn.completed"}])
+    settings = RunnerSettings(kind="codex", workdir=tmp_path, executable=str(binary))
+
+    async def progress(_: float, __: str) -> None:
+        pass
+
+    result = await create_handler(settings, tmp_path / "state.db")(
+        {"task_id": "task", "instruction": "inspect"}, progress
+    )
+    assert result["session_id"] == "native-codex-session"
+    assert result["usage"] == {}
+
+
+@pytest.mark.parametrize("kind", ["codex", "claude-code"])
+async def test_each_task_adds_its_own_mcp_without_replacing_native_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    config_directory = tmp_path / "native config"
+    config_directory.mkdir()
+    configuration = config_directory / "fixture-settings.json"
+    contents = json.dumps(
+        {
+            "model": "native-selected-model",
+            "permissions": {"existing-rule": "preserve"},
+            "mcpServers": {
+                "chiliarch": {"command": "existing-chiliarch"},
+                "existing-server": {"command": "existing-tool"},
+            },
+        }
+    )
+    configuration.write_text(contents, encoding="utf-8")
+    for variable in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(variable, str(config_directory))
+    events = codex_success() if kind == "codex" else claude_success()
+    binary = fake_cli(tmp_path, events)
+    settings = RunnerSettings.model_validate(
+        {"kind": kind, "workdir": tmp_path, "executable": str(binary)}
+    )
+    handler = create_handler(settings, tmp_path / "state.db")
+    names: list[str] = []
+
+    async def progress(_: float, __: str) -> None:
+        pass
+
+    for task_id in ("first", "second"):
+        await handler({"task_id": task_id, "instruction": "inspect"}, progress)
+        observed = json.loads((tmp_path / "observed.json").read_text(encoding="utf-8"))
+        assert set(observed["environment"].values()) == {str(config_directory)}
+        if kind == "codex":
+            params = observed["requests"][2]["params"]
+            assert set(params) == {"cwd", "config"}
+            # A dotted per-server overlay leaves the native mcp_servers table intact.
+            assert len(params["config"]) == 1
+            key, server = next(iter(params["config"].items()))
+            assert key.startswith("mcp_servers.chiliarch_")
+            name = key.removeprefix("mcp_servers.")
+        else:
+            assert "--strict-mcp-config" not in observed["argv"]
+            assert "--settings" not in observed["argv"]
+            assert len(observed["mcp_config"]["mcpServers"]) == 1
+            name, server = next(iter(observed["mcp_config"]["mcpServers"].items()))
+        assert name.startswith("chiliarch_")
+        assert name not in {"chiliarch", "existing-server"}
+        assert server["args"][-2:] == ["--managed-task", task_id]
+        assert f"Use the {name} MCP server's tools" in observed["stdin"]
+        names.append(name)
+        assert configuration.read_text(encoding="utf-8") == contents
+    assert names[0] != names[1]
+
+
 @pytest.mark.parametrize(
     "kind,events",
     [
         ("codex", [{"type": "turn.failed", "error": {"message": "fixture-secret"}}]),
-        ("codex", [{"type": "turn.completed"}]),
         ("codex", [{"type": "error", "message": "fixture-secret"}, *codex_success()]),
         (
             "codex",
@@ -297,7 +354,7 @@ async def test_nonzero_exit_overrides_successful_output(tmp_path: Path, exitcode
     [
         (b"not-json secret-content\n", 4096, "invalid JSONL"),
         (b"[]\n", 4096, "invalid JSONL event"),
-        (b'{"x":1}\n', 4096, "invalid JSONL event"),
+        (b'{"x":1}\n', 4096, "invalid protocol response"),
         (b"x" * 5000, 4096, "line size limit"),
         (b'{"type":"unrecognized","data":"' + b"x" * 3000 + b'"}\n', 2048, "line size limit"),
     ],
@@ -501,15 +558,12 @@ async def test_prompt_validation_prevents_any_process_start(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "patch",
     [
-        {"codex_sandbox": "danger-full-access"},
-        {"claude_permission_mode": "bypassPermissions"},
         {"args": ["--dangerously-skip-permissions"]},
-        {"model": "injected\nflag"},
         {"executable": "binary\x00"},
         {"max_line_bytes": 8192, "max_output_bytes": 4096},
     ],
 )
-def test_local_settings_reject_bypass_and_unknown_launch_options(
+def test_local_settings_reject_unknown_launch_options_and_invalid_limits(
     tmp_path: Path, patch: JsonObject
 ) -> None:
     with pytest.raises(ValidationError):

@@ -24,6 +24,22 @@ chiliarch daemon status
 
 系统启动项记录实际 Python 解释器的绝对路径、工作目录和必要环境，不依赖调用时的 shell 或项目 cwd。优先用 `uv tool install` 的持久环境；修改或删除其安装环境后应重新检查启动配置。[uv 工具管理](https://docs.astral.sh/uv/concepts/tools/)
 
+## 原生配置目录与环境
+
+托管 runner 使用守护进程所在的系统用户与环境来查找 Codex／Claude 配置。Windows、macOS、Linux 的自启动项在安装时保存 `HOME`、`PATH`、locale，以及当时已设置的非秘密配置目录变量：`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`。项目级配置与指令由固定 workdir 按原生规则发现；用户目录变量只提供原生工具查找配置的入口。
+
+启动项不复制 API Key 或其他秘密，也不 source 用户 shell 配置。原生认证由原生工具自行读取；Chiliarch 不上传认证文件，不为使用订阅而改写 provider 或删除已有认证来源。只有原生已登录且没有更高优先级 API 来源时，任务才可能使用该登录对应的订阅；具体选择和计费由原生工具及服务商决定。
+
+安装时保存的环境是快照。健康守护进程被复用时，不会获取另一个终端的新变量；已安装服务只运行 `daemon start`、`daemon restart` 或 `daemon install` 也不会重写启动项。升级前安装的服务或修改过配置目录的服务，先排空托管任务，再在具有正确目录环境的终端重新安装：
+
+```bash
+chiliarch daemon uninstall
+chiliarch daemon install
+chiliarch daemon status
+```
+
+两次命令使用同一个守护目录；独立目录需每次显式传相同的 `--directory`，尤其是修改了决定默认位置的 `XDG_STATE_HOME` 或 `LOCALAPPDATA` 时。卸载会停止该守护进程管理的所有身份及托管任务，保留登记、状态库和日志；再次安装重新保存非秘密环境并启动服务。用户自行管理的前台进程则需从预期环境重新启动。
+
 ## 注册当前 agent
 
 登录平台 WebUI，在“Agents 管理”右上角添加入口创建一次性注册码，然后在 agent 所在机器执行：
@@ -104,9 +120,11 @@ chiliarch daemon register \
   --transport ws
 ```
 
-本地设置控制启动程序、工作目录、原生权限与并发，远端任务不能改写这些边界。任务内临时 MCP 使用 mailbox 模式，由父连接传输；模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)。
+runner TOML 控制启动程序、固定工作目录、超时和输入输出限额，并发由登记参数控制；模型、provider、原生权限、指令和工具配置沿用 Codex／Claude 自身设置。远端任务不能改写这些边界。Codex 通过独立本机 app-server stdio 运行，Claude Code 使用 print JSONL。任务内只追加一个名称唯一的 mailbox MCP，由父连接传输，名称写入任务提示；不替换原有 MCP。模型不能跨任务冒用身份，也不能抢先标记执行成功。工作目录只约束启动 cwd，不是额外文件系统沙盒。具体 TOML 和原生权限说明见 [Codex](agents/codex.md) 与 [Claude Code](agents/claude-code.md)，旧设置迁移见 [配置说明](configuration.md#本机-runner-与原生配置)。
 
-托管续轮使用平台 `dispatch_task.continue_task_id`，指向同身份最近成功完成的托管任务。`parameters.chiliarch_context` 是平台注入的关联信息，普通任务参数不能代替本地会话所有权校验。runner 把自己启动的原生会话与任务关系保存在身份状态库 `runner_sessions` 表；核对平台身份、服务地址、适配器、工作目录、本地任务完成状态后，才使用 Codex `exec resume` 或 Claude `--print --resume`。新的任务有独立 ID；开始续轮后旧任务关联失效，须引用最新成功任务继续。运行中、失败、取消、结果未知，以及来自其他身份或用户手动启动的会话均不可续接。原生历史被删除时报告失败，不另开会话冒充恢复。
+当前没有跨平台原生审批或用户输入回复桥。原生策略要求交互且无法继续时，托管任务会明确受阻或失败，不自动允许原生工具，也不调整原生权限来继续。平台 ask/auto/yolo 只控制平台业务审批；本机 app-server 不接管 Codex App 界面。
+
+托管续轮使用平台 `dispatch_task.continue_task_id`，指向同身份最近成功完成的托管任务。`parameters.chiliarch_context` 是平台注入的关联信息，普通任务参数不能代替本地会话所有权校验。runner 把自己启动的原生会话与任务关系保存在身份状态库 `runner_sessions` 表；核对平台身份、服务地址、适配器、工作目录、本地任务完成状态后，才使用 Codex app-server 的 `thread/resume` 或 Claude `--print --resume`。续接遵循原生语义，Codex 可能沿用原线程的配置，不保证刷新所有当前用户设置。新的任务有独立 ID；开始续轮后旧任务关联失效，须引用最新成功任务继续。运行中、失败、取消、结果未知，以及来自其他身份或用户手动启动的会话均不可续接。原生历史被删除时报告失败，不另开会话冒充恢复。
 
 `send_peer_message` 普通来信由 daemon 持久接收，运行中的模型在适当时机主动读信。显式唤醒走正式任务调度，已完成托管任务可续轮；不向仍运行的原生 stdin 注入信息，也不代表当前 App 的手动会话能被自动唤醒。普通回信默认不唤醒，防止双方无限自动回复。任务若在等待另一个需要相同执行槽或工作目录的任务，应保存依赖并结束本轮，之后再续接，而不是一边占锁一边等。
 

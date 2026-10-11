@@ -9,10 +9,12 @@
 | Agent       | 当前会话接收调度、汇报与协调    | 无人值守执行                  | 接入文档                                  |
 | ----------- | ------------------------------- | ----------------------------- | ----------------------------------------- |
 | Codex App   | stdio MCP，当前会话主动领取任务 | 使用同机独立 Codex CLI runner | [Codex App / CLI](docs/agents/codex.md)   |
-| Codex CLI   | stdio MCP                       | `codex exec --json`           | [Codex App / CLI](docs/agents/codex.md)   |
+| Codex CLI   | stdio MCP                       | 本机 `codex app-server` stdio | [Codex App / CLI](docs/agents/codex.md)   |
 | Claude Code | stdio MCP                       | `claude --print`＋JSONL       | [Claude Code](docs/agents/claude-code.md) |
 
 接入文档开头有可直接复制给 agent 的简短提示词，无需预填参数；agent 会通过 `raw.githubusercontent.com` 读取 [自助接入指南](docs/agents/onboarding.md)，主动询问缺少的配置并把自己接入平台。详见 [Agent 接入与协作](docs/agents/index.md)。MCP 会话接入支持领取任务、进度与结果、向总管提问、查询其他 agents 和申请协作调度；不会自动唤醒 Codex App 的空闲会话。本机共享守护进程先发现复用、再配对登记，默认当前用户登录后自启动；支持 Windows、macOS、Linux 的 MCP 与托管运行，CLI runner 默认创建新会话，也可明确续接 Chiliarch 创建的最近成功会话。OpenCode、Undefined 保留 [协议和扩展接口](docs/extensions.md)，尚未实现对应适配器。
+
+托管执行沿用本机 Codex／Claude 的模型、服务商、认证、原生权限、项目指令、MCP 和其他原生配置；只为当前任务额外添加一个名称唯一的 Chiliarch mailbox MCP。runner TOML 负责程序、固定工作目录、超时和输入输出限额。Codex 的 app-server 是本地子进程，不控制桌面 App。当前尚无跨平台原生审批或用户输入回复桥；必须交互且无法继续时任务会明确受阻或失败，平台 ask/auto/yolo 不会改写原生权限。旧 runner 设置迁移见 [配置说明](docs/configuration.md#本机-runner-与原生配置)。
 
 仓库地址为 [69gg/chiliarch](https://github.com/69gg/chiliarch)。
 
