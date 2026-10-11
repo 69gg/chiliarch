@@ -83,7 +83,7 @@ export default function ChatPage({
   const configured = Boolean(model?.model);
   const supervisor = state.config.supervisor as
     Record<string, Json> | undefined;
-  const mode = String(supervisor?.mode ?? "ask");
+  const mode = String(supervisor?.mode ?? "auto");
   const activeRun = [...chat.runs]
     .reverse()
     .find((run) => ACTIVE_RUN_STATUSES.includes(run.status));

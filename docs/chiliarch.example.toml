@@ -47,7 +47,7 @@ system_prompt_as_user = false
 [model.request_params]
 
 [supervisor]
-mode = "ask"
+mode = "auto"
 run_timeout = 600.0
 event_poll_seconds = 0.25
 inbox_poll_seconds = 1.0

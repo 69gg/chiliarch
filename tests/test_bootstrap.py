@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
+import runpy
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from test_updates import Installer
 
-from chiliarch import bootstrap, cli
+from chiliarch import bootstrap, cli, updates
+from chiliarch.config import SettingsManager
 
 
 @pytest.mark.parametrize(
@@ -207,3 +212,82 @@ def test_posix_dispatch_replaces_supervisor_process(tmp_path: Path) -> None:
     assert Path(cwd) == tmp_path
     assert arguments == ["serve", "--config", "中文 path.toml"]
     assert marker == "1"
+
+
+@pytest.mark.parametrize("entrypoint", ["console", "module"])
+def test_server_public_entrypoints_check_and_select_updated_runtime_before_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+) -> None:
+    # Exercise both published entrypoints through the real update selector. Only
+    # external PyPI/uv I/O and process replacement are replaced by isolated fakes.
+    console = next(
+        item
+        for item in importlib.metadata.distribution("chiliarch").entry_points
+        if item.group == "console_scripts" and item.name == "chiliarch"
+    ).load()
+    installer = Installer(tmp_path, monkeypatch)
+    arguments = ["--config", "server state/chiliarch.toml", "serve", "--port", "9000"]
+    dispatch = Mock()
+    serve = Mock()
+    monkeypatch.setattr(bootstrap, "_dispatch", dispatch)
+    monkeypatch.setattr(cli, "main", serve)
+    monkeypatch.setattr(sys, "argv", ["chiliarch", *arguments])
+    monkeypatch.delenv("CHILIARCH_UPDATE_BOOTSTRAPPED", raising=False)
+    if entrypoint == "console":
+        console()
+    else:
+        runpy.run_module("chiliarch", run_name="__main__")
+    selected = updates.select_runtime(check=False)
+    assert selected is not None
+    assert len(installer.requests) == 1
+    assert len(installer.commands) == 3
+    assert updates._version(selected.parent.parent) == updates.Version("0.4.0")
+    assert updates._version(installer.origin) == updates.Version("0.3.0")
+    dispatch.assert_called_once_with(selected, arguments)
+    serve.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["network", "install", "probe"])
+def test_failed_server_startup_update_still_serves_existing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    installer = Installer(tmp_path, monkeypatch)
+    installer.failure = failure
+    config = tmp_path / "server.toml"
+    config.write_text('[auth]\npassword_hash = "existing-hash"\n', encoding="utf-8")
+    before = config.read_bytes()
+    manager = SettingsManager(config)
+    application = SimpleNamespace(state=SimpleNamespace(settings_manager=manager))
+    created: list[Path] = []
+
+    def create_app(path: Path) -> SimpleNamespace:
+        # No app, listener or database is opened until startup preparation ends.
+        assert len(installer.requests) == 1
+        assert not (installer.directory / "active.json").exists()
+        created.append(path)
+        return application
+
+    serve = Mock()
+    dispatch = Mock()
+    monkeypatch.setattr("chiliarch.api.create_app", create_app)
+    monkeypatch.setattr("uvicorn.run", serve)
+    monkeypatch.setattr(bootstrap, "_dispatch", dispatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["chiliarch", "serve", "--config", str(config), "--host", "127.0.0.1", "--port", "9000"],
+    )
+    monkeypatch.delenv("CHILIARCH_UPDATE_BOOTSTRAPPED", raising=False)
+    bootstrap.main()
+    assert created == [config]
+    assert config.read_bytes() == before
+    assert updates._version(installer.origin) == updates.Version("0.3.0")
+    dispatch.assert_not_called()
+    serve.assert_called_once_with(
+        application,
+        host="127.0.0.1",
+        port=9000,
+        workers=1,
+        log_config=None,
+        timeout_graceful_shutdown=manager.current.server.graceful_shutdown_seconds,
+    )

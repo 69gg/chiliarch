@@ -6,6 +6,7 @@ import logging
 import os
 import stat
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,70 @@ from pydantic import ValidationError
 from chiliarch import config
 from chiliarch.config import MASK, LogSettings, Settings, SettingsManager, atomic_write
 from chiliarch.logging import close_logging, configure_logging, tail_logs
+
+
+@pytest.mark.parametrize("content", [None, "", "[supervisor]\n"])
+def test_missing_supervisor_mode_defaults_to_auto(
+    tmp_path: Path, content: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CHILIARCH_SUPERVISOR__MODE", raising=False)
+    path = tmp_path / "config.toml"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    manager = SettingsManager(path)
+    assert manager.current.supervisor.mode == "auto"
+    assert manager.public()["supervisor"]["mode"] == "auto"
+    manager.update({"model": {"model": "configured"}})
+    assert SettingsManager(path).current.supervisor.mode == "auto"
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto", "yolo"])
+def test_explicit_supervisor_mode_survives_loading_and_unrelated_updates(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CHILIARCH_SUPERVISOR__MODE", raising=False)
+    path = tmp_path / "config.toml"
+    path.write_text(f'[supervisor]\nmode = "{mode}"\n', encoding="utf-8")
+    manager = SettingsManager(path)
+    assert manager.current.supervisor.mode == mode
+    manager.update({"model": {"model": "configured"}})
+    assert manager.current.supervisor.mode == mode
+    assert SettingsManager(path).current.supervisor.mode == mode
+
+
+@pytest.mark.parametrize("mode", ["ask", "yolo"])
+def test_explicit_environment_mode_overrides_auto_without_changing_saved_default(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHILIARCH_SUPERVISOR__MODE", mode)
+    path = tmp_path / "config.toml"
+    manager = SettingsManager(path)
+    assert manager.current.supervisor.mode == mode
+    manager.update({"model": {"model": "configured"}})
+    assert manager.current.supervisor.mode == mode
+    monkeypatch.delenv("CHILIARCH_SUPERVISOR__MODE")
+    assert SettingsManager(path).current.supervisor.mode == "auto"
+
+
+def test_cli_initialization_persists_auto_and_refuses_to_overwrite_existing_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiliarch.auth import verify_password
+    from chiliarch.cli import initialize
+
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr("chiliarch.cli.getpass.getpass", lambda _: "test-init-password")
+    initialize(path)
+    with path.open("rb") as source:
+        data = tomllib.load(source)
+    assert data["supervisor"]["mode"] == "auto"
+    assert verify_password("test-init-password", data["auth"]["password_hash"])
+    manager = SettingsManager(path)
+    manager.update({"supervisor": {"mode": "ask"}})
+    previous = path.read_bytes()
+    with pytest.raises(ValueError, match="Configuration exists"):
+        initialize(path)
+    assert path.read_bytes() == previous
 
 
 def test_update_is_validated_atomic_and_keeps_masked_secrets(tmp_path: Path) -> None:
@@ -216,11 +281,11 @@ async def test_file_watcher_rejects_bad_config_and_applies_valid_file(tmp_path: 
                     break
                 await asyncio.sleep(0.01)
         assert manager.revision == 1
-        settings.supervisor.mode = "auto"
+        settings.supervisor.mode = "ask"
         atomic_write(path, settings)
         async with asyncio.timeout(2):
             for _ in range(200):
-                if manager.current.supervisor.mode == "auto":
+                if manager.current.supervisor.mode == "ask":
                     break
                 await asyncio.sleep(0.01)
         assert manager.last_error is None

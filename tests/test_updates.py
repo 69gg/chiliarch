@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 import venv
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 import pytest
 import tomli_w
@@ -462,3 +464,62 @@ def test_failed_candidate_cleanup_does_not_hide_install_failure(
         updates._prepare(installation, updates.Version("0.4.0"))
     assert len(cleaned) == 1
     assert cleaned[0].parent == installer.directory / "runtimes"
+
+
+def test_real_uv_installer_ignores_user_config_and_environment_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uv = shutil.which("uv")
+    assert uv is not None
+    prefix = tmp_path / "isolated install"
+    venv.create(prefix, with_pip=False)
+    python = updates._python(prefix)
+    config_home = tmp_path / "user config"
+    (config_home / "uv").mkdir(parents=True)
+    # A malformed global file proves whether discovery occurs without relying
+    # on a network service or matching an installer's human-readable output.
+    (config_home / "uv/uv.toml").write_text("[[index]\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("APPDATA", str(config_home))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("UV_CONFIG_FILE", str(config_home / "uv/uv.toml"))
+    monkeypatch.setenv("UV_INDEX", "https://unreachable.invalid/simple")
+    monkeypatch.setenv("UV_TARGET", str(tmp_path / "wrong target"))
+    wheel = tmp_path / "chiliarch_update_probe-1.0.0-py3-none-any.whl"
+    info = "chiliarch_update_probe-1.0.0.dist-info"
+    members = {
+        f"{info}/METADATA": "Metadata-Version: 2.1\nName: chiliarch-update-probe\nVersion: 1.0.0\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    members[f"{info}/RECORD"] = "".join(f"{name},,\n" for name in [*members, f"{info}/RECORD"])
+    with ZipFile(wheel, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    command = [
+        uv,
+        "pip",
+        "install",
+        "--offline",
+        "--python",
+        str(python),
+        "--default-index",
+        updates.PYPI_INDEX_URL,
+        str(wheel),
+    ]
+    with pytest.raises(subprocess.CalledProcessError):
+        updates._command(command, timeout=20, cwd=tmp_path)
+    updates._command([*command, "--no-config"], timeout=20, cwd=tmp_path)
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "from importlib.metadata import version; print(version('chiliarch-update-probe'))",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.stdout.strip() == "1.0.0"
+    assert not (tmp_path / "wrong target").exists()

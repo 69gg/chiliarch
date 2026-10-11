@@ -18,7 +18,7 @@ export function platformState(): PlatformState {
         reasoning_enabled: false,
         context_window: 200000,
       },
-      supervisor: { mode: "ask" },
+      supervisor: { mode: "auto" },
       logs: {
         level: "INFO",
         directory: "/tmp/logs",

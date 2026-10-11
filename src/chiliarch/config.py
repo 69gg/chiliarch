@@ -128,7 +128,7 @@ class ModelSettings(ConfigModel):
 
 
 class SupervisorSettings(ConfigModel):
-    mode: Literal["ask", "auto", "yolo"] = "ask"
+    mode: Literal["ask", "auto", "yolo"] = "auto"
     run_timeout: float = Field(default=600, gt=0)
     event_poll_seconds: float = Field(default=0.25, gt=0)
     inbox_poll_seconds: float = Field(default=1, gt=0)

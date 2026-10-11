@@ -94,7 +94,7 @@ UI/API 修改密码会使现有会话失效。浏览器变更操作需要 cookie
 
 ### supervisor / model
 
-`supervisor.mode` 为 ask/auto/yolo；`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
+`supervisor.mode` 为 ask/auto/yolo，默认 **auto**：查询直接执行，状态变更按风险决定，固有高风险操作仍需用户批准。默认值适用于新初始化或省略此字段的配置；显式保存的模式不会在升级时被覆盖。此设置不修改 Codex／Claude／OpenCode 的原生权限。`run_timeout` 限制每段活跃执行的时间（审批等待不计入，批准恢复后重新计时），`inbox_poll_seconds` 决定持久下级 inbox 检查间隔，`event_poll_seconds` 决定聊天事件检查间隔，`system_prompt` 为总管角色提示。
 
 任务长期不更新由 `supervisor.task_stall_seconds` 控制，默认 **300 秒**；失联仍使用 `transport.offline_after_seconds`（默认 60 秒）。服务端维护循环按 `transport.retry_seconds` 扫描，仅生成持久核查事件，不认定任务失败，也不重新派发。每个任务进度时间、每次 agent 活性时间分别去重；进度恢复或重连后可开启新的监护周期。未配置总管模型或会话暂停时事件仍保留。
 

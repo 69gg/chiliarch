@@ -55,6 +55,7 @@ async def test_pairing_code_has_one_winner_under_concurrency(service: OperationS
 
 
 async def test_ask_approval_binds_arguments_and_executes_once(service: OperationService) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     agent = await add_agent(service)
     args = {
         "agent_id": agent["agent_id"],
@@ -93,6 +94,7 @@ async def test_ask_approval_binds_arguments_and_executes_once(service: Operation
 
 
 async def test_rejected_operation_has_no_side_effect(service: OperationService) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     agent = await add_agent(service)
     waiting = await service.execute(
         "rename_agent", {"agent_id": agent["agent_id"], "name": "changed"}, "supervisor", "rename"
@@ -110,7 +112,7 @@ async def test_rejected_operation_has_no_side_effect(service: OperationService) 
 
 
 async def test_auto_assessment_cannot_reduce_intrinsic_high_risk(service: OperationService) -> None:
-    service.settings_manager.update({"supervisor": {"mode": "auto"}})
+    assert service.settings_manager.current.supervisor.mode == "auto"
     low = {"level": "low", "reason": "Only naming a known local agent"}
     agent = await add_agent(service)
     renamed = await service.execute(
@@ -124,6 +126,11 @@ async def test_auto_assessment_cannot_reduce_intrinsic_high_risk(service: Operat
     assert not (await service.execute("get_agent", {"agent_id": agent["agent_id"]}))["agent"][
         "revoked"
     ]
+    with pytest.raises(OperationError) as self_approval:
+        await service.execute(
+            "approve_operation", {"approval_id": waiting["approval_id"]}, "supervisor"
+        )
+    assert self_approval.value.status_code == 403
     service.settings_manager.update({"supervisor": {"mode": "yolo"}})
     assert (await service.execute("revoke_agent", {"agent_id": agent["agent_id"]}, "supervisor"))[
         "agent"
@@ -131,7 +138,7 @@ async def test_auto_assessment_cannot_reduce_intrinsic_high_risk(service: Operat
 
 
 async def test_lower_agent_request_cannot_bypass_high_risk_gate(service: OperationService) -> None:
-    service.settings_manager.update({"supervisor": {"mode": "auto"}})
+    assert service.settings_manager.current.supervisor.mode == "auto"
     agent = await add_agent(service)
     message = Envelope(
         type="agent.request",
@@ -186,6 +193,7 @@ async def test_lower_agent_read_query_uses_query_policy_and_returns_correlated_r
 
 
 async def test_lower_agent_mutation_still_waits_for_user_in_ask(service: OperationService) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     agent = await add_agent(service)
     await service.receive(
         agent["agent_id"],
@@ -361,6 +369,7 @@ async def test_cross_agent_task_status_is_rejected_without_persistence(
 
 
 async def test_pending_approved_extension_runs_exactly_once(service: OperationService) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     calls: list[str] = []
 
     async def extension(args: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +401,7 @@ async def test_pending_approved_extension_runs_exactly_once(service: OperationSe
 
 
 async def test_request_resolution_preserves_stored_arguments(service: OperationService) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     agent = await add_agent(service)
     envelope = Envelope(
         type="agent.request",
@@ -541,6 +551,7 @@ async def test_extension_agent_request_uses_approval_then_one_handler_call(
 async def test_approved_extension_failure_does_not_reexecute_and_resumes_waiter(
     service: OperationService,
 ) -> None:
+    service.settings_manager.update({"supervisor": {"mode": "ask"}})
     calls: list[int] = []
     notifications: list[str] = []
 

@@ -101,6 +101,50 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+describe("总管模式默认值与已有选择", () => {
+  it.each([
+    { supervisor: undefined, expected: "auto" },
+    { supervisor: {}, expected: "auto" },
+    { supervisor: { mode: "ask" }, expected: "ask" },
+    { supervisor: { mode: "auto" }, expected: "auto" },
+    { supervisor: { mode: "yolo" }, expected: "yolo" },
+  ])(
+    "配置 $supervisor 显示 $expected 且不自动保存",
+    async ({ supervisor, expected }) => {
+      const state = platformState();
+      if (supervisor === undefined) delete state.config.supervisor;
+      else state.config.supervisor = supervisor;
+      mockConversation(conversation());
+      const operate = vi.spyOn(api, "operate").mockResolvedValue({});
+      renderChat(state);
+      await waitFor(() => expect(api.conversations).toHaveBeenCalledOnce());
+      expect(screen.getByRole("combobox", { name: "运行模式" })).toHaveValue(
+        expected,
+      );
+      expect(operate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("仅在用户选择时提交模式变更", async () => {
+    const state = platformState();
+    state.config.supervisor = { mode: "ask" };
+    mockConversation(conversation());
+    const operate = vi.spyOn(api, "operate").mockResolvedValue({});
+    const refresh = vi.fn();
+    render(<ChatPage state={state} refresh={refresh} onConfigure={vi.fn()} />);
+    await userEvent
+      .setup()
+      .selectOptions(
+        screen.getByRole("combobox", { name: "运行模式" }),
+        "auto",
+      );
+    expect(operate).toHaveBeenCalledExactlyOnceWith("update_config", {
+      patch: { supervisor: { mode: "auto" } },
+    });
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+});
+
 describe("发送与事件流的竞态", () => {
   it("先建空会话再发送时，提前到达的正文和完成事件不会改变用户消息顺序或运行终态", async () => {
     const detail = conversation();
