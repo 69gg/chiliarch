@@ -83,7 +83,7 @@ chiliarch pair --server <平台HTTP或HTTPS地址> --name <agent名称> --state 
 chiliarch demo-agent --state ./agent.db
 ```
 
-注册码交互输入；长期凭证只保存在本地状态文件，不在终端显示。`demo-agent` 只模拟进度和结果，不运行命令、不操作真实厂商 agent。客户端优先 WS，其次 SSE＋HTTP POST，最后长轮询，支持持久去重、离线队列和重连。
+注册码交互输入；长期凭证只保存在本地状态文件，不在终端显示。`demo-agent` 只模拟进度和结果，不运行命令、不操作真实厂商 agent。客户端优先 WS，其次 SSE＋HTTP POST，最后长轮询，支持持久去重、离线队列和重连。WS 限制未确认心跳数量，避免慢速接收端积压控制消息；确认超时沿原有链路降级，详见 [协议文档](docs/protocol.md)。
 
 接收或落盘较慢时，未确认消息按条退避重投，避免重复帧积压影响新任务、回复和进度；重连后继续使用原消息 ID 恢复投递。
 

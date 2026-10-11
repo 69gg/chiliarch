@@ -56,8 +56,19 @@ class TransportGate:
         self.attempts: list[str] = []
         self.drop_acks = False
         self.dropped_acks = 0
+        self.hold_heartbeat_acks = False
+        self.heartbeat_ids: set[str] = set()
+        self.heartbeat_received: asyncio.Queue[str] = asyncio.Queue()
+        self.heartbeat_ack_held = asyncio.Event()
+        self.held_heartbeat_acks: list[tuple[Send, Message]] = []
         self.lifespan_task: asyncio.Task[None] | None = None
         self.shutdown_started = asyncio.Event()
+
+    async def release_heartbeat_acks(self) -> None:
+        self.hold_heartbeat_acks = False
+        held, self.held_heartbeat_acks = self.held_heartbeat_acks, []
+        for send, message in held:
+            await send(message)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -95,14 +106,29 @@ class TransportGate:
             async def filtered_receive() -> Any:
                 while True:
                     message = await receive()
-                    if self.drop_acks and message["type"] == "websocket.receive":
+                    if message["type"] == "websocket.receive":
                         body = json.loads(message.get("text", "{}"))
-                        if body.get("type") == "ack":
+                        if body.get("type") == "heartbeat":
+                            self.heartbeat_ids.add(body["id"])
+                            self.heartbeat_received.put_nowait(body["id"])
+                        if self.drop_acks and body.get("type") == "ack":
                             self.dropped_acks += 1
                             continue
                     return message
 
-            await self.app(scope, filtered_receive, send)
+            async def filtered_send(message: Message) -> None:
+                if self.hold_heartbeat_acks and message["type"] == "websocket.send":
+                    body = json.loads(message.get("text", "{}"))
+                    if (
+                        body.get("type") == "ack"
+                        and body.get("payload", {}).get("message_id") in self.heartbeat_ids
+                    ):
+                        self.held_heartbeat_acks.append((send, message))
+                        self.heartbeat_ack_held.set()
+                        return
+                await send(message)
+
+            await self.app(scope, filtered_receive, filtered_send)
         else:
             await self.app(scope, receive, send)
 
@@ -624,6 +650,120 @@ async def test_server_queue_survives_full_app_restart(live: LiveServer, tmp_path
     try:
         await wait_for_task(live, task["id"], "completed")
         assert calls == [task["id"]]
+    finally:
+        await stop_client(client, runner)
+
+
+async def test_ws_pending_heartbeat_does_not_block_business_or_write_empty_ack_transactions(
+    live: LiveServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    async def handler(payload: JsonObject, _: Callable[[float, str], Awaitable[None]]) -> str:
+        calls.append(payload["task_id"])
+        return "completed while heartbeat ACK was held"
+
+    live.gate.hold_heartbeat_acks = True
+    client, agent_id = await live.agent(tmp_path / "heartbeat-backpressure.db", handler)
+    original_heartbeat = client.heartbeat
+    attempted_heartbeats = 0
+    repeated_attempts = asyncio.Event()
+    durable_acks: list[str] = []
+    original_acknowledge = client.store.acknowledge
+    service = live.app.state.service
+    original_receive = service.receive
+    server_acks: asyncio.Queue[str] = asyncio.Queue()
+
+    async def heartbeat() -> Envelope:
+        nonlocal attempted_heartbeats
+        attempted_heartbeats += 1
+        if attempted_heartbeats >= 4:
+            repeated_attempts.set()
+        return await original_heartbeat()
+
+    async def acknowledge(message_id: str) -> None:
+        durable_acks.append(message_id)
+        await original_acknowledge(message_id)
+
+    async def receive(agent_id: str, envelope: Envelope) -> JsonObject:
+        result: JsonObject = await original_receive(agent_id, envelope)
+        if envelope.type == "ack":
+            server_acks.put_nowait(envelope.payload["message_id"])
+        return result
+
+    monkeypatch.setattr(client, "heartbeat", heartbeat)
+    monkeypatch.setattr(client.store, "acknowledge", acknowledge)
+    monkeypatch.setattr(service, "receive", receive)
+    runner = asyncio.create_task(client.run())
+    try:
+        async with asyncio.timeout(5):
+            first_heartbeat = await live.gate.heartbeat_received.get()
+            await live.gate.heartbeat_ack_held.wait()
+        # This independent message can only leave the server outbox through
+        # the client's ACK, unlike task.dispatch which completion also clears.
+        message = await service.execute(
+            "send_agent_message", {"agent_id": agent_id, "message": "Still responsive?"}
+        )
+        task = (
+            await service.execute(
+                "dispatch_task", {"agent_id": agent_id, "instruction": "Check backpressure"}
+            )
+        )["task"]
+        completed = await wait_for_task(live, task["id"], "completed")
+        assert completed["result"] == "completed while heartbeat ACK was held"
+        assert calls == [task["id"]]
+        async with asyncio.timeout(5):
+            await repeated_attempts.wait()
+            while await server_acks.get() != message["message_id"]:
+                pass
+        assert all(item.id != message["message_id"] for item in await service.pending(agent_id))
+        assert live.gate.heartbeat_ids == {first_heartbeat}
+        assert len(live.gate.held_heartbeat_acks) == 1
+        assert client.transport_history == ["ws"]
+        # Deliver the exact held ACK through the real socket. A new heartbeat
+        # proves the receiver consumed it and released its one-message window.
+        await live.gate.release_heartbeat_acks()
+        async with asyncio.timeout(5):
+            next_heartbeat = await live.gate.heartbeat_received.get()
+        assert next_heartbeat != first_heartbeat
+        assert first_heartbeat not in durable_acks
+        assert durable_acks, "Business delivery must still acknowledge durable outbox rows"
+    finally:
+        await stop_client(client, runner)
+
+
+async def test_ws_missing_heartbeat_ack_falls_back_to_sse_and_completes_task(
+    live: LiveServer, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+
+    async def handler(payload: JsonObject, _: Callable[[float, str], Awaitable[None]]) -> str:
+        calls.append(payload["task_id"])
+        return "completed after fallback"
+
+    live.gate.hold_heartbeat_acks = True
+    client, agent_id = await live.agent(tmp_path / "heartbeat-timeout.db", handler)
+    client.options = client.options.model_copy(
+        update={"heartbeat_seconds": 0.05, "offline_after_seconds": 1.0}
+    )
+    runner = asyncio.create_task(client.run())
+    try:
+        async with asyncio.timeout(5):
+            await live.gate.heartbeat_ack_held.wait()
+            while "sse" not in live.gate.attempts:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+        assert len(live.gate.heartbeat_ids) == 1
+        assert len(live.gate.held_heartbeat_acks) == 1
+        task = (
+            await live.app.state.service.execute(
+                "dispatch_task", {"agent_id": agent_id, "instruction": "Use working transport"}
+            )
+        )["task"]
+        completed = await wait_for_task(live, task["id"], "completed")
+        assert completed["result"] == "completed after fallback"
+        assert calls == [task["id"]]
+        assert [transport for transport, _ in groupby(client.transport_history)] == ["ws", "sse"]
+        assert client.transport == "sse"
     finally:
         await stop_client(client, runner)
 

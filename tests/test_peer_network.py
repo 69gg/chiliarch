@@ -22,7 +22,7 @@ Progress = Callable[[float, str], Awaitable[None]]
 
 @pytest.mark.parametrize(
     ("transport", "receive_delay"),
-    [("ws", 0), ("sse", 0), ("poll", 0), pytest.param("ws", 0.05, id="ws-slow-ack")],
+    [("ws", 0), ("sse", 0), ("poll", 0), pytest.param("ws", 0.15, id="ws-slow-ack")],
 )
 async def test_discover_wake_reply_and_receipts_across_outbound_transports(
     tmp_path: Path,
@@ -114,6 +114,9 @@ async def test_discover_wake_reply_and_receipts_across_outbound_transports(
             task_id = result["result"]["wake_task_id"]
             completed = await wait_for_task(platform, task_id, "completed")
             assert completed["result"]["reviewed"] == result["result"]["message"]["id"]
+            # The bounded-latency assertion above covers the slow receiver.
+            # File transfer below needn't repeat that delay for every chunk.
+            receive_delay = 0
             replay = await mailbox.send_peer_message(
                 "Please independently review this result",
                 recipient_agent_id=identities["reviewer"],

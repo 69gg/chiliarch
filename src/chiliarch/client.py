@@ -807,14 +807,35 @@ class AgentClient:
             ping_interval=self.options.heartbeat_seconds,
         ) as websocket:
             lock = asyncio.Lock()
+            heartbeat_id: str | None = None
+            heartbeat_sent_at = 0.0
 
             async def send(envelope: Envelope) -> None:
+                nonlocal heartbeat_id, heartbeat_sent_at
                 async with lock:
+                    if envelope.type == "heartbeat":
+                        if heartbeat_id is not None:
+                            if (
+                                time.monotonic() - heartbeat_sent_at
+                                >= self.options.offline_after_seconds
+                            ):
+                                raise TimeoutError("WebSocket heartbeat was not acknowledged")
+                            return
+                        # Control traffic must not grow faster than the receiver
+                        # can persist it and delay business messages indefinitely.
+                        heartbeat_id = envelope.id
+                        heartbeat_sent_at = time.monotonic()
                     await websocket.send(envelope.model_dump_json())
 
             async def read() -> None:
+                nonlocal heartbeat_id
                 async for message in websocket:
-                    await self._accept(Envelope.model_validate_json(message), send)
+                    envelope = Envelope.model_validate_json(message)
+                    if envelope.type == "ack" and envelope.payload["message_id"] == heartbeat_id:
+                        # Heartbeats have no durable outbox row to delete.
+                        heartbeat_id = None
+                        continue
+                    await self._accept(envelope, send)
 
             await self._duplex(read(), send)
 
