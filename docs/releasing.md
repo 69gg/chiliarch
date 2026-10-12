@@ -41,13 +41,13 @@ CI 保留 Linux、macOS、Windows × Python 3.11、3.12、3.13 的 9 个组合�
 下一补丁版本示例：
 
 ```sh
-uv run python scripts/bump_version.py 0.4.5 --dry-run
-uv run python scripts/bump_version.py 0.4.5
+uv run python scripts/bump_version.py 0.4.6 --dry-run
+uv run python scripts/bump_version.py 0.4.6
 ```
 
 脚本同步 pyproject.toml、uv.lock 与 web/package.json，不自动提交、推送或打 tag。包版本来自安装元数据，无需再维护一份源码常量。
 
-CHANGELOG 使用 `## v<版本> 标题`，按最终用户的行为与影响撰写，段落末尾用 `---`。不自动拼接提交记录。预发布可使用三段公开 PEP 440 版本，如 0.4.5rc1，标签会生成 prerelease。
+CHANGELOG 使用 `## v<版本> 标题`，按最终用户的行为与影响撰写，段落末尾用 `---`。不自动拼接提交记录。预发布可使用三段公开 PEP 440 版本，如 0.4.6rc1，标签会生成 prerelease。
 
 ## 构建分发包
 
@@ -58,8 +58,8 @@ uv build
 uv run twine check dist/*
 uv run --isolated --no-project --with dist/*.whl scripts/smoke_test.py
 uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_test.py
-uv run python scripts/release_notes.py validate --tag v0.4.5
-uv run python scripts/release_notes.py extract --tag v0.4.5
+uv run python scripts/release_notes.py validate --tag v0.4.6
+uv run python scripts/release_notes.py extract --tag v0.4.6
 ```
 
 版本示例要换成当前准备发布的版本。清理旧 dist 或显式选择本轮文件，避免通配符同时选中不同版本。
@@ -91,12 +91,12 @@ Publisher 对应字段：
 3. 对同一提交创建并推送签名 v* tag。
 4. 在 Actions → Release 确认校验、构建、PyPI 发布和 GitHub Release 全部成功。
 
-以待发布 v0.4.5 为例，在获得发布授权后：
+以待发布 v0.4.6 为例，在获得发布授权后：
 
 ```sh
 git push origin main
-git tag -s v0.4.5 -m "Release v0.4.5"
-git push origin v0.4.5
+git tag -s v0.4.6 -m "Release v0.4.6"
+git push origin v0.4.6
 ```
 
 Release 工作流检查 Python 3.11–3.13、tag / 版本 / CHANGELOG 一致性，构建并校验包，通过 uv Trusted Publishing 上传同一组产物，再创建 GitHub Release。发布说明读取对应 CHANGELOG 条目。
