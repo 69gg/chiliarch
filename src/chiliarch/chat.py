@@ -232,9 +232,10 @@ class Supervisor:
         )
         register(
             "get_conversation",
-            "Read a supervisor conversation, its messages and runs. Use returned run IDs for cancel_chat_run; wait for an active run to finish or cancel it before starting another message in the same conversation.",
+            "User and supervisor only: read a supervisor conversation, its original messages, tool data and runs. Agent requests cannot read private supervisor transcripts; share selected information through send_agent_message or dispatch_task instead. Use returned run IDs for cancel_chat_run; wait for an active run to finish or cancel it before starting another message in the same conversation.",
             object_id,
             self._tool_read,
+            agent_requestable=False,
         )
         register(
             "get_chat_run",

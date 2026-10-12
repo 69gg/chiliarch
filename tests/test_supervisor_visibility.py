@@ -19,7 +19,7 @@ from test_chat_supervisor import Upstream, manager, wait_status
 from test_peer_service import agent as add_peer
 from test_peer_service import request as submit_peer_request
 
-from chiliarch.chat import AgentInbox, Supervisor
+from chiliarch.chat import AgentInbox, ChatMessage, Supervisor
 from chiliarch.config import SettingsManager
 from chiliarch.database import AuditEvent, Database, PairingCode
 from chiliarch.logging import JsonFormatter
@@ -597,6 +597,108 @@ async def test_resolved_agent_configuration_request_stays_masked_under_superviso
                 ]
                 == "********"
             )
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto", "yolo"])
+async def test_lower_agent_cannot_request_private_conversation_but_user_and_supervisor_read_original(
+    tmp_path: Path, mode: str
+) -> None:
+    upstream = Upstream("list_agents")
+    async with system(tmp_path, upstream, mode, start=False) as (db, _, service, supervisor):
+        requester = await add_peer(service, "requester")
+        conversation = await supervisor.create_conversation("Private conversation")
+        original_content = json.dumps(
+            {"api_key": "private-conversation-api-key", "password": "private-conversation-password"}
+        )
+        async with db.sessions.begin() as session:
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation["id"], role="user", content=original_content
+                )
+            )
+        envelope = Envelope(
+            type="agent.request",
+            payload={
+                "request_id": "read-private-conversation",
+                "operation": "get_conversation",
+                "arguments": {"conversation_id": conversation["id"]},
+            },
+        )
+        with pytest.raises(OperationError) as forbidden:
+            await service.receive(requester, envelope)
+        assert forbidden.value.status_code == 403
+        assert await service.pending(requester) == []
+        assert (await service.execute("list_agent_requests", {}, actor="supervisor"))[
+            "requests"
+        ] == []
+        expected = await supervisor.get_conversation(conversation["id"])
+        for actor in ("user", "supervisor"):
+            full = await service.execute(
+                "get_conversation", {"conversation_id": conversation["id"]}, actor=actor
+            )
+            assert full == expected
+            assert full["messages"][0]["content"] == original_content
+        assert upstream.requests == []
+
+
+@pytest.mark.parametrize("continuation", ["resolve_agent_request", "approve_operation"])
+async def test_pending_extension_request_cannot_execute_after_agent_request_capability_is_removed(
+    tmp_path: Path, continuation: str
+) -> None:
+    upstream = Upstream("list_agents")
+    mode = "ask" if continuation == "approve_operation" else "yolo"
+    async with system(tmp_path, upstream, mode, start=False) as (_, _, service, _):
+        requester = await add_peer(service, "requester")
+        effects: list[str] = []
+
+        async def private_payload(arguments: JSONObject) -> JSONObject:
+            effects.append(arguments["record_id"])
+            return {"content": "private-conversation-fulltext", "api_key": "private-extension-key"}
+
+        service.register(
+            "read_private_payload",
+            "Read a private payload with an observable access effect",
+            {
+                "type": "object",
+                "properties": {"record_id": {"type": "string"}},
+                "required": ["record_id"],
+                "additionalProperties": False,
+            },
+            private_payload,
+            mutating=True,
+        )
+        assert service.operations["read_private_payload"].agent_requestable
+        requested = await submit_peer_request(
+            service, requester, "read_private_payload", {"record_id": "private-record"}
+        )
+        assert requested["status"] == "pending"
+        arguments: JSONObject = {"request_id": requested["id"], "decision": "approve"}
+        if continuation == "approve_operation":
+            waiting = await service.execute("resolve_agent_request", arguments, actor="supervisor")
+            assert waiting["status"] == "awaiting_approval"
+            arguments = {"approval_id": waiting["approval_id"]}
+        assert effects == []
+        service.operations["read_private_payload"].agent_requestable = False
+        with pytest.raises(OperationError) as forbidden:
+            await service.execute(
+                continuation,
+                arguments,
+                actor="user" if continuation == "approve_operation" else "supervisor",
+            )
+        assert forbidden.value.status_code == 403
+        assert effects == [] and await service.pending(requester) == []
+        requests = (await service.execute("list_agent_requests", {}, actor="supervisor"))[
+            "requests"
+        ]
+        preserved = next(item for item in requests if item["id"] == requested["id"])
+        assert preserved["status"] == "pending" and preserved["result"] is None
+        if continuation == "approve_operation":
+            approvals = (await service.execute("list_approvals", {}, actor="supervisor"))[
+                "approvals"
+            ]
+            approval = next(item for item in approvals if item["id"] == arguments["approval_id"])
+            assert approval["status"] == "pending" and approval["result"] is None
+        assert upstream.requests == []
 
 
 @pytest.mark.parametrize("operation", ["get_agent", "list_agent_requests", "list_approvals"])

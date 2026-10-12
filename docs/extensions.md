@@ -39,7 +39,7 @@ def application(settings: Settings) -> Any:
 
 这是入口示例，不代表项目已有真实工作目录检查器。应用设置仍需有效登录密码。用自己的 ASGI factory 或 Python 启动入口加载扩展；本版不自动扫描磁盘或安装插件。
 
-注册后，工具出现在 `GET /api/operations` 和总管工具 Schema。登录用户可通过 `POST /api/operations/<name>` 调用，body 为 `{arguments,idempotency_key}`；agent 通过 agent.request 申请调用，由总管或用户按模式处理。新增平台业务能力应同时提供给总管，沿用统一操作服务与权限校验。
+注册后，工具出现在 `GET /api/operations` 和总管工具 Schema。登录用户可通过 `POST /api/operations/<name>` 调用，body 为 `{arguments,idempotency_key}`；agent 通过 agent.request 申请调用，由总管或用户按模式处理。新增平台业务能力应同时提供给总管，沿用统一操作服务与权限校验。只供用户和总管使用的私有操作，注册时设置 `agent_requestable=False`；入口和审批执行都会校验，不允许下级借获批请求读取。`get_conversation` 使用这一限制，保留总管完整会话数据；与下级分享资料使用消息或任务。
 
 自定义 handler 在数据库写锁外执行，可使用自己的事务。平台先保存幂等 reservation 再执行；如果进程恰在外部副作用期间中断，结果可能未知，同 key 重试不会自动再次执行。handler 自己应按业务身份去重，并提供查询/协调恢复方法。平台不能替外部系统保证恰好一次。
 

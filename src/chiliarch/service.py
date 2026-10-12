@@ -244,9 +244,11 @@ class Operation:
         risk: str,
         mutating: bool,
         arguments: type[BaseModel] | None = None,
+        agent_requestable: bool = True,
     ) -> None:
         self.name, self.description, self.parameters = name, description, parameters
         self.handler, self.risk, self.mutating, self.arguments = handler, risk, mutating, arguments
+        self.agent_requestable = agent_requestable
 
     def schema(self) -> JsonObject:
         return {
@@ -255,6 +257,7 @@ class Operation:
             "parameters": self.parameters,
             "risk": self.risk,
             "mutating": self.mutating,
+            "agent_requestable": self.agent_requestable,
         }
 
 
@@ -315,13 +318,22 @@ class OperationService:
         handler: Handler,
         risk: str = "low",
         mutating: bool = False,
+        agent_requestable: bool = True,
     ) -> None:
         if name in self.operations:
             raise ValueError(f"Operation {name} is already registered")
         if risk not in {"low", "medium", "high"}:
             raise ValueError("risk must be low, medium or high")
         Draft202012Validator.check_schema(parameters)
-        self.operations[name] = Operation(name, description, parameters, handler, risk, mutating)
+        self.operations[name] = Operation(
+            name,
+            description,
+            parameters,
+            handler,
+            risk,
+            mutating,
+            agent_requestable=agent_requestable,
+        )
 
     def _register_core(self) -> None:
         specs: list[tuple[str, str, type[BaseModel], str, bool]] = [
@@ -561,6 +573,12 @@ class OperationService:
                 422,
             )
         return arguments
+
+    def _validate_agent_request(self, name: str, arguments: JsonObject) -> JsonObject:
+        validated = self._validate(name, arguments)
+        if not self.operations[name].agent_requestable:
+            raise OperationError("This operation is only available to the user and supervisor", 403)
+        return validated
 
     def _approval_reason(
         self, operation: Operation, actor: str, assessment: JsonObject | None
@@ -884,7 +902,7 @@ class OperationService:
                 if requested_operation.handler is not None:
                     return (
                         requested_operation.handler,
-                        self._validate(request.operation, request.arguments),
+                        self._validate_agent_request(request.operation, request.arguments),
                         request.id,
                     )
         return None, args, None
@@ -1219,7 +1237,7 @@ class OperationService:
                     "An agent request cannot resolve approvals or other requests", 403
                 )
             if args["decision"] == "approve":
-                validated = self._validate(request.operation, request.arguments)
+                validated = self._validate_agent_request(request.operation, request.arguments)
                 if self.operations[request.operation].handler is not None:
                     raise OperationError(
                         "Extension requests must be handled by an explicit plugin decision handler",
@@ -1560,7 +1578,9 @@ class OperationService:
                 elif envelope.type == "agent.request":
                     requested = envelope.payload
                     try:
-                        arguments = self._validate(requested["operation"], requested["arguments"])
+                        arguments = self._validate_agent_request(
+                            requested["operation"], requested["arguments"]
+                        )
                     except OperationError as exc:
                         if exc.status_code == 404:
                             raise OperationError("Unknown requested operation", 422) from exc
