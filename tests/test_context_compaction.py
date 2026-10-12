@@ -413,7 +413,7 @@ async def test_reported_usage_is_a_current_window_and_prefix_changes_invalidate_
         await provider.close()
 
 
-async def test_compaction_records_mask_secret_arguments_and_exclude_native_replay() -> None:
+async def test_compaction_preserves_original_arguments_and_excludes_native_replay() -> None:
     upstream = CompactionUpstream()
     provider = upstream.provider(ModelSettings(model="test", context_window=WINDOW))
     history: list[JSON] = [
@@ -425,12 +425,16 @@ async def test_compaction_records_mask_secret_arguments_and_exclude_native_repla
                 {
                     "id": "config-call",
                     "name": "update_config",
-                    "arguments": {"patch": {"model": {"api_key": "secret-must-not-be-summarized"}}},
+                    "arguments": {"patch": {"model": {"api_key": "original-config-key"}}},
                 }
             ],
             "native": {"items": [{"signature": "private-native-value"}]},
         },
-        {"role": "tool", "tool_call_id": "config-call", "content": '{"api_key":"********"}'},
+        {
+            "role": "tool",
+            "tool_call_id": "config-call",
+            "content": '{"api_key":"original-config-key","code":"usable-pairing-code"}',
+        },
     ]
     try:
         result = await compact_context(provider, history, [], "system", WINDOW, 18000)
@@ -439,7 +443,14 @@ async def test_compaction_records_mask_secret_arguments_and_exclude_native_repla
             "\nConversation record fragments:\n", 1
         )[1]
         records = [json.loads(json.loads(fragment)["data"]) for fragment in fragments.splitlines()]
-        assert records[1]["tool_calls"][0]["arguments"]["patch"]["model"]["api_key"] == "********"
+        assert (
+            records[1]["tool_calls"][0]["arguments"]["patch"]["model"]["api_key"]
+            == "original-config-key"
+        )
+        assert json.loads(records[2]["content"]) == {
+            "api_key": "original-config-key",
+            "code": "usable-pairing-code",
+        }
         assert "native" not in records[1]
     finally:
         await provider.close()

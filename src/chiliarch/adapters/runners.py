@@ -30,7 +30,6 @@ from chiliarch.adapters.opencode import OpenCodeProtocol, OpenCodeProtocolError
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
 from chiliarch.client import TaskExecutionError, TaskHandler
-from chiliarch.config import mask_sensitive
 
 JsonObject = dict[str, Any]
 Progress = Callable[[float, str], Awaitable[None]]
@@ -414,7 +413,7 @@ class RunnerHandler:
         if not isinstance(parameters, dict):
             raise RunnerError("Dispatched task parameters must be an object")
         try:
-            data = json.dumps(mask_sensitive(parameters), ensure_ascii=False, allow_nan=False)
+            data = json.dumps(parameters, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError, RecursionError):
             raise RunnerError("Dispatched task parameters must contain valid JSON data") from None
         task_id = payload.get("task_id")

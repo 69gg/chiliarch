@@ -675,7 +675,7 @@ async def test_multi_tool_turn_resume_keeps_prior_results_and_executes_each_call
         await db.close()
 
 
-async def test_public_tool_events_mask_secrets_without_altering_approved_execution(
+async def test_tool_events_and_model_preserve_original_approved_values(
     tmp_path: Path,
 ) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
@@ -724,8 +724,8 @@ async def test_public_tool_events_mask_secrets_without_altering_approved_executi
         }
         for event in argument_events:
             assert event["data"]["arguments"] == {
-                "api_key": "********",
-                "headers": {"X-Custom": "********"},
+                "api_key": "new-secret",
+                "headers": {"X-Custom": "header-secret"},
             }
         async with db.sessions() as session:
             stored = await session.get(ChatRun, run["run_id"])
@@ -742,8 +742,10 @@ async def test_public_tool_events_mask_secrets_without_altering_approved_executi
         result = [
             event["data"]["result"] for event in snapshot["events"] if event["type"] == "tool_end"
         ]
-        assert result == [{"status": "saved", "api_key": "********"}]
-        assert json.loads(upstream.requests[1]["messages"][-1]["content"])["api_key"] == "********"
+        assert result == [{"status": "saved", "api_key": "new-secret"}]
+        assert (
+            json.loads(upstream.requests[1]["messages"][-1]["content"])["api_key"] == "new-secret"
+        )
     finally:
         await supervisor.stop()
         await db.close()

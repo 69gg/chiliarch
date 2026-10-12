@@ -39,11 +39,11 @@ def application(settings: Settings) -> Any:
 
 这是入口示例，不代表项目已有真实工作目录检查器。应用设置仍需有效登录密码。用自己的 ASGI factory 或 Python 启动入口加载扩展；本版不自动扫描磁盘或安装插件。
 
-注册后，工具出现在 `GET /api/operations` 和总管工具 Schema。登录用户可通过 `POST /api/operations/<name>` 调用，body 为 `{arguments,idempotency_key}`；agent 通过 agent.request 申请调用，由总管或用户按模式处理。
+注册后，工具出现在 `GET /api/operations` 和总管工具 Schema。登录用户可通过 `POST /api/operations/<name>` 调用，body 为 `{arguments,idempotency_key}`；agent 通过 agent.request 申请调用，由总管或用户按模式处理。新增平台业务能力应同时提供给总管，沿用统一操作服务与权限校验。
 
 自定义 handler 在数据库写锁外执行，可使用自己的事务。平台先保存幂等 reservation 再执行；如果进程恰在外部副作用期间中断，结果可能未知，同 key 重试不会自动再次执行。handler 自己应按业务身份去重，并提供查询/协调恢复方法。平台不能替外部系统保证恰好一次。
 
-只读工具准确设置 mutating=false；任何外部状态变更必须标 true。访问认证、凭证或安全配置的工具应标 high。自定义秘密字段在日志、工具结果、公开事件中需要显式脱敏；不要直接返回密码或第三方原始异常。
+只读工具准确设置 mutating=false；任何外部状态变更必须标 true。访问认证、凭证或安全配置的状态变更工具应标 high。总管工具结果保留原始业务数据，不为秘密字段统一替换掩码；这些值会进入所配置的模型并保存在聊天记录。日志与操作审计仍须显式脱敏，下级 agent 只得到其身份与资源范围允许的数据。第三方异常仍用明确的错误类别与安全诊断报告，不能直接转发可能夹带凭证的异常正文。
 
 ## 编写 Python agent handler
 

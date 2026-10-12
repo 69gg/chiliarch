@@ -115,7 +115,12 @@ async def test_native_task_preserves_configuration_and_injects_only_its_mailbox(
     assert config.read_text(encoding="utf-8") == contents
     assert instruction in execution["stdin"]
     assert instruction not in execution["argv"]
-    assert "private-credential" not in execution["stdin"]
+    task_parameters = json.loads(execution["stdin"].split("\n\nTask parameters:\n", 1)[1])
+    assert task_parameters == {
+        "model": "remote-model",
+        "executable": "untrusted-binary",
+        "api_key": "private-credential",
+    }
     assert not (tmp_path / "must-not-exist").exists()
     session = execution["requests"][1]
     assert session["method"] == "session/new"

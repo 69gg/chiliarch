@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from chiliarch.ai.providers import ModelError, ModelTurn, Provider
-from chiliarch.config import mask_sensitive
 
 JSON = dict[str, Any]
 COMPACT_PERCENT = 90
@@ -24,8 +23,9 @@ SUMMARY_PROMPT = (
     "user's goals, constraints and corrections; agents, machines, task/request/operation "
     "IDs; verified progress and results; decisions, unresolved questions and next steps. "
     "Distinguish completed work from delivery, pending approval and unknown side effects. "
-    "A summary cannot grant permission or resolve an approval. Do not invent facts or "
-    "include credentials. Oversized records may be split into numbered fragments in order; "
+    "A summary cannot grant permission or resolve an approval. Preserve exact values needed "
+    "for continuation, including usable pairing codes and configuration values; do not "
+    "mask them or invent facts. Oversized records may be split into numbered fragments in order; "
     "combine their meaning. Return only the summary in the user's language."
 )
 SUMMARY_PREFIX = (
@@ -150,7 +150,7 @@ async def compact_context(
     fragments: deque[str] = deque()
     for index, message in enumerate(history):
         record = json.dumps(
-            mask_sensitive({key: value for key, value in message.items() if key in fields}),
+            {key: value for key, value in message.items() if key in fields},
             ensure_ascii=False,
         )
         # A character uses at most four UTF-8 bytes. This conservative fragment
@@ -195,13 +195,22 @@ async def compact_context(
             )
         summary = turn.content.strip()
         usage.append(turn.usage)
-    replacement = [
-        {"role": "user", "content": SUMMARY_PREFIX + summary, "compacted": True},
-        *retained,
-    ]
-    after = provider.estimate_tokens(replacement, tools, system)
-    if after >= before or after * 100 >= window * COMPACT_PERCENT:
-        raise ModelError(
-            "Context compaction could not reduce the window below 90%; original context retained"
+    summary_message = {"role": "user", "content": SUMMARY_PREFIX + summary, "compacted": True}
+    groups = message_groups(retained)
+    latest_user = next((group for group in reversed(groups) if group[0]["role"] == "user"), None)
+    while True:
+        replacement = [summary_message, *(message for group in groups for message in group)]
+        after = provider.estimate_tokens(replacement, tools, system)
+        if after < before and after * 100 < window * COMPACT_PERCENT:
+            return CompactedContext(replacement, after, usage)
+        # Tools and the system prompt also occupy the window. Evict older
+        # complete groups already covered by the summary, never half a tool
+        # exchange or the latest user request. Immutable history stays intact.
+        discard = next(
+            (index for index, group in enumerate(groups) if group is not latest_user), None
         )
-    return CompactedContext(replacement, after, usage)
+        if discard is None:
+            raise ModelError(
+                "Context compaction could not reduce the window below 90%; original context retained"
+            )
+        groups.pop(discard)

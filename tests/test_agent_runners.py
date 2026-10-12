@@ -136,7 +136,7 @@ async def test_native_success_inherits_policy_and_receives_stdin_only_task(
                 "executable": "untrusted-launcher",
                 "model": "remote-model",
                 "arguments": ["--dangerously-skip-permissions"],
-                "api_key": "fixture-secret-must-not-enter-prompt",
+                "api_key": "explicit-task-api-key",
             },
         },
         progress,
@@ -149,7 +149,14 @@ async def test_native_success_inherits_policy_and_receives_stdin_only_task(
     assert instruction not in args
     assert "untrusted-launcher" not in args
     assert "remote-model" not in args
-    assert "fixture-secret-must-not-enter-prompt" not in observed["stdin"]
+    task_parameters = json.loads(observed["stdin"].split("\n\nTask parameters:\n", 1)[1])
+    assert task_parameters == {
+        "cwd": str(tmp_path),
+        "executable": "untrusted-launcher",
+        "model": "remote-model",
+        "arguments": ["--dangerously-skip-permissions"],
+        "api_key": "explicit-task-api-key",
+    }
     assert not (tmp_path / "should-not-exist").exists()
     assert "locally-selected-model" not in str(observed)
     assert result["adapter"] == kind

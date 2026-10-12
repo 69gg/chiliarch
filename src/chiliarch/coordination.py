@@ -293,8 +293,6 @@ class CoordinationService:
         event_key: str | None = None,
         resume_requested: bool = False,
     ) -> None:
-        from chiliarch.service import redact
-
         key = event_key or f"{kind}:{new_id()}"
         existing = await session.scalar(
             select(CoordinationEvent.id).where(CoordinationEvent.event_key == key)
@@ -322,7 +320,7 @@ class CoordinationService:
                 conversation_id=(link.conversation_id if link else None)
                 or (goal.conversation_id if goal else None),
                 task_id=task.id if task else None,
-                payload=redact(payload),
+                payload=payload,
                 status="pending",
                 created_at=time.time(),
             )
@@ -353,7 +351,6 @@ class CoordinationService:
 
     async def enqueue(self, session: AsyncSession, task: Task, link: TaskLink) -> bool:
         from chiliarch.collaboration import TaskContext
-        from chiliarch.service import redact
 
         ready, dependencies = await self.dependencies(session, link)
         goal = await self.goal(session, link.goal_id) if link.goal_id else None
@@ -391,7 +388,7 @@ class CoordinationService:
             or link.retry_of
             or extra
         ):
-            task.parameters = {**task.parameters, "chiliarch_context": redact(context)}
+            task.parameters = {**task.parameters, "chiliarch_context": context}
         await self.service._enqueue(
             session,
             task.agent_id,

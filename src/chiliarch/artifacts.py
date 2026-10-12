@@ -97,7 +97,7 @@ class PutChunk(UploadId):
         description="Zero-based chunk index using the manifest's chunk_bytes size; the last chunk may be shorter.",
     )
     data_base64: str = Field(
-        description="Base64-encoded exact chunk bytes; repeated indexes must contain identical bytes. Local transfer only, never model-context file content."
+        description="Base64-encoded exact chunk bytes; repeated indexes must contain identical bytes. For large files, delegate byte transfer to an agent's local upload_artifact tool."
     )
 
 
@@ -145,7 +145,7 @@ SPECS: list[tuple[str, str, type[BaseModel], str, bool]] = [
     ),
     (
         "put_artifact_chunk",
-        "Local transfer only: supply one chunk under the previously authorized immutable upload manifest. Index and bytes must match the declared size; repeated identical chunks are idempotent. Finish after all chunks are stored.",
+        "Supply one exact base64 chunk under an upload manifest owned by the caller. Index and bytes must match the declared size; repeated identical chunks are idempotent. Finish after all chunks are stored. For large files, prefer an agent's local upload_artifact to avoid loading bytes into model context.",
         PutChunk,
         "low",
         True,
@@ -173,7 +173,7 @@ SPECS: list[tuple[str, str, type[BaseModel], str, bool]] = [
     ),
     (
         "read_artifact_chunk",
-        "Local transfer only: read a chunk from a ready accessible artifact; returns base64 bytes and a chunk SHA-256. Verify chunks and the complete manifest before using the local file; do not place bytes in model context.",
+        "Read a chunk from a ready accessible artifact; returns original base64 bytes and a chunk SHA-256. Verify chunks and the complete manifest before using a file. For large files, prefer an agent's local download_artifact to avoid loading bytes into model context.",
         ReadChunk,
         "low",
         False,
@@ -195,8 +195,6 @@ SPECS: list[tuple[str, str, type[BaseModel], str, bool]] = [
 ]
 OPERATIONS = frozenset(spec[0] for spec in SPECS)
 CONTINUATION_OPERATIONS = frozenset({"put_artifact_chunk", "finish_artifact_upload"})
-BINARY_OPERATIONS = frozenset({"put_artifact_chunk", "read_artifact_chunk"})
-INTERNAL_OPERATIONS = BINARY_OPERATIONS
 
 
 def artifact_view(artifact: Artifact) -> JsonObject:

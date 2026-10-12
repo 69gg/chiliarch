@@ -97,12 +97,19 @@ async def test_terminal_event_wakes_original_conversation_once_after_active_turn
         goal_id, task_id = await goal_and_task(service, conversation["id"], agent["agent_id"])
         first = await supervisor.send_message(conversation["id"], "请记住：不要修改原始数据")
         await asyncio.wait_for(model.observed.wait(), 5)
+        task_result = {
+            "commit": "abc",
+            "tests": "passed",
+            "code": "original-task-code",
+            "headers": {"X-Context": "original-header"},
+            "metadata": {"api_key": "original-task-key"},
+        }
         terminal = Envelope(
             type="task.status",
             payload={
                 "task_id": task_id,
                 "status": "completed",
-                "result": {"commit": "abc", "tests": "passed"},
+                "result": task_result,
             },
         )
         await service.receive(agent["agent_id"], terminal)
@@ -110,6 +117,7 @@ async def test_terminal_event_wakes_original_conversation_once_after_active_turn
         async with db.sessions() as session:
             event = (await session.scalars(select(CoordinationEvent))).one()
             assert event.status == "pending"
+            assert event.payload["task"]["result"] == task_result
         assert len(model.requests) == 1
         model.gate.set()
         await wait_status(supervisor, first["run_id"], "completed")
@@ -126,7 +134,8 @@ async def test_terminal_event_wakes_original_conversation_once_after_active_turn
         context = json.loads(history[-1]["content"].split("\n", 1)[1])
         assert context["goal"]["goal"]["id"] == goal_id
         assert context["goal"]["goal"]["constraints"] == ["保留用户数据"]
-        assert context["goal"]["goal"]["tasks"][0]["result"]["commit"] == "abc"
+        assert context["goal"]["goal"]["tasks"][0]["result"] == task_result
+        assert context["data"]["task"]["result"] == task_result
         async with db.sessions() as session:
             assert await session.scalar(select(func.count()).select_from(Conversation)) == 1
             assert await session.scalar(select(func.count()).select_from(CoordinationEvent)) == 1

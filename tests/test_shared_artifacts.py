@@ -177,7 +177,7 @@ async def test_ask_approves_manifest_once_then_only_owner_can_supply_exact_bytes
         if item.payload.get("request_id") == result["external_id"]
     )
     assert base64.b64decode(delivered.payload["result"]["data_base64"]) == payload
-    assert result["result"]["data_base64"] != delivered.payload["result"]["data_base64"]
+    assert result["result"] == delivered.payload["result"]
     assert (
         await request(
             service, outsider, "read_artifact_chunk", {"artifact_id": upload_id, "index": 0}

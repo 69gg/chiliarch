@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from chiliarch.config import SupervisorSettings
 from chiliarch.database import CoordinationEvent, Goal, OperationRecord, Task, TaskLink
-from chiliarch.service import redact
 
 if TYPE_CHECKING:
     from chiliarch.chat import Supervisor
@@ -104,7 +103,7 @@ async def schedule_model_recovery(
                 "ready_at": time.time() + delay,
                 "original_events": references,
                 "operations": [
-                    {"name": record.name, "status": record.status, "result": redact(record.result)}
+                    {"name": record.name, "status": record.status, "result": record.result}
                     for record in records
                 ],
                 "instruction": "模型暂时不可用。请先核对当前任务和已有操作结果，再继续处理原请求；不得重放旧工具或结果未知的外部操作。",
@@ -315,7 +314,7 @@ async def recover_coordination(supervisor: Supervisor) -> None:
                     payload={
                         "interrupted_run_id": interrupted.id,
                         "operations": [
-                            {"name": row.name, "status": row.status, "result": redact(row.result)}
+                            {"name": row.name, "status": row.status, "result": row.result}
                             for row in records
                         ],
                         "instruction": (
@@ -457,7 +456,10 @@ async def consume_coordination(supervisor: Supervisor) -> None:
                         tasks[task_id] = await supervisor.service.execute(
                             "get_task", {"task_id": task_id}, actor="supervisor"
                         )
-            contexts = [{"event": event.kind, "data": redact(event.payload)} for event in events]
+            contexts: list[JsonObject] = [
+                {"event": event.kind, "data": event.payload} for event in events
+            ]
+            context: JsonObject
             if len(events) == 1:
                 context = contexts[0]
                 event = events[0]
@@ -481,7 +483,7 @@ async def consume_coordination(supervisor: Supervisor) -> None:
                 "需要时安排评审、返工或向用户汇报。较新的目标和任务快照优先于历史事件。"
                 "任务 completed 只表示执行结束，验收必须调用 review_task；目标完成必须满足验收。"
                 "仍运行的工作无需重复派发；结果未知时先核查，不自动重放副作用。\n"
-                + json.dumps(redact(context), ensure_ascii=False)
+                + json.dumps(context, ensure_ascii=False)
             )
             await supervisor.send_message(
                 conversation_id,

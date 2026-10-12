@@ -12,7 +12,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -21,9 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from chiliarch.artifacts import (
     CONTINUATION_OPERATIONS as ARTIFACT_CONTINUATIONS,
-)
-from chiliarch.artifacts import (
-    INTERNAL_OPERATIONS as ARTIFACT_INTERNAL,
 )
 from chiliarch.artifacts import (
     OPERATIONS as ARTIFACT_OPERATIONS,
@@ -47,6 +44,7 @@ from chiliarch.collaboration import (
 from chiliarch.collaboration import (
     SPECS as COLLABORATION_SPECS,
 )
+from chiliarch.config import raw_settings
 from chiliarch.coordination import (
     CoordinationService,
     CreateGoalArguments,
@@ -232,7 +230,7 @@ class PasswordArguments(Arguments):
     password: str = Field(
         min_length=8,
         max_length=1024,
-        description="New login password. This invalidates existing user sessions; never echo or include the password in ordinary messages.",
+        description="New login password. This invalidates existing user sessions; the original tool argument is part of conversation history while operational logs and audit entries mask it.",
     )
 
 
@@ -399,7 +397,7 @@ class OperationService:
             ),
             (
                 "create_pairing_code",
-                "Create a one-time registration code for an agent to connect outbound to this platform. The agent exchanges it for a revocable credential; code creation does not install or connect an agent.",
+                "Create a one-time registration code for an agent to connect outbound to this platform. Returns the exact usable code and expires_at; convey the code unchanged to the user or intended agent with the platform public_url from get_config. The agent exchanges it for a revocable credential. Code creation does not install or connect an agent; the platform never dials the agent. After approval, use the original result rather than generating another code.",
                 PairingArguments,
                 "high",
                 True,
@@ -476,14 +474,21 @@ class OperationService:
             ),
             (
                 "get_config",
-                "Read effective platform configuration with secrets masked. Inspect current sections before update_config; masks are not the original credentials.",
+                "Read effective platform configuration. The supervisor receives complete original values, including API keys, authentication headers and secret request parameters. Inspect current sections before update_config; this configuration belongs to the platform, not agents' native settings. Do not forward unrelated credentials to agents.",
+                EmptyArguments,
+                "low",
+                False,
+            ),
+            (
+                "get_platform_state",
+                "Read the same agent, task, goal, request and approval overview as the user's management pages, with original business data and complete effective configuration. Includes config revision, pending restart values, last reload error and protocol version. Use runtime to distinguish saved restart requirements from the currently effective configuration.",
                 EmptyArguments,
                 "low",
                 False,
             ),
             (
                 "update_config",
-                "Validate and merge a partial platform configuration change. Supported settings hot-reload; inspect the returned effective configuration and restart requirements. Do not invent or replace masked credentials.",
+                "Validate and merge a partial platform configuration change. Supported settings hot-reload; the supervisor receives original effective values and restart requirements. Unspecified values remain unchanged. Inspect get_config first; preserve credentials unless the user intends to change them.",
                 ConfigArguments,
                 "high",
                 True,
@@ -497,7 +502,7 @@ class OperationService:
             ),
             (
                 "change_password",
-                "Change the single-user login password and invalidate all existing sessions. This is a high-risk operation; never echo the supplied password.",
+                "Change the single-user login password and invalidate all existing sessions. This is a high-risk operation governed by approval policy; the platform stores its hash rather than a recoverable login password.",
                 PasswordArguments,
                 "high",
                 True,
@@ -513,11 +518,7 @@ class OperationService:
             )
 
     def schemas(self) -> list[JsonObject]:
-        return [
-            operation.schema()
-            for operation in self.operations.values()
-            if operation.name not in ARTIFACT_INTERNAL
-        ]
+        return [operation.schema() for operation in self.operations.values()]
 
     def add_listener(self, callback: Listener) -> None:
         self.listeners.append(callback)
@@ -608,10 +609,6 @@ class OperationService:
             )
         if actor not in {"user", "supervisor"}:
             raise OperationError("Unknown actor", 403)
-        if actor == "supervisor" and name in ARTIFACT_INTERNAL:
-            raise OperationError(
-                "Binary transfer is performed by local artifact tools, not model context", 403
-            )
         raw_arguments = dict(arguments)
         supplied_assessment = raw_arguments.pop("_risk", None)
         if supplied_assessment is not None:
@@ -842,7 +839,7 @@ class OperationService:
                                 "approval_id": target_approval.id,
                                 "name": target_approval.operation,
                                 "actor": target_approval.requested_by,
-                                "result": redact(result),
+                                "result": result,
                             },
                         )
                         result = {"approval": self.approval_view(target_approval)}
@@ -859,9 +856,7 @@ class OperationService:
             "Operation executed",
             extra={"actor": actor, "operation": name, "status": result.get("status", "completed")},
         )
-        await self.emit(
-            "operation.executed", {"name": name, "actor": actor, "result": redact(result)}
-        )
+        await self.emit("operation.executed", {"name": name, "actor": actor, "result": result})
         if event:
             await self.emit(*event)
         return result
@@ -921,7 +916,7 @@ class OperationService:
             and agent.last_seen is not None
             and time.time() - agent.last_seen
             < self.settings_manager.current.transport.offline_after_seconds,
-            "metadata": redact(agent.metadata_json),
+            "metadata": agent.metadata_json,
             "transport": agent.metadata_json.get("transport"),
         }
 
@@ -950,48 +945,38 @@ class OperationService:
 
     @staticmethod
     def request_view(request: AgentRequest) -> JsonObject:
-        return cast(
-            JsonObject,
-            redact(
-                {
-                    field: getattr(request, field)
-                    for field in (
-                        "id",
-                        "agent_id",
-                        "external_id",
-                        "operation",
-                        "arguments",
-                        "message",
-                        "status",
-                        "result",
-                        "created_at",
-                        "resolved_at",
-                    )
-                }
-            ),
-        )
+        return {
+            field: getattr(request, field)
+            for field in (
+                "id",
+                "agent_id",
+                "external_id",
+                "operation",
+                "arguments",
+                "message",
+                "status",
+                "result",
+                "created_at",
+                "resolved_at",
+            )
+        }
 
     @staticmethod
     def approval_view(approval: Approval) -> JsonObject:
-        return cast(
-            JsonObject,
-            redact(
-                {
-                    field: getattr(approval, field)
-                    for field in (
-                        "id",
-                        "operation",
-                        "arguments",
-                        "requested_by",
-                        "status",
-                        "reason",
-                        "created_at",
-                        "resolved_at",
-                        "result",
-                    )
-                }
-            ),
-        )
+        return {
+            field: getattr(approval, field)
+            for field in (
+                "id",
+                "operation",
+                "arguments",
+                "requested_by",
+                "status",
+                "reason",
+                "created_at",
+                "resolved_at",
+                "result",
+            )
+        }
 
     async def start(self) -> None:
         self._maintenance_task = asyncio.create_task(
@@ -1304,7 +1289,7 @@ class OperationService:
                         "approval_id": approval.id,
                         "name": approval.operation,
                         "actor": approval.requested_by,
-                        "result": redact(result),
+                        "result": result,
                     },
                 )
             else:
@@ -1336,10 +1321,14 @@ class OperationService:
                 ]
             }, None
         if name == "get_config":
-            return {"config": self.settings_manager.public()}, None
+            return {"config": self._config_view(actor)}, None
+        if name == "get_platform_state":
+            return await self.state(include_secrets=actor == "supervisor"), None
         if name == "update_config":
             try:
-                return self.settings_manager.update(args["patch"]), None
+                result = self.settings_manager.update(args["patch"])
+                result["config"] = self._config_view(actor)
+                return result, None
             except ValueError as exc:
                 raise OperationError(
                     "Configuration patch failed validation; previous configuration remains active",
@@ -1701,7 +1690,12 @@ class OperationService:
                         pending.append(Envelope.model_validate(message.body))
                 return pending
 
-    async def state(self) -> JsonObject:
+    def _config_view(self, actor: str) -> JsonObject:
+        if actor == "supervisor":
+            return raw_settings(self.settings_manager.current, exclude_none=False)
+        return self.settings_manager.public()
+
+    async def state(self, *, include_secrets: bool = False) -> JsonObject:
         async with self.db.sessions() as session:
             return {
                 "agents": [
@@ -1739,7 +1733,7 @@ class OperationService:
                 "task_links": [
                     task_link_view(link) for link in (await session.scalars(select(TaskLink))).all()
                 ],
-                "config": self.settings_manager.public(),
+                "config": self._config_view("supervisor" if include_secrets else "user"),
                 "runtime": {
                     "config_revision": self.settings_manager.revision,
                     "pending_restart": self.settings_manager.pending_restart,

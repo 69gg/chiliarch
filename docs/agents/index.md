@@ -16,7 +16,7 @@ Chiliarch 支持 Codex App、Codex CLI、Claude Code、OpenCode v2 与 v1 legacy
 
 OpenCode 请使用[专用提示](opencode.md)，它还要求确认实际程序的主版本。安装详细步骤分别见 [Codex](codex.md)、[Claude Code](claude-code.md)、[OpenCode](opencode.md)。
 
-你需要提供平台地址、agent 名称与默认项目目录，并在平台“Agents 管理 → 添加 agent”创建一次性注册码。注册码在本机配对命令里输入，不是 WebUI 密码，也不必发到聊天中。
+你需要提供平台地址、agent 名称与默认项目目录。一次性注册码可以在平台“Agents 管理 → 添加 agent”创建，也可以对 Chiliarch AI 说“创建配对码，把完整码和过期时间给我”。总管会得到原码，能原样提供给你或指定 agent。注册码不是 WebUI 密码，真正的兑换在 agent 机器上完成。
 
 ## 安装接入工具
 
@@ -65,7 +65,7 @@ chiliarch agent config --host codex --agent codex-main
 chiliarch agent doctor --agent codex-main
 ```
 
-配对交互输入注册码。成功后保存长期凭证、生成 `codex-main.db.runner.toml`、登记该身份，守护进程随后主动连接平台。
+配对交互输入注册码；它可以来自 WebUI 或总管对话。不要把码放进命令参数、共享终端历史或版本库。成功后保存长期凭证、生成 `codex-main.db.runner.toml`、登记该身份，守护进程随后主动连接平台。
 
 | 原生 agent | `--adapter` 与 `--host` | 默认 runner |
 | --- | --- | --- |
@@ -115,6 +115,8 @@ chiliarch agent doctor --agent codex-main
 同身份重试默认沿用上次实际或指定目录，交给另一身份时默认使用对方目录。成功会话续接保留原目录，不能借续接切换项目。任务详情记录请求目录，结果记录实际目录。
 
 同一实际目录的 Chiliarch 托管任务互斥，其他任务等待它释放；不同目录可并行。目录只是启动位置，不是额外文件系统沙箱。
+
+总管显式提供的任务参数、依赖结果与返工说明会原样到达目标 agent，不替换其中的业务值。平台不会自动把总管模型 Key 或其他无关配置附加到任务里；任务与来信仍按各自身份和权限处理。
 
 ## MCP 工具与完整工作流
 

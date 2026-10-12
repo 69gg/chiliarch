@@ -12,7 +12,7 @@ from sqlalchemy import func, inspect, select, text, update
 
 from chiliarch.auth import Authentication, hash_password, verify_password
 from chiliarch.config import Settings, SettingsManager
-from chiliarch.database import Agent, AgentRequest, Database, Message, Task
+from chiliarch.database import Agent, AgentRequest, AuditEvent, Database, Message, Task
 from chiliarch.protocol import Envelope
 from chiliarch.service import OperationError, OperationService
 
@@ -475,7 +475,9 @@ async def test_public_config_masks_nested_request_params(service: OperationServi
     assert config["model"]["request_params"]["temperature"] == 0.3
 
 
-async def test_approval_and_audit_mask_arbitrary_auth_headers(service: OperationService) -> None:
+async def test_approval_preserves_auth_headers_but_audit_masks_them(
+    service: OperationService,
+) -> None:
     waiting = await service.execute(
         "update_config",
         {"patch": {"model": {"headers": {"X-Api-Key": "hidden", "Custom-Auth": "also-hidden"}}}},
@@ -485,6 +487,15 @@ async def test_approval_and_audit_mask_arbitrary_auth_headers(service: Operation
     approval = (await service.execute("list_approvals", {}))["approvals"][0]
     assert approval["id"] == waiting["approval_id"]
     assert approval["arguments"]["patch"]["model"]["headers"] == {
+        "X-Api-Key": "hidden",
+        "Custom-Auth": "also-hidden",
+    }
+    async with service.db.sessions() as session:
+        event = await session.scalar(
+            select(AuditEvent).where(AuditEvent.action == "operation.awaiting_approval")
+        )
+    assert event is not None
+    assert event.details["arguments"]["patch"]["model"]["headers"] == {
         "X-Api-Key": "********",
         "Custom-Auth": "********",
     }

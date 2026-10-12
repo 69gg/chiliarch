@@ -47,7 +47,7 @@ from chiliarch.database import (
     new_id,
 )
 from chiliarch.database import Message as ProtocolMessage
-from chiliarch.service import OperationService, redact
+from chiliarch.service import OperationError, OperationService
 from chiliarch.supervision import (
     automatic_coordination_paused,
     consume_coordination,
@@ -237,6 +237,23 @@ class Supervisor:
             self._tool_read,
         )
         register(
+            "get_chat_run",
+            "Read one supervisor model run's current status, error, pending approval and configuration revision, using a run ID from get_conversation or send_chat_message. This is the same run status available to the user; an agent task ID belongs to get_task instead.",
+            {
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Supervisor run ID from get_conversation or send_chat_message, not an agent task ID.",
+                    }
+                },
+                "required": ["run_id"],
+                "additionalProperties": False,
+            },
+            self._tool_run,
+        )
+        register(
             "create_conversation",
             "Create an empty supervisor conversation and return its ID. This does not run the model; use send_chat_message to start its first turn.",
             {
@@ -298,7 +315,7 @@ class Supervisor:
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 100000,
-                        "description": "Self-contained message to the supervisor in the selected conversation; do not pass credentials or raw file bytes.",
+                        "description": "Self-contained message to the supervisor in the selected conversation, including the context needed for that turn.",
                     },
                 },
                 "required": ["conversation_id", "content"],
@@ -698,8 +715,6 @@ class Supervisor:
     async def _event(
         self, conversation_id: str, run_id: str | None, kind: str, data: JSONObject
     ) -> None:
-        if kind in {"tool_start", "tool_end", "approval_required", "agent_contact"}:
-            data = redact(data)
         async with self.db.sessions.begin() as session:
             # Read before staging writes: an autoflush INSERT followed by a
             # cancelled SQLite SELECT may retain its write lock via the cursor.
@@ -1004,6 +1019,10 @@ class Supervisor:
                     idempotency_key=call["key"],
                     risk_assessment=risk,
                 )
+            except OperationError as exc:
+                result = {"status": "error", "error": str(exc), "status_code": exc.status_code}
+            except ValueError as exc:
+                result = {"status": "error", "error": str(exc)}
             except Exception as exc:
                 logger.exception(
                     "Supervisor tool failed", extra={"run_id": run.id, "tool": call["name"]}
@@ -1026,7 +1045,7 @@ class Supervisor:
                             conversation_id=run.conversation_id,
                             run_id=run.id,
                             type="approval_required",
-                            data=redact({**call, "approval_id": result["approval_id"]}),
+                            data={**call, "approval_id": result["approval_id"]},
                         )
                     )
                 await self._notify_event(run.conversation_id, run.id, "approval_required")
@@ -1048,7 +1067,7 @@ class Supervisor:
                 "role": "tool",
                 "tool_call_id": call["id"],
                 "name": call["name"],
-                "content": json.dumps(redact(result), ensure_ascii=False),
+                "content": json.dumps(result, ensure_ascii=False),
                 "is_error": result.get("status") in {"error", "failed", "rejected"},
             }
             async with self.db.sessions.begin() as session:
@@ -1557,6 +1576,9 @@ class Supervisor:
 
     async def _tool_read(self, arguments: JSONObject) -> JSONObject:
         return await self.get_conversation(arguments["conversation_id"])
+
+    async def _tool_run(self, arguments: JSONObject) -> JSONObject:
+        return await self.get_run(arguments["run_id"])
 
     async def _tool_create(self, arguments: JSONObject) -> JSONObject:
         return await self.create_conversation(arguments.get("title", "新对话"))

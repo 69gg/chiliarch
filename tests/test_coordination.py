@@ -869,7 +869,7 @@ async def test_retry_requires_nonblank_recovery_note(service: OperationService) 
     assert failure.value.status_code == 422
 
 
-async def test_repeated_handover_context_is_bounded_and_masks_sensitive_results(
+async def test_repeated_handover_context_is_bounded_and_preserves_original_results(
     service: OperationService,
 ) -> None:
     worker, replacement = await agent(service), await agent(service)
@@ -893,7 +893,7 @@ async def test_repeated_handover_context_is_bounded_and_masks_sensitive_results(
     first_context = (await service.pending(worker))[0].payload["parameters"]["chiliarch_context"]
     assert first_context["previous_attempt"]["task"]["result"] == {
         "report": "first-check",
-        "api_key": "********",
+        "api_key": "private-value",
     }
     assert first_context["previous_attempt"]["task"]["error"] == "Regression check failed"
     await service.receive(
