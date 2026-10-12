@@ -903,7 +903,7 @@ class OperationService:
             raise OperationError("Invalid or revoked agent credential", 401)
         return agent
 
-    def agent_view(self, agent: Agent) -> JsonObject:
+    def agent_view(self, agent: Agent, actor: str = "user") -> JsonObject:
         return {
             "id": agent.id,
             "name": agent.name,
@@ -916,7 +916,9 @@ class OperationService:
             and agent.last_seen is not None
             and time.time() - agent.last_seen
             < self.settings_manager.current.transport.offline_after_seconds,
-            "metadata": agent.metadata_json,
+            "metadata": redact(agent.metadata_json)
+            if actor.startswith("agent:")
+            else agent.metadata_json,
             "transport": agent.metadata_json.get("transport"),
         }
 
@@ -944,8 +946,8 @@ class OperationService:
         }
 
     @staticmethod
-    def request_view(request: AgentRequest) -> JsonObject:
-        return {
+    def request_view(request: AgentRequest, actor: str = "user") -> JsonObject:
+        result = {
             field: getattr(request, field)
             for field in (
                 "id",
@@ -960,10 +962,11 @@ class OperationService:
                 "resolved_at",
             )
         }
+        return dict(redact(result)) if actor.startswith("agent:") else result
 
     @staticmethod
-    def approval_view(approval: Approval) -> JsonObject:
-        return {
+    def approval_view(approval: Approval, actor: str = "user") -> JsonObject:
+        result = {
             field: getattr(approval, field)
             for field in (
                 "id",
@@ -977,6 +980,7 @@ class OperationService:
                 "result",
             )
         }
+        return dict(redact(result)) if actor.startswith("agent:") else result
 
     async def start(self) -> None:
         self._maintenance_task = asyncio.create_task(
@@ -1079,7 +1083,7 @@ class OperationService:
         if name == "list_agents":
             return {
                 "agents": [
-                    self.agent_view(a)
+                    self.agent_view(a, actor)
                     for a in (
                         await session.scalars(select(Agent).order_by(Agent.created_at.desc()))
                     ).all()
@@ -1087,7 +1091,7 @@ class OperationService:
             }, None
         if name == "get_agent":
             return {
-                "agent": self.agent_view(await self._agent(session, args["agent_id"], False))
+                "agent": self.agent_view(await self._agent(session, args["agent_id"], False), actor)
             }, None
         if name == "list_tasks":
             return {
@@ -1112,7 +1116,7 @@ class OperationService:
         if name == "rename_agent":
             agent = await self._agent(session, args["agent_id"])
             agent.name = args["name"]
-            return {"agent": self.agent_view(agent)}, None
+            return {"agent": self.agent_view(agent, actor)}, None
         if name == "revoke_agent":
             agent = await self._agent(session, args["agent_id"], False)
             agent.revoked = True
@@ -1125,7 +1129,10 @@ class OperationService:
                 )
                 .values(expired=True)
             )
-            return {"agent": self.agent_view(agent)}, ("agent.revoked", {"agent_id": agent.id})
+            return {"agent": self.agent_view(agent, actor)}, (
+                "agent.revoked",
+                {"agent_id": agent.id},
+            )
         if name == "dispatch_task":
             return await self.coordination.dispatch(session, args, actor), None
         if name == "cancel_task":
@@ -1189,7 +1196,7 @@ class OperationService:
         if name == "list_agent_requests":
             return {
                 "requests": [
-                    self.request_view(r)
+                    self.request_view(r, actor)
                     for r in (
                         await session.scalars(
                             select(AgentRequest).order_by(AgentRequest.created_at.desc())
@@ -1220,7 +1227,19 @@ class OperationService:
                     )
                 request_actor = (
                     f"agent:{request.agent_id}"
-                    if request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS
+                    if request.operation
+                    in DIRECT_OPERATIONS
+                    | ARTIFACT_OPERATIONS
+                    | {
+                        "get_agent",
+                        "rename_agent",
+                        "revoke_agent",
+                        "get_config",
+                        "update_config",
+                        "get_platform_state",
+                        "list_agent_requests",
+                        "list_approvals",
+                    }
                     else actor
                 )
                 context = await session.get(RequestContext, request.id)
@@ -1314,7 +1333,7 @@ class OperationService:
         if name == "list_approvals":
             return {
                 "approvals": [
-                    self.approval_view(a)
+                    self.approval_view(a, actor)
                     for a in (
                         await session.scalars(select(Approval).order_by(Approval.created_at.desc()))
                     ).all()
@@ -1323,7 +1342,7 @@ class OperationService:
         if name == "get_config":
             return {"config": self._config_view(actor)}, None
         if name == "get_platform_state":
-            return await self.state(include_secrets=actor == "supervisor"), None
+            return await self.state(actor=actor), None
         if name == "update_config":
             try:
                 result = self.settings_manager.update(args["patch"])
@@ -1695,11 +1714,11 @@ class OperationService:
             return raw_settings(self.settings_manager.current, exclude_none=False)
         return self.settings_manager.public()
 
-    async def state(self, *, include_secrets: bool = False) -> JsonObject:
+    async def state(self, *, actor: str = "user") -> JsonObject:
         async with self.db.sessions() as session:
-            return {
+            result = {
                 "agents": [
-                    self.agent_view(a)
+                    self.agent_view(a, actor)
                     for a in (
                         await session.scalars(select(Agent).order_by(Agent.created_at.desc()))
                     ).all()
@@ -1711,13 +1730,13 @@ class OperationService:
                     ).all()
                 ],
                 "approvals": [
-                    self.approval_view(a)
+                    self.approval_view(a, actor)
                     for a in (
                         await session.scalars(select(Approval).order_by(Approval.created_at.desc()))
                     ).all()
                 ],
                 "requests": [
-                    self.request_view(r)
+                    self.request_view(r, actor)
                     for r in (
                         await session.scalars(
                             select(AgentRequest).order_by(AgentRequest.created_at.desc())
@@ -1733,7 +1752,7 @@ class OperationService:
                 "task_links": [
                     task_link_view(link) for link in (await session.scalars(select(TaskLink))).all()
                 ],
-                "config": self._config_view("supervisor" if include_secrets else "user"),
+                "config": self._config_view(actor),
                 "runtime": {
                     "config_revision": self.settings_manager.revision,
                     "pending_restart": self.settings_manager.pending_restart,
@@ -1742,3 +1761,4 @@ class OperationService:
                     "protocol_version": "1.0",
                 },
             }
+            return dict(redact(result)) if actor.startswith("agent:") else result

@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 from test_chat_supervisor import Upstream, manager, wait_status
+from test_peer_service import agent as add_peer
+from test_peer_service import request as submit_peer_request
 
 from chiliarch.chat import AgentInbox, Supervisor
 from chiliarch.config import SettingsManager
@@ -490,3 +492,173 @@ async def test_supervisor_binary_transfer_preserves_bytes_and_existing_authoriza
         with pytest.raises(OperationError) as agent_management:
             await service.execute("get_config", {}, actor="agent:unregistered-agent")
         assert agent_management.value.status_code == 403
+
+
+async def test_direct_agent_discovery_masks_other_agent_metadata_without_limiting_supervisor(
+    tmp_path: Path,
+) -> None:
+    upstream = Upstream("list_agents")
+    async with system(tmp_path, upstream, start=False) as (_, _, service, _):
+        requester = await add_peer(service, "requester")
+        peer = await add_peer(service, "peer")
+        metadata: JSONObject = {
+            "workspace": "public-workspace",
+            "api_key": "private-peer-api-key",
+            "nested": {
+                "password": "private-peer-password",
+                "credential": "private-peer-credential",
+            },
+        }
+        await service.receive(peer, Envelope(type="heartbeat", payload={"metadata": metadata}))
+        discovered = await submit_peer_request(service, requester, "list_agents", {})
+        assert discovered["status"] == "approved"
+        visible_peer = next(item for item in discovered["result"]["agents"] if item["id"] == peer)
+        assert visible_peer["metadata"] == {
+            "workspace": "public-workspace",
+            "api_key": "********",
+            "nested": {"password": "********", "credential": "********"},
+            "status": "ready",
+        }
+        reply = next(
+            envelope
+            for envelope in await service.pending(requester)
+            if envelope.correlation_id == discovered["external_id"]
+        )
+        assert reply.payload["result"] == discovered["result"]
+        complete = (await service.execute("list_agents", {}, actor="supervisor"))["agents"]
+        assert next(item for item in complete if item["id"] == peer)["metadata"] == {
+            **metadata,
+            "status": "ready",
+        }
+
+
+@pytest.mark.parametrize("operation", ["get_config", "get_platform_state", "update_config"])
+async def test_resolved_agent_configuration_request_stays_masked_under_supervisor_approval(
+    tmp_path: Path, operation: str
+) -> None:
+    upstream = Upstream("list_agents")
+    async with system(tmp_path, upstream, start=False) as (_, settings, service, _):
+        requester = await add_peer(service, "requester")
+        peer = await add_peer(service, "peer")
+        settings.update(
+            {
+                "model": {
+                    "api_key": "private-platform-api-key",
+                    "headers": {"X-Tenant": "private-platform-header"},
+                    "request_params": {"nested": {"credential": "private-provider-credential"}},
+                },
+                "auth": {"password_hash": "private-platform-password-hash"},
+            }
+        )
+        await service.receive(
+            peer,
+            Envelope(type="heartbeat", payload={"metadata": {"password": "private-peer-password"}}),
+        )
+        arguments: JSONObject = {}
+        if operation == "update_config":
+            arguments = {"patch": {"model": {"api_key": "agent-requested-api-key"}}}
+        requested = await submit_peer_request(service, requester, operation, arguments)
+        assert requested["status"] == "pending"
+        approved = await service.execute(
+            "resolve_agent_request",
+            {"request_id": requested["id"], "decision": "approve"},
+            actor="supervisor",
+        )
+        result = approved["request"]["result"]
+        assert approved["request"]["status"] == "approved"
+        assert result["config"]["model"]["api_key"] == "********"
+        assert result["config"]["model"]["headers"] == {"X-Tenant": "********"}
+        assert result["config"]["model"]["request_params"] == {"nested": {"credential": "********"}}
+        assert result["config"]["auth"]["password_hash"] == "********"
+        reply = next(
+            envelope
+            for envelope in await service.pending(requester)
+            if envelope.correlation_id == requested["external_id"]
+        )
+        assert reply.payload["result"] == result
+        raw = await service.execute("get_config", {}, actor="supervisor")
+        assert raw["config"]["model"]["api_key"] == (
+            "agent-requested-api-key"
+            if operation == "update_config"
+            else "private-platform-api-key"
+        )
+        assert raw["config"]["model"]["headers"] == {"X-Tenant": "private-platform-header"}
+        assert raw["config"]["auth"]["password_hash"] == "private-platform-password-hash"
+        raw_state = await service.execute("get_platform_state", {}, actor="supervisor")
+        assert raw_state["config"] == raw["config"]
+        assert (
+            next(item for item in raw_state["agents"] if item["id"] == peer)["metadata"]["password"]
+            == "private-peer-password"
+        )
+        if operation == "get_platform_state":
+            assert (
+                next(item for item in result["agents"] if item["id"] == peer)["metadata"][
+                    "password"
+                ]
+                == "********"
+            )
+
+
+@pytest.mark.parametrize("operation", ["get_agent", "list_agent_requests", "list_approvals"])
+async def test_resolved_agent_management_views_do_not_inherit_supervisor_secret_visibility(
+    tmp_path: Path, operation: str
+) -> None:
+    upstream = Upstream("list_agents")
+    async with system(tmp_path, upstream, start=False) as (_, settings, service, _):
+        requester = await add_peer(service, "requester")
+        peer = await add_peer(service, "peer")
+        await service.receive(
+            peer,
+            Envelope(type="heartbeat", payload={"metadata": {"api_key": "private-peer-api-key"}}),
+        )
+        private_request = await submit_peer_request(
+            service,
+            peer,
+            "update_config",
+            {"patch": {"model": {"api_key": "private-request-api-key"}}},
+        )
+        settings.update({"supervisor": {"mode": "ask"}})
+        private_approval = await service.execute(
+            "update_config",
+            {"patch": {"model": {"api_key": "private-approval-api-key"}}},
+            actor="supervisor",
+        )
+        assert private_approval["status"] == "awaiting_approval"
+        settings.update({"supervisor": {"mode": "yolo"}})
+        arguments: JSONObject = {"agent_id": peer} if operation == "get_agent" else {}
+        requested = await submit_peer_request(service, requester, operation, arguments)
+        approved = await service.execute(
+            "resolve_agent_request",
+            {"request_id": requested["id"], "decision": "approve"},
+            actor="supervisor",
+        )
+        assert approved["request"]["status"] == "approved"
+        result = approved["request"]["result"]
+        raw = await service.execute(operation, arguments, actor="supervisor")
+        if operation == "get_agent":
+            assert result["agent"]["metadata"]["api_key"] == "********"
+            assert raw["agent"]["metadata"]["api_key"] == "private-peer-api-key"
+        elif operation == "list_agent_requests":
+            visible = next(
+                item for item in result["requests"] if item["id"] == private_request["id"]
+            )
+            original = next(item for item in raw["requests"] if item["id"] == private_request["id"])
+            assert visible["arguments"]["patch"]["model"]["api_key"] == "********"
+            assert original["arguments"]["patch"]["model"]["api_key"] == "private-request-api-key"
+        else:
+            visible = next(
+                item
+                for item in result["approvals"]
+                if item["id"] == private_approval["approval_id"]
+            )
+            original = next(
+                item for item in raw["approvals"] if item["id"] == private_approval["approval_id"]
+            )
+            assert visible["arguments"]["patch"]["model"]["api_key"] == "********"
+            assert original["arguments"]["patch"]["model"]["api_key"] == "private-approval-api-key"
+        reply = next(
+            envelope
+            for envelope in await service.pending(requester)
+            if envelope.correlation_id == requested["external_id"]
+        )
+        assert reply.payload["result"] == result
