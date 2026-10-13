@@ -104,7 +104,12 @@ class ModelSettings(ConfigModel):
     headers: dict[str, str] = Field(default_factory=dict)
     request_params: dict[str, Any] = Field(default_factory=dict)
     timeout: float = Field(default=120, gt=0)
-    retries: int = Field(default=2, ge=0, le=10)
+    retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Automatic retries after the first model request, shared across HTTP and stream API errors; 0 disables retries. Requests with already-visible text or reasoning are not replayed.",
+    )
     context_window: int = Field(default=200000, ge=1)
     anthropic_max_tokens: int | None = Field(default=None, ge=1, strict=True)
     temperature: float | None = Field(default=None, ge=0, le=2)

@@ -8,22 +8,134 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator
+import logging
+import math
+import random
+import time
+from asyncio import sleep
+from collections.abc import AsyncGenerator, AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field
+from email.utils import mktime_tz, parsedate_tz
 from typing import Any
 
+import anthropic
 import httpx
+import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from chiliarch.config import ModelSettings
 
 JSON = dict[str, Any]
+logger = logging.getLogger(__name__)
+INITIAL_RETRY_DELAY = 0.5
+MAX_RETRY_DELAY = 8.0
+MAX_RETRY_AFTER_DELAY = 120.0
+PERMANENT_ERROR_CODES = frozenset(
+    {
+        "authentication_error",
+        "permission_error",
+        "invalid_request_error",
+        "validation_error",
+        "not_found_error",
+        "request_too_large",
+        "context_length_exceeded",
+        "invalid_api_key",
+        "insufficient_quota",
+        "unsupported_parameter",
+        "content_filter",
+    }
+)
 
 
 class ModelError(RuntimeError):
     """A provider failed or returned an incomplete/unusable model turn."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        headers: httpx.Headers | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable, self.headers = retryable, headers
+
+
+def _stream_error_retryable(body: object) -> bool:
+    if isinstance(body, dict):
+        details = body.get("error", body)
+        if isinstance(details, dict):
+            codes = (details.get("code"), details.get("type"))
+            return not any(
+                isinstance(code, str) and code.lower() in PERMANENT_ERROR_CODES for code in codes
+            )
+    # Compatible gateways may omit a typed code. An API error still uses the
+    # configured bounded budget, unlike malformed local/model output.
+    return True
+
+
+def _error_headers(error: Exception) -> httpx.Headers | None:
+    if isinstance(error, (openai.APIStatusError, anthropic.APIStatusError)):
+        return error.response.headers
+    return error.headers if isinstance(error, ModelError) else None
+
+
+def _retry_after(headers: httpx.Headers | None) -> float | None:
+    if headers is None:
+        return None
+    for name, divisor in (("retry-after-ms", 1000), ("retry-after", 1)):
+        value = headers.get(name)
+        if value is None:
+            continue
+        try:
+            delay = float(value) / divisor
+        except ValueError:
+            continue
+        if math.isfinite(delay):
+            return delay
+    try:
+        date = parsedate_tz(headers.get("retry-after", ""))
+        return mktime_tz(date) - time.time() if date is not None else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def retryable_model_error(error: Exception) -> bool:
+    """Classify request and stream errors without exposing provider error bodies."""
+    if isinstance(error, (openai.APIResponseValidationError, anthropic.APIResponseValidationError)):
+        return False
+    if isinstance(error, ModelError) and not error.retryable:
+        return False
+    headers = _error_headers(error)
+    retry_after = _retry_after(headers)
+    if retry_after is not None and retry_after > MAX_RETRY_AFTER_DELAY:
+        return False
+    if headers is not None:
+        directive = headers.get("x-should-retry")
+        if directive == "true":
+            return True
+        if directive == "false":
+            return False
+    if isinstance(
+        error, (openai.APIConnectionError, anthropic.APIConnectionError, httpx.TransportError)
+    ):
+        return True
+    if isinstance(error, (openai.APIStatusError, anthropic.APIStatusError)):
+        if error.status_code >= 400:
+            return error.status_code in {408, 409, 429} or error.status_code >= 500
+        return _stream_error_retryable(error.body)
+    if isinstance(error, (openai.APIError, anthropic.APIError)):
+        return _stream_error_retryable(error.body)
+    return error.retryable if isinstance(error, ModelError) else False
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    retry_after = _retry_after(_error_headers(error))
+    if retry_after is not None and 0 < retry_after <= MAX_RETRY_AFTER_DELAY:
+        return retry_after
+    return float(min(INITIAL_RETRY_DELAY * 2**attempt, MAX_RETRY_DELAY) * random.uniform(0.75, 1.0))
 
 
 @dataclass(frozen=True)
@@ -145,9 +257,9 @@ def _merge(current: Any, incoming: Any) -> Any:
 class Provider:
     """One configured provider snapshot and one HTTP client per model run.
 
-    ``http_client`` is injectable for network-isolated behavioral tests. SDK
-    retries only occur before a usable stream is returned; a partially streamed
-    turn is never automatically repeated.
+    ``http_client`` is injectable for network-isolated behavioral tests. HTTP
+    and stream errors share one retry budget. Once readable output is emitted,
+    the request is never automatically repeated.
     """
 
     def __init__(self, config: ModelSettings, http_client: httpx.AsyncClient | None = None) -> None:
@@ -156,7 +268,7 @@ class Provider:
         kwargs: JSON = {
             "api_key": _key(config) or "unconfigured",
             "timeout": config.timeout,
-            "max_retries": config.retries,
+            "max_retries": 0,
             "default_headers": config.headers,
         }
         if config.base_url:
@@ -253,16 +365,58 @@ class Provider:
         system_prompt: str,
         turn: ModelTurn,
     ) -> AsyncIterator[ModelEvent]:
-        if self.api_mode == "chat_completions":
-            iterator = self._chat(messages, tools, system_prompt, turn)
-        elif self.api_mode == "responses":
-            iterator = self._responses(messages, tools, system_prompt, turn)
-        elif self.api_mode == "anthropic":
-            iterator = self._anthropic(messages, tools, system_prompt, turn)
-        else:
+        handlers = {
+            "chat_completions": self._chat,
+            "responses": self._responses,
+            "anthropic": self._anthropic,
+        }
+        handler = handlers.get(self.api_mode)
+        if handler is None:
             raise ModelError(f"Unsupported model API: {self.api_mode}")
-        async for event in iterator:
-            yield event
+        for attempt in range(self.config.retries + 1):
+            candidate = ModelTurn()
+            visible = False
+            usage: ModelEvent | None = None
+            iterator = handler(messages, tools, system_prompt, candidate)
+            try:
+                try:
+                    async for event in iterator:
+                        if event.type == "usage":
+                            usage = event
+                            continue
+                        visible |= event.type in {"text_delta", "reasoning_delta"} and bool(
+                            event.data.get("delta")
+                        )
+                        turn.content, turn.reasoning = candidate.content, candidate.reasoning
+                        yield event
+                finally:
+                    await iterator.aclose()
+            except Exception as exc:
+                if visible or attempt >= self.config.retries or not retryable_model_error(exc):
+                    raise
+                delay = _retry_delay(exc, attempt)
+                logger.warning(
+                    "Model request retry scheduled",
+                    extra={
+                        "event": "model.request_retry",
+                        "api_mode": self.api_mode,
+                        "attempt": attempt + 2,
+                        "max_attempts": self.config.retries + 1,
+                        "delay_seconds": delay,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                await sleep(delay)
+                continue
+            turn.content, turn.reasoning = candidate.content, candidate.reasoning
+            turn.tool_calls, turn.native, turn.usage = (
+                candidate.tool_calls,
+                candidate.native,
+                candidate.usage,
+            )
+            if usage is not None:
+                yield usage
+            return
 
     def _chat_history(self, messages: list[JSON], system: str) -> list[JSON]:
         history: list[JSON] = [
@@ -315,7 +469,7 @@ class Provider:
         tools: list[JSON],
         system: str,
         turn: ModelTurn,
-    ) -> AsyncIterator[ModelEvent]:
+    ) -> AsyncGenerator[ModelEvent, None]:
         kwargs: JSON = {
             "model": self.config.model,
             "messages": self._chat_history(messages, system),
@@ -373,6 +527,12 @@ class Provider:
                                 call["function"][name] += function[name]
                     if choice.get("finish_reason") is not None:
                         finish = choice["finish_reason"]
+        except (openai.APIError, httpx.TransportError) as exc:
+            raise ModelError(
+                f"Chat stream failed ({type(exc).__name__})",
+                retryable=retryable_model_error(exc),
+                headers=stream.response.headers,
+            ) from exc
         finally:
             await stream.close()
         if finish not in {"stop", "tool_calls"}:
@@ -425,7 +585,7 @@ class Provider:
         tools: list[JSON],
         system: str,
         turn: ModelTurn,
-    ) -> AsyncIterator[ModelEvent]:
+    ) -> AsyncGenerator[ModelEvent, None]:
         inputs = self._responses_history(messages)
         if self.config.system_prompt_as_user:
             inputs.insert(0, {"role": "user", "content": system})
@@ -475,7 +635,19 @@ class Provider:
                         yield ModelEvent("usage", turn.usage)
                     done = True
                 elif kind in {"response.failed", "response.incomplete", "error"}:
-                    raise ModelError(f"Responses stream failed ({kind})")
+                    failure = data.get("response", data)
+                    raise ModelError(
+                        f"Responses stream failed ({kind})",
+                        retryable=kind != "response.incomplete"
+                        and _stream_error_retryable(failure),
+                        headers=stream.response.headers,
+                    )
+        except (openai.APIError, httpx.TransportError) as exc:
+            raise ModelError(
+                f"Responses stream failed ({type(exc).__name__})",
+                retryable=retryable_model_error(exc),
+                headers=stream.response.headers,
+            ) from exc
         finally:
             await stream.close()
         if not done:
@@ -561,7 +733,7 @@ class Provider:
         tools: list[JSON],
         system: str,
         turn: ModelTurn,
-    ) -> AsyncIterator[ModelEvent]:
+    ) -> AsyncGenerator[ModelEvent, None]:
         params = self._params()
         legacy_max_tokens = params.pop("max_tokens", None)
         max_tokens = self.config.anthropic_max_tokens
@@ -654,7 +826,17 @@ class Provider:
                 elif kind == "message_stop":
                     done = True
                 elif kind == "error":
-                    raise ModelError("Anthropic returned a streaming error")
+                    raise ModelError(
+                        "Anthropic returned a streaming error",
+                        retryable=_stream_error_retryable(data),
+                        headers=stream.response.headers,
+                    )
+        except (anthropic.APIError, httpx.TransportError) as exc:
+            raise ModelError(
+                f"Anthropic stream failed ({type(exc).__name__})",
+                retryable=retryable_model_error(exc),
+                headers=stream.response.headers,
+            ) from exc
         finally:
             await stream.close()
         if not done or stop_reason not in {"end_turn", "tool_use", "stop_sequence"}:

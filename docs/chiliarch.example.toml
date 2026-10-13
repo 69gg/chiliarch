@@ -39,6 +39,8 @@ model = ""
 base_url = ""
 api_key = ""
 timeout = 120.0
+# 额外重试次数：2 表示最多请求 3 次，0 表示不重试；SDK 不另加尝试次数。
+# 三种 API 的连接错误和流内 API 错误共用预算；已有正文 / 公开思考后不重发。
 retries = 2
 context_window = 200000
 # 仅 Anthropic Messages：设置 anthropic_max_tokens 为模型支持的正整数。
@@ -64,6 +66,7 @@ run_timeout = 600.0
 event_poll_seconds = 0.25
 inbox_poll_seconds = 1.0
 task_stall_seconds = 300.0
+# 自动协调请求预算用尽后的新核查轮次；独立于 model.retries，不重放旧工具。
 model_recovery_attempts = 3
 model_recovery_base_seconds = 5.0
 model_recovery_max_seconds = 60.0

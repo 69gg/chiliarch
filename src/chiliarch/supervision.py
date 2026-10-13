@@ -8,12 +8,10 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-import anthropic
-import httpx
-import openai
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from chiliarch.ai.providers import retryable_model_error
 from chiliarch.config import SupervisorSettings
 from chiliarch.database import CoordinationEvent, Goal, OperationRecord, Task, TaskLink
 
@@ -26,13 +24,7 @@ JsonObject = dict[str, Any]
 
 def recoverable_model_error(error: Exception) -> bool:
     """Retry only typed transport/overload failures, never malformed model output."""
-    if isinstance(
-        error, (openai.APIConnectionError, anthropic.APIConnectionError, httpx.TransportError)
-    ):
-        return True
-    if isinstance(error, (openai.APIStatusError, anthropic.APIStatusError)):
-        return error.status_code in {408, 429} or error.status_code >= 500
-    return False
+    return retryable_model_error(error)
 
 
 async def schedule_model_recovery(

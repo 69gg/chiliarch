@@ -86,7 +86,8 @@ API Key 输入留空会保留已有值，需要清除时使用对应清除选项
 | `model.model` / `base_url` / `api_key` | 模型 ID、API 根地址、密钥 |
 | `model.context_window` | `200000`，90% 时自动压缩 |
 | `model.anthropic_max_tokens` | 未配置；仅 Anthropic 必填 |
-| `model.timeout` / `retries` | `120` / `2`，请求超时秒数与 SDK 重试次数 |
+| `model.timeout` | `120`，模型请求超时秒数 |
+| `model.retries` | `2`，额外重试次数，即最多请求 3 次；0 不重试 |
 | `model.headers` / `request_params` | 自定义请求头与当前 API 支持的额外参数 |
 | `model.enable_thinking_param_enabled` | true；关闭后省略 enable_thinking |
 | `supervisor.mode` | `auto`，另有 `ask`、`yolo` |
@@ -97,7 +98,9 @@ API Key 输入留空会保留已有值，需要清除时使用对应清除选项
 | `supervisor.model_recovery_attempts` | `3`，临时模型故障的后续核查次数；0 关闭 |
 | `supervisor.model_recovery_base_seconds` / `model_recovery_max_seconds` | `5` / `60`，恢复退避的首次间隔与上限 |
 
-总管故障恢复是新的核查轮次，不重放旧工具；与 SDK 请求重试不同。修改模型配置不会改变本机 agent 的原生设置。
+`model.retries` 同时覆盖建立连接时的错误和流式响应中的 API 错误，适用于普通回答、上下文压缩与自动命名。尚未显示正文或公开思考的临时故障才会重试；无效参数、认证错误及截断不自动重试。平台统一控制尝试预算，不叠加 SDK 重试。详见[模型请求重试](models.md#模型请求重试)。
+
+`supervisor.model_recovery_attempts` 是自动协调在请求预算用尽后的新核查轮次，不重放旧工具，与 `model.retries` 独立。修改模型配置不会改变本机 agent 的原生设置。
 
 ### transport
 
