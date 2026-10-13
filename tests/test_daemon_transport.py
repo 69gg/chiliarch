@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio import sleep
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -15,7 +17,7 @@ from chiliarch.client import AgentClient
 from chiliarch.daemon import run_daemon
 from chiliarch.daemon_client import DaemonClient, RemoteMailbox
 from chiliarch.daemon_models import DaemonConfiguration, DaemonError, private_write
-from chiliarch.database import Message
+from chiliarch.database import Message, Task
 
 JsonObject = dict[str, Any]
 
@@ -31,7 +33,7 @@ class TemporaryDaemon:
         self.task = asyncio.create_task(run_daemon(self.directory))
         async with DaemonClient(self.directory) as client:
             async with asyncio.timeout(8):
-                for _ in range(800):
+                while True:
                     if self.task.done():
                         self.task.result()
                         pytest.fail("Temporary daemon exited before becoming healthy")
@@ -41,8 +43,7 @@ class TemporaryDaemon:
                             return
                         except DaemonError:
                             pass  # The private runtime is written just before listen.
-                    await asyncio.sleep(0.01)
-                pytest.fail("Temporary daemon did not become healthy")
+                    await sleep(0.05)
 
     async def stop(self) -> None:
         if self.task is None:
@@ -104,34 +105,74 @@ async def dispatch(platform: LiveServer, mailbox: RemoteMailbox, instruction: st
         "dispatch_task", {"agent_id": identity["agent_id"], "instruction": instruction}
     )
     task_id: str = response["task"]["id"]
-    async with asyncio.timeout(5):
-        for _ in range(500):
-            if any(task["task_id"] == task_id for task in (await mailbox.list_tasks())["tasks"]):
-                return task_id
-            await asyncio.sleep(0.01)
-    pytest.fail("Dispatch was not durably received through daemon poll")
+    await wait_mailbox_task(mailbox, task_id)
+    return task_id
+
+
+async def wait_mailbox_task(
+    mailbox: RemoteMailbox,
+    task_id: str,
+    status: str | None = None,
+    *,
+    timeout_seconds: float = 5,
+) -> JsonObject:
+    # Short timers can fire early on Windows. Query counts do not measure elapsed
+    # time; retain the actual deadline and avoid flooding loopback RPC with reads.
+    async with asyncio.timeout(timeout_seconds):
+        while True:
+            tasks = (await mailbox.list_tasks())["tasks"]
+            for task in tasks:
+                if task["task_id"] == task_id and (status is None or task["status"] == status):
+                    return task
+            await sleep(0.05)
 
 
 async def wait_mailbox_status(mailbox: RemoteMailbox, task_id: str, status: str) -> None:
-    async with asyncio.timeout(5):
-        for _ in range(500):
-            tasks = (await mailbox.list_tasks())["tasks"]
-            if any(task["task_id"] == task_id and task["status"] == status for task in tasks):
-                return
-            await asyncio.sleep(0.01)
-    pytest.fail(f"Mailbox task did not become {status}")
+    await wait_mailbox_task(mailbox, task_id, status)
 
 
 async def wait_platform_progress(platform: LiveServer, task_id: str, progress: float) -> JsonObject:
     async with asyncio.timeout(5):
-        for _ in range(500):
-            task: JsonObject = (
-                await platform.app.state.service.execute("get_task", {"task_id": task_id})
-            )["task"]
-            if task["status"] == "running" and task["progress"] == progress:
-                return task
-            await asyncio.sleep(0.01)
-    pytest.fail("Progress did not reach the platform through outbound HTTP")
+        while True:
+            # Observe persisted progress without creating audit writes that
+            # compete with the agent's outbound updates.
+            async with platform.app.state.database.sessions() as session:
+                task = await session.get(Task, task_id)
+                if task is not None and task.status == "running" and task.progress == progress:
+                    result: JsonObject = platform.app.state.service.task_view(task)
+                    return result
+            await sleep(0.05)
+
+
+@pytest.mark.parametrize("status", [None, "running"])
+async def test_mailbox_wait_observes_state_even_when_short_timers_fire_early(
+    monkeypatch: pytest.MonkeyPatch, status: str | None
+) -> None:
+    mailbox = AsyncMock(spec=RemoteMailbox)
+    checks = 0
+
+    async def list_tasks() -> JsonObject:
+        nonlocal checks
+        checks += 1
+        tasks = [] if checks <= 600 else [{"task_id": "target", "status": "running"}]
+        return {"tasks": tasks}
+
+    async def early_timer(delay: float) -> None:
+        await asyncio.sleep(0)
+
+    mailbox.list_tasks.side_effect = list_tasks
+    monkeypatch.setattr("test_daemon_transport.sleep", early_timer)
+    assert await wait_mailbox_task(mailbox, "target", status) == {
+        "task_id": "target",
+        "status": "running",
+    }
+
+
+async def test_mailbox_wait_still_times_out_for_missing_task() -> None:
+    mailbox = AsyncMock(spec=RemoteMailbox)
+    mailbox.list_tasks.return_value = {"tasks": []}
+    with pytest.raises(TimeoutError):
+        await wait_mailbox_task(mailbox, "missing", timeout_seconds=0.02)
 
 
 async def test_daemon_routes_two_paired_identities_and_reports_over_real_poll(
@@ -182,7 +223,7 @@ async def test_daemon_routes_two_paired_identities_and_reports_over_real_poll(
 
     contact = await codex.send_message("Claude can review my work", task_id=first)
     async with asyncio.timeout(5):
-        for _ in range(500):
+        while True:
             async with platform.app.state.service.db.sessions() as session:
                 received = await session.scalar(
                     select(Message).where(
@@ -197,9 +238,7 @@ async def test_daemon_routes_two_paired_identities_and_reports_over_real_poll(
                         "metadata": {"task_id": first},
                     }
                     break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("Agent message did not reach platform inbox")
+            await sleep(0.05)
 
     await asyncio.gather(
         codex.complete_task(first, {"owner": "codex", "count": 1}),
