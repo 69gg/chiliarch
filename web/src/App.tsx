@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, ApiError } from "./api";
 import { ErrorNotice } from "./components";
@@ -7,9 +7,12 @@ import AgentsPage from "./AgentsPage";
 import ConfigPage from "./ConfigPage";
 import GoalsPage from "./GoalsPage";
 import CollaborationPage from "./CollaborationPage";
+import NativeInteractions from "./NativeInteractions";
 import type { JsonObject, PlatformState } from "./types";
 
-type Page = "ai" | "agents" | "config" | "goals" | "collaboration";
+const ProjectsPage = lazy(() => import("./ProjectsPage"));
+
+type Page = "ai" | "agents" | "config" | "goals" | "collaboration" | "projects";
 type Theme = "system" | "light" | "dark";
 const themes: Theme[] = ["system", "light", "dark"];
 const themeNames: Record<Theme, string> = {
@@ -23,7 +26,8 @@ function initialPage(): Page {
   return value === "agents" ||
     value === "config" ||
     value === "goals" ||
-    value === "collaboration"
+    value === "collaboration" ||
+    value === "projects"
     ? value
     : "ai";
 }
@@ -257,6 +261,16 @@ export default function App(): ReactNode {
             <span className="nav-label">目标</span>
           </button>
           <button
+            className={page === "projects" ? "active" : ""}
+            aria-label="项目"
+            title={sidebarCollapsed ? "项目" : undefined}
+            aria-current={page === "projects" ? "page" : undefined}
+            onClick={() => navigate("projects")}
+          >
+            <NavIcon type="projects" />
+            <span className="nav-label">项目</span>
+          </button>
+          <button
             className={page === "collaboration" ? "active" : ""}
             aria-label="协作"
             title={sidebarCollapsed ? "协作" : undefined}
@@ -329,6 +343,7 @@ export default function App(): ReactNode {
             </button>
           </div>
         )}
+        {state && <NativeInteractions state={state} refresh={refresh} />}
         {state ? (
           page === "ai" ? (
             <ChatPage
@@ -338,6 +353,16 @@ export default function App(): ReactNode {
             />
           ) : page === "goals" ? (
             <GoalsPage state={state} refresh={refresh} />
+          ) : page === "projects" ? (
+            <Suspense
+              fallback={
+                <p className="project-page-loading" role="status">
+                  读取项目工作区…
+                </p>
+              }
+            >
+              <ProjectsPage state={state} refresh={refresh} />
+            </Suspense>
           ) : page === "collaboration" ? (
             <CollaborationPage state={state} refresh={refresh} />
           ) : page === "agents" ? (
@@ -428,6 +453,11 @@ function NavIcon({ type }: { type: Page }): ReactNode {
           <circle cx="12" cy="12" r="8" />
           <circle cx="12" cy="12" r="3" />
           <path d="m12 12 8-8M16 4h4v4" />
+        </>
+      ) : type === "projects" ? (
+        <>
+          <path d="M3 7h7l2-3h9v16H3V7Z" />
+          <path d="M7 11h10M7 15h6" />
         </>
       ) : type === "collaboration" ? (
         <>

@@ -5,6 +5,7 @@ import App, { Login } from "../App";
 import { api, ApiError } from "../api";
 import { platformState } from "./fixtures";
 
+vi.mock("../NativeInteractions", () => ({ default: () => null }));
 vi.mock("../ChatPage", () => ({
   default: () => <h1>对话页面</h1>,
 }));
@@ -13,6 +14,9 @@ vi.mock("../AgentsPage", () => ({
 }));
 vi.mock("../ConfigPage", () => ({
   default: () => <h1>配置页面</h1>,
+}));
+vi.mock("../ProjectsPage", () => ({
+  default: () => <h1>项目工作区</h1>,
 }));
 vi.mock("../CollaborationPage", () => ({
   default: () => <h1>协作工作区</h1>,
@@ -60,6 +64,23 @@ beforeEach(() => {
 });
 
 describe("应用外壳", () => {
+  it("直接打开项目详情地址，折叠导航仍可进入项目页", async () => {
+    systemTheme(false);
+    location.hash = "#projects/project-one";
+    localStorage.setItem("chiliarch-sidebar-collapsed", "true");
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "项目工作区" }),
+    ).toBeVisible();
+    const projects = screen.getByRole("button", { name: "项目" });
+    expect(projects).toHaveAttribute("aria-current", "page");
+    expect(projects).toHaveAttribute("title", "项目");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "总管对话" }));
+    await user.click(projects);
+    expect(location.hash).toBe("#projects");
+    expect(screen.getByRole("heading", { name: "项目工作区" })).toBeVisible();
+  });
   it("从协作地址直接打开，并可在折叠导航中切换协作页", async () => {
     systemTheme(false);
     location.hash = "#collaboration";

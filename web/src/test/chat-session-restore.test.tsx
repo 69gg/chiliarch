@@ -61,6 +61,8 @@ function mockChat(details: ConversationDetail[]) {
   const operate = vi
     .spyOn(api, "operate")
     .mockImplementation(async (name, args) => {
+      if (name === "list_native_interactions")
+        return { interactions: [] } as never;
       if (name === "delete_conversation")
         records = records.filter((entry) => entry.id !== args.conversation_id);
       return { status: "completed" };

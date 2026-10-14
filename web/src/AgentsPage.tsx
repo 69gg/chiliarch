@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
+
 import { AgentExecution, executionLabel } from "./AgentExecution";
 import {
   ApprovalItem,
@@ -19,6 +20,8 @@ import type {
   PlatformState,
   Task,
 } from "./types";
+
+const TaskCheckpoints = lazy(() => import("./TaskCheckpoints"));
 
 export function parseObject(text: string, label: string): JsonObject {
   const result: unknown = JSON.parse(text || "{}");
@@ -473,6 +476,14 @@ export default function AgentsPage({
                 ))
               )}
             </section>
+            <Suspense fallback={null}>
+              <TaskCheckpoints
+                key={agent.id}
+                agentId={agent.id}
+                state={state}
+                refresh={refresh}
+              />
+            </Suspense>
             <section
               className="agent-history-section"
               aria-labelledby="agent-requests-title"

@@ -1,0 +1,559 @@
+.projects-content {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 30px 34px 60px;
+}
+.projects-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+}
+.project-browser {
+  position: sticky;
+  top: 24px;
+}
+.project-browser > label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.project-browser input {
+  font-size: 12px;
+}
+.project-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+.project-list button {
+  display: grid;
+  gap: 7px;
+  padding: 14px 12px;
+  text-align: left;
+  border-color: transparent;
+  min-width: 0;
+}
+.project-list button.is-selected {
+  background: var(--surface);
+  border-color: var(--rule);
+}
+.project-list strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.project-list small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.project-list button > span {
+  font-size: 10px;
+  color: var(--gold);
+}
+.project-detail {
+  min-width: 0;
+  border-left: 1px solid var(--rule);
+  padding-left: 32px;
+}
+.project-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+.project-heading h2 {
+  font-size: 25px;
+  margin: 5px 0 12px;
+  overflow-wrap: anywhere;
+}
+.project-heading p {
+  margin: 0;
+}
+.project-heading a {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.project-target {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+.project-target code {
+  display: block;
+  margin-top: 8px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.project-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--rule);
+  overflow-x: auto;
+}
+.project-tabs button {
+  flex-shrink: 0;
+  padding: 12px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-tabs button[aria-current="page"] {
+  border-bottom-color: var(--gold);
+  color: var(--text);
+}
+.project-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 28px 0 10px;
+}
+.project-section-heading h3 {
+  font-size: 14px;
+  margin: 0;
+}
+.project-section-heading p {
+  margin: 8px 0 0;
+}
+.project-section-heading button,
+.project-record button {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.project-record {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  min-width: 0;
+}
+.project-record h4 {
+  font-size: 14px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.project-record h4 small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.project-record .actions {
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.project-record details {
+  font-size: 12px;
+  margin: 14px 0;
+  line-height: 1.8;
+}
+.project-prose {
+  line-height: 1.8;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.project-work-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.project-attempt {
+  margin: 18px 0;
+  padding: 16px;
+  border-left: 2px solid var(--rule);
+  background: var(--surface);
+  font-size: 12px;
+}
+.project-attempt strong {
+  font-weight: 500;
+}
+.project-attempt dl {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+.project-attempt dt {
+  color: var(--muted);
+}
+.project-attempt dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.project-commands {
+  margin-top: 32px;
+}
+.project-commands h3 {
+  font-size: 14px;
+}
+.project-command {
+  border-bottom: 1px solid var(--rule);
+}
+.project-command > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 0;
+  font-size: 12px;
+}
+.project-command small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.project-command > summary > span:last-child {
+  color: var(--gold);
+  font-size: 11px;
+}
+.project-facts {
+  display: grid;
+  gap: 18px;
+  font-size: 12px;
+  padding: 16px 0;
+}
+.project-facts > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 16px;
+}
+.project-facts dt {
+  color: var(--muted);
+}
+.project-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.project-dialog {
+  max-width: 660px;
+}
+.project-form {
+  display: grid;
+  gap: 18px;
+  font-size: 12px;
+}
+.project-form label {
+  display: grid;
+  gap: 7px;
+}
+.project-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+.project-form fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.project-form legend {
+  margin-bottom: 12px;
+  padding: 0;
+}
+.project-form .project-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+}
+.project-check input {
+  width: auto;
+  margin: 0;
+}
+.project-release-settings > :not(summary) {
+  margin-top: 16px;
+}
+.project-release-settings summary {
+  color: var(--gold);
+}
+.project-form textarea {
+  resize: vertical;
+}
+.project-form p {
+  margin: 0;
+  line-height: 1.8;
+}
+@media (max-width: 1050px) {
+  .projects-layout {
+    grid-template-columns: 170px minmax(0, 1fr);
+    gap: 22px;
+  }
+  .project-detail {
+    padding-left: 22px;
+  }
+}
+@media (max-width: 760px) {
+  .projects-content {
+    padding: 22px 20px 40px;
+  }
+  .projects-layout {
+    display: block;
+  }
+  .project-browser {
+    position: static;
+    margin-bottom: 26px;
+  }
+  .project-list {
+    max-height: 220px;
+  }
+  .project-detail {
+    padding-left: 0;
+    border: 0;
+  }
+  .project-heading {
+    align-items: flex-start;
+  }
+  .project-heading h2 {
+    font-size: 22px;
+  }
+  .project-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.project-shas {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+.project-shas dt {
+  color: var(--muted);
+}
+.project-shas dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.project-delivery {
+  padding: 18px;
+  margin-top: 18px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.project-review {
+  border-left: 2px solid var(--gold);
+  padding-left: 14px;
+  margin-top: 18px;
+}
+.project-review strong {
+  font-size: 12px;
+  display: block;
+  margin-bottom: 7px;
+}
+.project-review p {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.project-checks {
+  font-size: 12px;
+  margin-top: 18px;
+}
+.project-checks > strong {
+  font-weight: 500;
+}
+.project-checks ul {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+.project-checks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.check-success {
+  color: var(--success);
+}
+.project-work-tools {
+  flex-wrap: wrap;
+  margin-top: 26px;
+}
+.project-work-tools button {
+  font-size: 11px;
+}
+.project-command > button {
+  margin: 0 0 18px;
+  font-size: 11px;
+}
+.project-attempt.is-historical {
+  opacity: 0.7;
+}
+.project-insights {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+}
+.project-insights h4 {
+  margin: 24px 0 12px;
+  font-size: 13px;
+}
+.project-timeline {
+  padding: 0 0 0 17px;
+  border-left: 1px solid var(--rule);
+  list-style: none;
+}
+.project-timeline > li {
+  padding: 14px 0;
+}
+.project-timeline li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+.project-timeline time {
+  font-size: 10px;
+  color: var(--muted);
+}
+.project-timeline p {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.project-candidates > label {
+  margin-top: 16px;
+}
+.project-candidate {
+  border-bottom: 1px solid var(--rule);
+  padding: 16px 0;
+}
+.project-candidate > strong {
+  font-weight: 500;
+}
+.project-candidate ul {
+  padding-left: 18px;
+  line-height: 1.8;
+  font-size: 11px;
+}
+.native-interactions {
+  flex-shrink: 0;
+}
+.native-pending-button {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 6;
+  box-shadow: var(--shadow-md);
+  background: var(--surface);
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 11px 16px;
+  font-size: 12px;
+}
+.native-pending-button .status-dot {
+  background: var(--gold);
+}
+.native-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+.native-request-select {
+  font-size: 12px;
+  margin-bottom: 22px;
+}
+.native-request-body h3 {
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.native-original {
+  margin: 20px 0;
+  font-size: 12px;
+}
+.native-choices {
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+.native-choices button {
+  font-size: 12px;
+}
+.native-empty {
+  padding: 24px 0;
+  color: var(--muted);
+  line-height: 1.8;
+  font-size: 13px;
+}
+.native-load-error {
+  padding: 12px 24px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.native-load-error .notice {
+  flex: 1;
+  margin: 0;
+}
+.native-load-error button {
+  font-size: 11px;
+}
+.native-notice {
+  margin: 10px 24px;
+}
+@media (max-width: 760px) {
+  .native-pending-button {
+    right: 16px;
+    bottom: 16px;
+    max-width: calc(100vw - 32px);
+  }
+}
+.task-checkpoints {
+  padding: 22px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+}
+.task-checkpoints > summary {
+  font-size: 14px;
+}
+.checkpoint-record {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.checkpoint-record strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.checkpoint-summary {
+  white-space: pre-wrap;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.checkpoint-dependencies {
+  padding-left: 18px;
+  line-height: 1.8;
+}
+.checkpoint-resume {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+.checkpoint-resume > button {
+  justify-self: start;
+  font-size: 12px;
+}
+.checkpoint-artifact {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--rule);
+  padding: 12px 0;
+}
+.checkpoint-artifact button {
+  justify-self: end;
+}
+.project-page-loading {
+  padding: 28px;
+  color: var(--muted);
+  font-size: 13px;
+}

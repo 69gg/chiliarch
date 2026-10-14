@@ -28,6 +28,12 @@ export function ErrorNotice({
 
 export function Status({ value }: { value: string }): ReactNode {
   const labels: Record<string, string> = {
+    planned: "待开始",
+    preparing: "准备中",
+    ready: "已就绪",
+    open: "待合并",
+    closed: "已关闭",
+    merged: "已合并",
     online: "在线",
     offline: "离线",
     revoked: "已吊销",
