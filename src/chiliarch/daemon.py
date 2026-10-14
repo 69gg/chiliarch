@@ -32,6 +32,7 @@ from chiliarch.daemon_models import (
     private_write,
     read_configuration,
 )
+from chiliarch.github_executor import GitHubExecutor
 from chiliarch.logging import close_logging, configure_logging
 
 logger = logging.getLogger("chiliarch.daemon")
@@ -66,6 +67,7 @@ class AgentSession:
                 preferred=entry.preferred_transport,
                 options=self.runtime.configuration.transport,
                 max_concurrent_tasks=entry.max_concurrent_tasks,
+                repository_handler=self.runtime.repositories.execute,
             ) as (client, task):
                 self.client = client
                 self.mailbox = AgentMailbox(client.store, manual_tasks=handler is None)
@@ -128,6 +130,7 @@ class DaemonRuntime:
         self.sessions: dict[str, AgentSession] = {}
         self.lock = asyncio.Lock()
         self.shutdown = asyncio.Event()
+        self.repositories = GitHubExecutor(self.directory / "projects")
 
     def save(self) -> None:
         private_write(self.directory / "daemon.json", self.configuration.model_dump(mode="json"))

@@ -25,7 +25,7 @@ flowchart LR
 
 本机共享守护进程按当前系统用户登记多个 agent，每个身份保留独立状态库、凭证和平台出站连接。原生宿主启动轻量 stdio MCP 桥，通过受认证的回环接口向已有守护进程转发；常驻连接不意味着平台能唤醒空闲宿主会话。托管身份按机器本地 TOML 的程序、默认工作目录和资源限额运行：Codex 使用独立本机 app-server stdio，经过 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`；Claude Code 使用 print JSONL；OpenCode v2 和 v1 legacy 使用 ACP stdio，经过 `initialize`、`session/new` 或 `session/load`、`session/prompt`，并由 `session/update` 接收流式事件。任务内 mailbox 只读写父连接的本地队列。平台不会反向联系 agent IP。
 
-原生模型、provider、认证、沙箱、审批、指令、skills、hooks 与 MCP 由原生工具加载。runner 只为任务追加一个名称唯一的 mailbox MCP，提示模型使用该名称，不覆盖用户已有服务或为其自动授予工具权限。Codex 续接保留原生 resume 语义，可能沿用此前线程配置。app-server 不连接用户已有 App 控制 socket；当前也没有跨平台原生审批或用户输入回复桥，收到必须交互的请求时明确受阻或失败，不通过平台审批模式放宽原生权限。
+原生模型、provider、认证、沙箱、审批、指令、skills、hooks 与 MCP 由原生工具加载。runner 只为任务追加一个名称唯一的 mailbox MCP，提示模型使用该名称，不覆盖用户已有服务或为其自动授予工具权限。Codex 续接保留原生 resume 语义，可能沿用此前线程配置。app-server 不连接用户已有 App 控制 socket；已支持的 Codex/OpenCode 原生许可与 Codex 信息问题通过持久交互桥交给平台处理；未支持的原生交互明确受阻，不通过平台模式放宽权限。
 
 安装先发现复用健康服务，再注册当前 agent；默认用户登录后自动启动，Windows、macOS、Linux 共用本地协议与业务逻辑，系统差异只在目录、服务管理和进程树控制。运行管理与目录说明见 [本机守护进程](daemon.md)。跨进程文件锁保证同一状态库只有一个网络连接所有者；legacy standalone MCP/独立 runner 仍可单独运行，但不能并行占用已登记状态。共享进程不共享平台凭证，不合并协议身份。
 
@@ -91,3 +91,14 @@ Agent 配对默认登记 managed runner，状态库旁的本地 TOML 保存每�
 `collaboration` 保存成员明确的讨论、可信来源消息、逐人回执、任务收件范围、续接上下文和等待关系。请求仍经 OperationService 校验、审批与持久去重，普通路由不必启动模型轮次。显式唤醒创建正常任务，使用已有 agent 出站通道，目录互斥及本地权限不变。`artifacts` 在 SQLite 中保存不可变清单和文件块，提供成员范围内的主动上传/下载。总管也能使用 `put_artifact_chunk`、`read_artifact_chunk` 处理原始 base64 字节，通常优先安排 agent 本地传输以减少上下文占用；操作审计与运行日志仍屏蔽块正文。
 
 `monitoring` 为失联、进度停滞写入持久协调事件，不推断外部进程已停止。可恢复模型故障按预算退避产生新核查轮次，用户停止撤销待恢复。runner本地状态库记录平台创建的原生会话归属，只续接最近成功且确认停止的工作。详见[协作](collaboration.md)、[产物](artifacts.md)与[模型恢复](models.md)。
+
+
+## GitHub 项目与原生协作
+
+`projects` 保存项目、工作项、执行尝试、节点绑定、命令和交付证据；`github_issues` 关联显式导入的 Issue 与目标。`github_executor` 位于节点，用本机 Git/gh 执行结构化 argv，专用 clone/worktree 与持久 journal 隔离每次尝试。GitHub 凭据与签名私钥不上传平台，网络目标仅为该项目配置的 GitHub host / Git remote；服务端仍不连接节点。
+
+节点本地 SQLite 记录仓库命令与原生消息注入的副作用状态。平台上的项目状态由已认证结果投影；head/base 变化使旧评审失效，未知结果只核对。只读观察可转移到在线节点，合并、push、tag 等副作用不会因失联自动换机器重做。
+
+`native_interactions` 持久化原生许可和信息问题，通过统一操作服务答复。许可只由登录用户处理；信息问题可以由总管按平台模式回答。`task_stages` 保存阶段材料，等待实际退出和依赖验收后产生待续事件，续接仍走正常调度及审批。`project_insights` 汇总真实任务用量、时间线与节点选择依据，不推断未知费用或原生可用性。
+
+这些新表按已有初始化过程增量创建；现有 Task、消息和原生会话记录保留。用户流程见 [GitHub 项目](github.md)。

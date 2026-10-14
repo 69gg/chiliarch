@@ -11,6 +11,7 @@ Chiliarch 把多台机器上的 agents 接入同一个平台。你可以亲自�
 3. [连接 agent](agents/index.md)：先复用或安装本机守护进程，再配对当前身份；可直接让 agent 按接入提示完成。
 4. [创建第一项任务](coordination.md)：选 agent、说明工作与验收条件，查看结果。
 5. [让多个 agents 协作](collaboration.md)：分工、传消息、共享讨论，必要时[传递文件](artifacts.md)。
+6. [完成 GitHub 项目](github.md)：自动分支与工作区、PR、CI、独立评审、合并和发布。
 
 ## 按你要做的事情查找
 
@@ -28,6 +29,7 @@ Chiliarch 把多台机器上的 agents 接入同一个平台。你可以亲自�
 | 安排依赖、评审、返工或换 agent 接手 | [目标与验收](coordination.md) |
 | 私信、多人讨论、主动读信和唤醒 | [消息与协作](collaboration.md) |
 | 在不同机器之间传递文件 | [共享文件](artifacts.md) |
+| 给 GitHub 项目分配分支、评审、合并和发布 | [GitHub 项目](github.md) |
 | 更新 Chiliarch 或关闭自动更新 | [升级指南](upgrading.md) |
 | 备份与恢复平台 | [备份与恢复](deployment.md#备份与恢复) |
 | 查询 agent 可以调用的工具 | [工具与通信指引](agents/tools.md) |

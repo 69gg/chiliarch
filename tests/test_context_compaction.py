@@ -22,7 +22,10 @@ from chiliarch.database import Database, OperationRecord
 from chiliarch.service import OperationService
 
 JSON = dict[str, Any]
-WINDOW = 20000
+# Leave space for the complete runtime tool catalog while exercising the same
+# 90% boundary. The fixture's limit is not a product/default configuration.
+WINDOW = 40000
+THRESHOLD = WINDOW * 9 // 10
 
 
 def with_usage(events: list[JSON], mode: str, input_tokens: int, output_tokens: int) -> list[JSON]:
@@ -181,7 +184,7 @@ async def test_compaction_waits_for_approval_preserves_native_pairs_and_survives
     tmp_path: Path, mode: str
 ) -> None:
     upstream = CompactionUpstream(mode, tool_first=True)
-    upstream.business_usage = [(17950, 50)]
+    upstream.business_usage = [(THRESHOLD - 50, 50)]
     db, settings, service, supervisor = await setup(tmp_path, upstream)
     effects: list[int] = []
     register_change(service, effects)
@@ -312,7 +315,7 @@ async def test_large_legacy_history_and_no_usage_are_compacted_in_bounded_batche
         await db.close()
 
 
-@pytest.mark.parametrize("tokens", [17999, 18000])
+@pytest.mark.parametrize("tokens", [THRESHOLD - 1, THRESHOLD])
 async def test_exact_ninety_percent_triggers_post_turn_compaction(
     tmp_path: Path, tokens: int
 ) -> None:
@@ -323,7 +326,7 @@ async def test_exact_ninety_percent_triggers_post_turn_compaction(
         conversation = await supervisor.create_conversation(title="阈值")
         sent = await supervisor.send_message(conversation["id"], "检查")
         await wait_status(supervisor, sent["run_id"], "completed")
-        assert len(upstream.summaries) == (1 if tokens == 18000 else 0)
+        assert len(upstream.summaries) == (1 if tokens == THRESHOLD else 0)
         snapshot = await supervisor.get_conversation(conversation["id"])
         assert snapshot["messages"][-1]["content"] == "核对完成。"
     finally:
@@ -339,7 +342,7 @@ async def test_failed_compaction_keeps_original_context_and_never_executes_summa
     upstream.failure = failure
     if failure == "oversized":
         upstream.summary = "无法压缩的重复内容" * 12000
-    upstream.business_usage = [(17950, 50)]
+    upstream.business_usage = [(THRESHOLD - 50, 50)]
     db, _, service, supervisor = await setup(tmp_path, upstream, mode="yolo")
     effects: list[int] = []
     register_change(service, effects)
@@ -363,7 +366,7 @@ async def test_failed_compaction_keeps_original_context_and_never_executes_summa
 
 async def test_cancellation_during_compaction_commits_no_partial_summary(tmp_path: Path) -> None:
     upstream = CompactionUpstream()
-    upstream.business_usage = [(17950, 50)]
+    upstream.business_usage = [(THRESHOLD - 50, 50)]
     upstream.summary_gate = asyncio.Event()
     db, _, _, supervisor = await setup(tmp_path, upstream)
     try:
@@ -437,7 +440,7 @@ async def test_compaction_preserves_original_arguments_and_excludes_native_repla
         },
     ]
     try:
-        result = await compact_context(provider, history, [], "system", WINDOW, 18000)
+        result = await compact_context(provider, history, [], "system", WINDOW, THRESHOLD)
         assert result.history[0]["compacted"]
         fragments = upstream.summaries[0]["messages"][-1]["content"].split(
             "\nConversation record fragments:\n", 1

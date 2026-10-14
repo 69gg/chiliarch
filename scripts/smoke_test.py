@@ -55,6 +55,7 @@ def main() -> None:
             "download_artifact",
             "list_artifacts",
             "get_artifact",
+            "project_tools",
         }
         settings = Settings.model_validate(
             {
@@ -72,6 +73,9 @@ def main() -> None:
                 ("list_channels", "channels"),
                 ("list_task_waits", "waits"),
                 ("list_artifacts", "artifacts"),
+                ("list_projects", "projects"),
+                ("list_native_interactions", "interactions"),
+                ("list_task_checkpoints", "checkpoints"),
             ):
                 queried = client.post(
                     "/api/operations/" + operation,

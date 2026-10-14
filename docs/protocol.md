@@ -98,3 +98,21 @@ heartbeat 与 ACK 是瞬时控制帧，不进入持久业务 inbox；心跳更�
 取消的持久处理与 ACK 必须一致：先将取消 tombstone 与取消意图在同一事务中提交，再 ACK；未开始的任务可同时保存取消终态，运行中的任务先保留本地 `cancelling`。托管 worker 清理完进程组或当前会话调用 `confirm_cancellation` 后，才向平台报告 `cancelled`。即使取消先于 dispatch 到达，后续相同任务也不能执行；晚到的取消不能覆盖已经完成的结果。MCP 当前会话通过原子领取开始工作，相同结果重试幂等，取消、失败和中断后的任务不能再报完成。网络 ACK 后，上级回复仍保存在本地业务 inbox，可用 cursor 读取。
 
 队列受 `queue_limit/message_ttl_seconds/max_message_bytes` 约束，过期和取消显式可见。在线状态由 agent 主动请求和心跳更新；服务端仅发送 SSE keepalive 不证明 agent 活性。
+
+
+## 仓库命令与原生交互
+
+以下是协议 1.0 的可选能力扩展，仍由 `chiliarch.protocol` 导出完整 JSON Schema。旧客户端必须先升级守护进程并报告 `supports_repository_commands=true`，才能接收仓库命令。
+
+| 方向 | 消息类型 | 业务字段 |
+| --- | --- | --- |
+| 平台→节点 | `repository.command` | `command_id`、`action`、`arguments` |
+| 节点→平台 | `repository.result` | `command_id`、`status=completed/failed/unknown`、`result`、`error` |
+| 节点→平台 | `native.request` | `interaction_id`、`task_id`、`kind=permission/input`、`title`、`native_method`、原始 `details`、`options`、`fields` |
+| 平台→节点 | `native.response` | `interaction_id`、`task_id`、`status=answered/expired`、`answer` |
+
+仓库命令独立于模型任务槽位。客户端持久保存命令后 ACK，执行器在任何副作用前保存本地 journal；断线重投返回同一结果，崩溃中断先核对外部实际状态。过期或丢失结果保留 unknown，不能据此假设操作没发生。参数不同不得复用 command ID。
+
+原生响应严格匹配当前身份、任务和 interaction ID。权限响应的 `answer` 为 `{"choice": "原选项ID"}`，信息响应为 `{"fields": {"问题ID": "回答"}}`，多选值使用字符串数组。许可只允许原生广告的选项；已结束任务的迟到请求得到 expired，不能唤醒新进程。服务端不主动连接原生进程。
+
+Codex 运行中消息注入复用 `collaboration.message`，不另造消息身份。仅当前 task_id 匹配的消息可注入；发送前记录 unknown，收到原生 RPC 对应确认后才记 delivered。不消费 MCP 收件箱、不报告业务 processed；未知注入不重复发送。

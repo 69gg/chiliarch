@@ -101,6 +101,52 @@ class CollaborationMessagePayload(Payload):
     wake: bool = False
 
 
+class RepositoryCommandPayload(Payload):
+    """Mechanical repository work, executed by an outbound daemon, never by the server."""
+
+    command_id: str = Field(min_length=1, max_length=128)
+    action: str = Field(min_length=1, max_length=128)
+    arguments: JsonObject = Field(default_factory=dict)
+
+
+class RepositoryResultPayload(Payload):
+    command_id: str = Field(min_length=1, max_length=128)
+    status: Literal["completed", "failed", "unknown"]
+    result: JsonObject = Field(default_factory=dict)
+    error: str | None = None
+
+
+class NativeOption(Payload):
+    id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=1024)
+
+
+class NativeField(Payload):
+    id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1)
+    options: list[NativeOption] = Field(default_factory=list)
+    secret: bool = False
+    multiple: bool = False
+
+
+class NativeRequestPayload(Payload):
+    interaction_id: str = Field(min_length=1, max_length=128)
+    task_id: str = Field(min_length=1)
+    kind: Literal["permission", "input"]
+    title: str = Field(min_length=1)
+    native_method: str = Field(min_length=1)
+    details: JsonObject = Field(default_factory=dict)
+    options: list[NativeOption] = Field(default_factory=list)
+    fields: list[NativeField] = Field(default_factory=list)
+
+
+class NativeResponsePayload(Payload):
+    interaction_id: str = Field(min_length=1, max_length=128)
+    task_id: str = Field(min_length=1)
+    status: Literal["answered", "expired"]
+    answer: JsonObject = Field(default_factory=dict)
+
+
 PAYLOAD_TYPES: dict[str, type[Payload]] = {
     "heartbeat": HeartbeatPayload,
     "ack": AckPayload,
@@ -112,12 +158,32 @@ PAYLOAD_TYPES: dict[str, type[Payload]] = {
     "agent.message": AgentMessagePayload,
     "request.resolved": RequestResolvedPayload,
     "collaboration.message": CollaborationMessagePayload,
+    "repository.command": RepositoryCommandPayload,
+    "repository.result": RepositoryResultPayload,
+    "native.request": NativeRequestPayload,
+    "native.response": NativeResponsePayload,
 }
 AGENT_MESSAGE_TYPES = frozenset(
-    {"heartbeat", "ack", "task.status", "agent.request", "agent.contact"}
+    {
+        "heartbeat",
+        "ack",
+        "task.status",
+        "agent.request",
+        "agent.contact",
+        "repository.result",
+        "native.request",
+    }
 )
 SERVER_MESSAGE_TYPES = frozenset(
-    {"task.dispatch", "task.cancel", "request.resolved", "agent.message", "collaboration.message"}
+    {
+        "task.dispatch",
+        "task.cancel",
+        "request.resolved",
+        "agent.message",
+        "collaboration.message",
+        "repository.command",
+        "native.response",
+    }
 )
 
 

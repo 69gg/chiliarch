@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from chiliarch.adapters.codex import CodexProtocol, CodexProtocolError
 from chiliarch.adapters.guidance import INBOX_POLLING_GUIDANCE
+from chiliarch.adapters.native import forward_native_messages, request_native_interaction
 from chiliarch.adapters.opencode import OpenCodeProtocol, OpenCodeProtocolError
 from chiliarch.adapters.processes import ProcessTree, start_process_tree
 from chiliarch.adapters.runtime import WorkspaceLease, workspace_lock_path, workspace_owner
@@ -243,6 +244,7 @@ class RunnerHandler:
         self._waiting_tasks: set[str] = set()
         self._running_tasks: set[str] = set()
         self._task_workspaces: dict[str, Path] = {}
+        self._native_pending: dict[str, int] = {}
 
     def runtime_metadata(self) -> JsonObject:
         """Describe this local runner without invoking or probing the native agent."""
@@ -264,7 +266,20 @@ class RunnerHandler:
             "blocked_task_ids": sorted(self._waiting_tasks),
             "blocked_reason": None,
             "supports_resume": True,
-            "notification_mode": "followup_task",
+            "notification_mode": "turn_steer" if self.settings.kind == "codex" else "followup_task",
+            "notification_fallback": "mcp_poll_or_followup_task",
+            "native_interactions": {
+                "permission": self.settings.kind != "claude-code",
+                "input": self.settings.kind == "codex",
+                "pending_task_ids": sorted(self._native_pending),
+                "unsupported": (
+                    ["interactive_print_mode"]
+                    if self.settings.kind == "claude-code"
+                    else ["permissions_profile", "policy_amendments", "mcp_elicitation"]
+                    if self.settings.kind == "codex"
+                    else ["input", "acp_v2"]
+                ),
+            },
         }
         available = self.settings.workdir.is_dir()
         try:
@@ -599,11 +614,68 @@ class RunnerHandler:
                 raise RunnerError("Could not start the configured native CLI executable") from None
             process = tree.process
             readers: list[asyncio.Task[None]] = []
+            native_requests: dict[str, asyncio.Task[None]] = {}
+            native_frames: dict[str, str] = {}
+            native_answers: dict[str, JsonObject] = {}
+            native_failure: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            stdin_lock = asyncio.Lock()
+            native_stopped = asyncio.Event()
+            message_deliveries: list[JsonObject] = []
 
             async def send(frame: JsonObject) -> None:
-                assert process.stdin is not None
-                process.stdin.write((json.dumps(frame, ensure_ascii=False) + "\n").encode())
-                await process.stdin.drain()
+                async with stdin_lock:
+                    assert process.stdin is not None
+                    process.stdin.write((json.dumps(frame, ensure_ascii=False) + "\n").encode())
+                    await process.stdin.drain()
+
+            async def interact(request: JsonObject) -> JsonObject:
+                task_id = payload["task_id"]
+                self._native_pending[task_id] = self._native_pending.get(task_id, 0) + 1
+                try:
+                    await progress(0.0, "原生 agent 正在等待操作许可或补充信息")
+                    return await request_native_interaction(self.state_path, task_id, request)
+                finally:
+                    remaining = self._native_pending[task_id] - 1
+                    if remaining:
+                        self._native_pending[task_id] = remaining
+                    else:
+                        self._native_pending.pop(task_id, None)
+
+            async def handle_native(event: JsonObject, key: str) -> None:
+                assert protocol is not None
+
+                async def reply(frame: JsonObject) -> None:
+                    native_answers[key] = frame
+                    await send(frame)
+
+                await protocol.handle_request(event, reply, interact)
+
+            def native_done(task: asyncio.Task[None]) -> None:
+                if not task.cancelled():
+                    error = task.exception()
+                    if error is not None and not native_failure.done():
+                        native_failure.set_exception(error)
+
+            async def monitor_native_requests() -> None:
+                await native_failure
+
+            async def forward_messages() -> None:
+                if not isinstance(protocol, CodexProtocol):
+                    return
+                if not await protocol.wait_for_active_turn():
+                    return
+
+                async def steer(request_id: str, text: str) -> bool:
+                    return await protocol.steer(request_id, text, send)
+
+                deliveries = await forward_native_messages(
+                    self.state_path,
+                    payload["task_id"],
+                    steer,
+                    native_stopped,
+                    max_input_bytes=self.settings.max_input_bytes,
+                )
+                message_deliveries.extend(deliveries)
 
             try:
                 async with asyncio.timeout(self.settings.timeout_seconds):
@@ -628,6 +700,11 @@ class RunnerHandler:
                                     "Native CLI exceeded the JSONL line size limit"
                                 ) from None
                             if not line:
+                                native_stopped.set()
+                                if isinstance(protocol, CodexProtocol):
+                                    protocol.close_deliveries()
+                                if not native_failure.done():
+                                    native_failure.set_result(None)
                                 return
                             budget(len(line))
                             if len(line) > self.settings.max_line_bytes:
@@ -642,6 +719,22 @@ class RunnerHandler:
                                 ) from None
                             if not isinstance(event, dict):
                                 raise RunnerError("Native CLI emitted an invalid JSONL event")
+                            if protocol and "method" in event and "id" in event:
+                                key = json.dumps(event["id"], sort_keys=True)
+                                fingerprint = json.dumps(event, sort_keys=True)
+                                if key in native_frames:
+                                    if native_frames[key] != fingerprint:
+                                        raise RunnerError(
+                                            "Native request ID was reused with different parameters"
+                                        )
+                                    if key in native_answers:
+                                        await send(native_answers[key])
+                                else:
+                                    native_frames[key] = fingerprint
+                                    request_task = asyncio.create_task(handle_native(event, key))
+                                    native_requests[key] = request_task
+                                    request_task.add_done_callback(native_done)
+                                continue
                             events, terminal = (
                                 await protocol.accept(event, send) if protocol else ([event], False)
                             )
@@ -652,6 +745,10 @@ class RunnerHandler:
                                     await progress(0.0, message)
                                     last_progress = now
                             if terminal:
+                                native_stopped.set()
+                                for request_task in native_requests.values():
+                                    if not request_task.done():
+                                        request_task.cancel()
                                 assert process.stdin is not None
                                 process.stdin.close()
 
@@ -680,10 +777,15 @@ class RunnerHandler:
                         asyncio.create_task(read_stdout()),
                         asyncio.create_task(read_stderr()),
                         asyncio.create_task(write_stdin()),
+                        asyncio.create_task(monitor_native_requests()),
+                        asyncio.create_task(forward_messages()),
                     ]
                     await asyncio.gather(*readers)
                     returncode = await process.wait()
-                    return output.result(returncode)
+                    result = output.result(returncode)
+                    if self.settings.kind == "codex":
+                        result["native_message_deliveries"] = message_deliveries
+                    return result
             except TimeoutError:
                 raise RunnerError("Native CLI exceeded the local task timeout") from None
             except (CodexProtocolError, OpenCodeProtocolError) as error:
@@ -702,7 +804,9 @@ class RunnerHandler:
                                 except (OSError, RuntimeError, TimeoutError):
                                     pass
                     finally:
-                        await self._cleanup(tree, readers)
+                        await self._cleanup(tree, [*readers, *native_requests.values()])
+                        if native_failure.done() and not native_failure.cancelled():
+                            native_failure.exception()
 
                 # Cancellation is not completion. Kill descendants before releasing
                 # the client's task slot, including when the parent has exited.

@@ -174,7 +174,7 @@ class SendPeerMessage(Arguments):
     )
     wake: bool = Field(
         default=False,
-        description="True explicitly schedules a new response task on a managed runner, subject to approval and capacity. False only queues information; it does not wake an idle App conversation or inject a running model turn.",
+        description="True explicitly schedules a new response task on a managed runner, subject to approval and capacity. False queues information without starting a task or waking an idle App; a supported active Codex task may receive task-targeted messages through native turn steering. Delivery is not proof the model read or processed the message.",
     )
 
     @model_validator(mode="after")

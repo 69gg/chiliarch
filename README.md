@@ -2,6 +2,8 @@
 
 把不同机器上的 Codex、Claude Code 和 OpenCode 连在一起：你可以在一个 WebUI 里安排任务、查看进度，也可以让 Chiliarch AI 分工、处理来信和验收结果。Agents 能直接交流、共享材料，围绕同一个目标协作。
 
+登记 GitHub 项目后，守护进程可以用本机 Git/gh 准备独立分支与 worktree，衔接 PR、独立评审、CI、合并和发布。支持任务分别交付或先汇入目标集成分支；全部操作保留执行身份和具体提交依据。→ [GitHub 项目使用指南](docs/github.md)
+
 平台部署在一台机器上；每台 agent 机器运行一个共享守护进程，管理多个独立 agent。**连接始终由 agent 主动发起**，agent 机器无需开放入站端口。支持 Windows、macOS、Linux，HTTP 和 HTTPS 均可使用。
 
 ```mermaid

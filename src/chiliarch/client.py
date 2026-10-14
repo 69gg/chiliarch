@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
@@ -28,6 +29,7 @@ from chiliarch.protocol import Envelope
 
 JsonObject = dict[str, Any]
 TaskHandler = Callable[[JsonObject, Callable[[float, str], Awaitable[None]]], Awaitable[Any]]
+RepositoryHandler = Callable[[JsonObject], Awaitable[JsonObject]]
 RuntimeMetadata = Callable[[], JsonObject]
 Sender = Callable[[Envelope], Awaitable[None]]
 logger = logging.getLogger("chiliarch.client")
@@ -70,6 +72,13 @@ class ClientStore:
             CREATE TABLE IF NOT EXISTS work (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS work_results (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cancellations (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS repository_work (
+                command_id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS native_deliveries (
+                task_id TEXT NOT NULL, message_id TEXT NOT NULL, request_id TEXT NOT NULL,
+                state TEXT NOT NULL, PRIMARY KEY(task_id,message_id)
+            );
             CREATE TABLE IF NOT EXISTS local_requests (
                 request_id TEXT PRIMARY KEY, client_request_id TEXT UNIQUE,
                 task_id TEXT, body TEXT NOT NULL
@@ -232,6 +241,18 @@ class ClientStore:
                     "INSERT OR IGNORE INTO work VALUES (?,?,?)",
                     (task_id, "cancelled" if cancelled else "queued", body),
                 )
+            elif envelope.type == "repository.command":
+                command_id = envelope.payload["command_id"]
+                async with self.db().execute(
+                    "SELECT body FROM repository_work WHERE command_id=?", (command_id,)
+                ) as cursor:
+                    prior = await cursor.fetchone()
+                if prior and Envelope.model_validate_json(prior[0]).payload != envelope.payload:
+                    raise ValueError("The same repository command ID has conflicting arguments")
+                await self.db().execute(
+                    "INSERT OR IGNORE INTO repository_work VALUES (?,?,?)",
+                    (command_id, "queued", body),
+                )
             elif envelope.type == "task.cancel":
                 task_id = envelope.payload["task_id"]
                 await self.db().execute(
@@ -261,6 +282,74 @@ class ClientStore:
                     )
             await self.db().execute("INSERT INTO inbox VALUES (?,?,?)", (envelope.id, digest, body))
         return True
+
+    async def repository_work(self) -> list[Envelope]:
+        async with self.lock:
+            async with self.db().execute(
+                "SELECT body FROM repository_work WHERE state IN ('queued','running') ORDER BY rowid"
+            ) as cursor:
+                return [Envelope.model_validate_json(row[0]) for row in await cursor.fetchall()]
+
+    async def native_response(self, interaction_id: str, task_id: str) -> JsonObject | None:
+        """Only a response for this native request/task may resume its local process."""
+        async with self.lock:
+            async with self.db().execute(
+                "SELECT body FROM inbox WHERE json_extract(body,'$.type')='native.response' "
+                "AND json_extract(body,'$.payload.interaction_id')=? "
+                "AND json_extract(body,'$.payload.task_id')=? ORDER BY rowid DESC LIMIT 1",
+                (interaction_id, task_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+                envelope = Envelope.model_validate_json(row[0])
+                if envelope.expires_at and envelope.expires_at <= datetime.now(UTC):
+                    return {**envelope.payload, "status": "expired", "answer": {}}
+                return envelope.payload
+
+    async def claim_native_delivery(self, task_id: str, message_id: str, request_id: str) -> bool:
+        """Journal uncertain delivery before native stdin; an uncertain send is never repeated."""
+        async with self._transaction():
+            async with self.db().execute(
+                "INSERT OR IGNORE INTO native_deliveries VALUES (?,?,?,'unknown')",
+                (task_id, message_id, request_id),
+            ) as cursor:
+                return cursor.rowcount == 1
+
+    async def complete_native_delivery(self, task_id: str, message_id: str) -> None:
+        async with self._transaction():
+            await self.db().execute(
+                "UPDATE native_deliveries SET state='delivered' WHERE task_id=? AND message_id=?",
+                (task_id, message_id),
+            )
+
+    async def native_deliveries(self, task_id: str) -> list[JsonObject]:
+        async with self.lock:
+            async with self.db().execute(
+                "SELECT message_id,request_id,state FROM native_deliveries WHERE task_id=? ORDER BY rowid",
+                (task_id,),
+            ) as cursor:
+                return [
+                    {
+                        "task_id": task_id,
+                        "message_id": row[0],
+                        "request_id": row[1],
+                        "state": row[2],
+                    }
+                    for row in await cursor.fetchall()
+                ]
+
+    async def repository_transition(
+        self, command_id: str, state: str, report: Envelope | None = None
+    ) -> None:
+        async with self._transaction():
+            await self.db().execute(
+                "UPDATE repository_work SET state=? WHERE command_id=?", (state, command_id)
+            )
+            if report is not None:
+                await self.db().execute(
+                    "INSERT OR IGNORE INTO outbox VALUES (?,?)", (report.id, report.canonical())
+                )
 
     async def work(self, state: str) -> list[Envelope]:
         async with self.lock:
@@ -451,6 +540,7 @@ class AgentClient:
         max_concurrent_tasks: int = 1,
         manual_tasks: bool = False,
         runtime_metadata: RuntimeMetadata | None = None,
+        repository_handler: RepositoryHandler | None = None,
     ) -> None:
         parsed = urlsplit(server_url)
         if (
@@ -472,6 +562,7 @@ class AgentClient:
         self.handler = handler
         self.manual_tasks = manual_tasks
         self.runtime_metadata = runtime_metadata
+        self.repository_handler = repository_handler
         self.max_concurrent_tasks = max_concurrent_tasks
         self.options = options or TransportSettings()
         self.transport: str | None = None
@@ -479,6 +570,8 @@ class AgentClient:
         self.stop_event = asyncio.Event()
         self.ready = asyncio.Event()
         self._workers: dict[str, asyncio.Task[None]] = {}
+        self._repository_workers: dict[str, asyncio.Task[None]] = {}
+        self._repository_semaphore = asyncio.Semaphore(1)
         self._cancelled_tasks: set[str] = set()
         self._semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self._http: httpx.AsyncClient | None = None
@@ -533,6 +626,7 @@ class AgentClient:
         max_concurrent_tasks: int = 1,
         manual_tasks: bool = False,
         runtime_metadata: RuntimeMetadata | None = None,
+        repository_handler: RepositoryHandler | None = None,
     ) -> AgentClient:
         if not await asyncio.to_thread(state_path.exists):
             raise ValueError("Pair the client before running it")
@@ -553,6 +647,7 @@ class AgentClient:
             max_concurrent_tasks=max_concurrent_tasks,
             manual_tasks=manual_tasks,
             runtime_metadata=runtime_metadata,
+            repository_handler=repository_handler,
         )
 
     async def execution_status(self) -> JsonObject:
@@ -572,6 +667,8 @@ class AgentClient:
             "capacity": self.max_concurrent_tasks if not self.manual_tasks else None,
             "adapter": None,
             "workspace": None,
+            "supports_repository_commands": self.repository_handler is not None,
+            "operating_system": platform.system().lower(),
         }
         if self.handler is None and not self.manual_tasks:
             metadata.update(state="blocked", blocked_reason="handler_unavailable", capacity=0)
@@ -652,6 +749,12 @@ class AgentClient:
             )
 
     async def _schedule(self) -> None:
+        for command in await self.store.repository_work():
+            command_id = str(command.payload["command_id"])
+            if command_id not in self._repository_workers:
+                self._repository_workers[command_id] = asyncio.create_task(
+                    self._execute_repository(command), name=f"agent.repository.{command_id}"
+                )
         if self.manual_tasks:
             return
         for command in await self.store.work("queued"):
@@ -660,6 +763,49 @@ class AgentClient:
                 self._workers[task_id] = asyncio.create_task(
                     self._execute(command), name=f"agent.task.{task_id}"
                 )
+
+    async def _execute_repository(self, command: Envelope) -> None:
+        """Handlers must journal side effects: a restarted running command is reconciled."""
+        command_id = str(command.payload["command_id"])
+        try:
+            async with self._repository_semaphore:
+                await self.store.repository_transition(command_id, "running")
+                if self.repository_handler is None:
+                    payload = {
+                        "command_id": command_id,
+                        "status": "failed",
+                        "result": {},
+                        "error": "Repository execution is unavailable on this client",
+                    }
+                elif command.expires_at and command.expires_at <= datetime.now(UTC):
+                    payload = {
+                        "command_id": command_id,
+                        "status": "unknown",
+                        "result": {},
+                        "error": "Command expired; reconcile before issuing further work",
+                    }
+                else:
+                    try:
+                        payload = await self.repository_handler(command.payload)
+                        if payload.get("command_id") != command_id:
+                            raise ValueError("Repository handler returned a different identity")
+                        # Validate before committing the terminal state and result together.
+                        Envelope(type="repository.result", payload=payload)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        payload = {
+                            "command_id": command_id,
+                            "status": "unknown",
+                            "result": {},
+                            "error": f"Repository executor stopped ({type(error).__name__}); reconcile first",
+                        }
+                report = Envelope(
+                    type="repository.result", correlation_id=command.id, payload=payload
+                )
+                await self.store.repository_transition(command_id, str(payload["status"]), report)
+        finally:
+            self._repository_workers.pop(command_id, None)
 
     async def _execute(self, command: Envelope) -> None:
         task_id = str(command.payload["task_id"])
@@ -974,9 +1120,10 @@ class AgentClient:
         finally:
             self._http = None
             self.ready.clear()
-            for worker in list(self._workers.values()):
+            workers = [*self._workers.values(), *self._repository_workers.values()]
+            for worker in workers:
                 worker.cancel()
-            await asyncio.gather(*list(self._workers.values()), return_exceptions=True)
+            await asyncio.gather(*workers, return_exceptions=True)
             await self.store.close()
 
     def stop(self) -> None:

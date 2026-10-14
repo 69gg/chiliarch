@@ -140,11 +140,34 @@ def create_mcp_server(
             "delegated work; an unsafe wait must be redesigned, not bypassed. An interactive host must poll; "
             "wake requests only dispatch a separately authorized managed task, not resume an idle App. "
             "Only return genuine results; do not replay interrupted work with unknown external effects. "
+            "Use project_tools to discover GitHub and stage operation schemas. To release a worker while "
+            "waiting, request save_task_checkpoint with your current task ID, summary and waiting_for "
+            "dependencies, then finish the current native response after it succeeds. Saving alone "
+            "does not stop the process. Ask the supervisor to resume a ready checkpoint; do not create "
+            "a second concurrent execution or resume unknown work. "
             "Optional reference: https://raw.githubusercontent.com/69gg/chiliarch/main/docs/agents/tools.md"
         ),
     )
     read_only = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+
+    @server.tool(annotations=read_only)
+    async def project_tools(ctx: ToolContext, wait_seconds: RequestWait = 10) -> JsonObject:
+        """Discover the GitHub project workflow tools and their complete argument schemas.
+
+        Call this before requesting unfamiliar GitHub operations. It describes project discovery,
+        branch/worktree assignment, delivery, exact-commit reviews, CI, merge, releases, facts and
+        recovery and stage checkpoints. Use request_operation with the returned operation name and arguments. Only
+        bound projects are accessible; native git/gh authentication stays on your machine.
+        Pending means poll get_request_result; unknown effects require reconciliation, never a
+        fresh command ID. Repository mutations wait until native work has stopped: when your
+        managed task has finished editing, report the handoff so the supervisor can deliver it.
+        """
+        return public_result(
+            await ctx.request_context.lifespan_context.check().request_operation(
+                "list_project_tools", {}, "Discover project workflow tools", wait_seconds
+            )
+        )
 
     @server.tool(annotations=read_only)
     async def status(ctx: ToolContext) -> JsonObject:
@@ -205,7 +228,8 @@ def create_mcp_server(
 
         Proactively call read_messages(after=null) at task start, periodically during long work,
         between meaningful steps, while waiting for collaborators, and before finishing. The
-        daemon receives messages but does not inject them into your model context or wake an idle
+        daemon receives messages; a supported active Codex task can also receive task-targeted
+        peer messages via native turn steering. Other hosts must poll. This never wakes an idle
         interactive session. Empty reads return immediately: back off and do useful work instead
         of busy-polling or holding resources collaborators need.
 
@@ -459,7 +483,7 @@ def create_mcp_server(
         wake: Annotated[
             bool,
             Field(
-                description="false for ordinary replies. true requests a separately approved new managed task at a private recipient; a referenced recipient task must be completed. Does not inject into a running CLI or idle App."
+                description="false for ordinary replies. true requests a separately approved new managed task at a private recipient; a referenced recipient task must be completed. A supported active Codex task can receive task-targeted messages through turn steering regardless of wake; an idle App is never started."
             ),
         ] = False,
         wait_seconds: RequestWait = 10,

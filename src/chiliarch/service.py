@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from chiliarch import github_issues, native_interactions, project_insights
 from chiliarch.artifacts import (
     CONTINUATION_OPERATIONS as ARTIFACT_CONTINUATIONS,
 )
@@ -70,7 +71,15 @@ from chiliarch.database import (
     UserSession,
     new_id,
 )
+from chiliarch.projects import OPERATIONS as PROJECT_OPERATIONS
+from chiliarch.projects import PROJECT_SPECS, ProjectService
 from chiliarch.protocol import AGENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, Envelope, TaskWorkdir
+from chiliarch.task_stages import OPERATIONS as STAGE_OPERATIONS
+from chiliarch.task_stages import SPECS as STAGE_SPECS
+from chiliarch.task_stages import TaskStageService
+
+PROJECT_OPERATIONS = PROJECT_OPERATIONS | project_insights.OPERATIONS | github_issues.OPERATIONS
+DIRECT_OPERATIONS = DIRECT_OPERATIONS | STAGE_OPERATIONS | {"list_native_interactions"}
 
 if TYPE_CHECKING:
     from chiliarch.config import SettingsManager
@@ -276,6 +285,7 @@ SENSITIVE_NAMES = frozenset(
         "authorization",
         "data_base64",
         "secret",
+        "native_answer",
     }
 )
 
@@ -308,6 +318,8 @@ class OperationService:
         self.coordination = CoordinationService(self)
         self.collaboration = CollaborationService(self)
         self.artifacts = ArtifactService(self)
+        self.projects = ProjectService(self)
+        self.stages = TaskStageService(self)
         self._register_core()
 
     def register(
@@ -524,10 +536,16 @@ class OperationService:
             *specs,
             *COLLABORATION_SPECS,
             *ARTIFACT_SPECS,
+            *PROJECT_SPECS,
+            *project_insights.SPECS,
+            *native_interactions.SPECS,
+            *STAGE_SPECS,
+            *github_issues.SPECS,
         ]:
             self.operations[name] = Operation(
                 name, description, arguments.model_json_schema(), None, risk, mutating, arguments
             )
+        self.operations["resolve_native_interaction"].agent_requestable = False
 
     def schemas(self) -> list[JsonObject]:
         return [operation.schema() for operation in self.operations.values()]
@@ -613,6 +631,28 @@ class OperationService:
             )
         return operation
 
+    async def _project_policy(
+        self, session: AsyncSession, operation: Operation, arguments: JsonObject, actor: str
+    ) -> Operation:
+        if (
+            operation.name not in PROJECT_OPERATIONS
+            or operation.name in project_insights.OPERATIONS
+        ):
+            return operation
+        risk = await self.projects.policy(session, operation.name, arguments, actor)
+        if risk is None:
+            return operation
+        return Operation(
+            operation.name,
+            operation.description,
+            operation.parameters,
+            operation.handler,
+            risk,
+            operation.mutating,
+            operation.arguments,
+            operation.agent_requestable,
+        )
+
     async def execute(
         self,
         name: str,
@@ -651,6 +691,14 @@ class OperationService:
         extension_request_id: str | None = None
         async with self.db.write_lock:
             async with self.db.sessions.begin() as session:
+                if name == "resolve_native_interaction" and actor != "user":
+                    native = await session.get(
+                        native_interactions.NativeInteraction, validated["interaction_id"]
+                    )
+                    if native and native.kind == "permission":
+                        raise OperationError(
+                            "Only the logged-in user may grant native permissions", 403
+                        )
                 if idempotency_key is not None:
                     existing = (
                         await session.execute(
@@ -674,7 +722,9 @@ class OperationService:
                     arguments_hash=args_hash,
                 )
                 session.add(record)
-                effective_operation = operation
+                effective_operation = await self._project_policy(
+                    session, operation, validated, actor
+                )
                 if name == "resolve_agent_request" and validated["decision"] == "approve":
                     request = await session.get(AgentRequest, validated["request_id"])
                     if request is None:
@@ -685,6 +735,12 @@ class OperationService:
                         else None
                     )
                     if requested_operation is not None:
+                        requested_operation = await self._project_policy(
+                            session,
+                            requested_operation,
+                            request.arguments,
+                            f"agent:{request.agent_id}",
+                        )
                         effective_operation = Operation(
                             operation.name,
                             operation.description,
@@ -1021,6 +1077,11 @@ class OperationService:
                     await self._expire_messages(session)
                     await self.coordination.release(session)
                     await monitor_tasks(session, self.settings_manager.current)
+                    await native_interactions.expire(self, session)
+                    if await self.stages.maintain(session):
+                        self.changed.set()
+                    if await self.projects.maintain(session):
+                        self.changed.set()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1043,6 +1104,23 @@ class OperationService:
                 if task and task.status == "queued":
                     task.status, task.updated_at = "expired", time.time()
                     await self.coordination.terminal(session, task)
+            elif message.body.get("type") == "repository.command":
+                from chiliarch.projects_models import RepositoryCommand
+
+                command = await session.get(
+                    RepositoryCommand, message.body["payload"]["command_id"]
+                )
+                if command and command.status == "pending":
+                    await self.projects.receive_result(
+                        session,
+                        command.agent_id,
+                        {
+                            "command_id": command.id,
+                            "status": "unknown",
+                            "result": {},
+                            "error": "Delivery expired without a confirmed result; reconcile external effects before continuing",
+                        },
+                    )
             session.add(
                 AuditEvent(
                     actor="system",
@@ -1085,6 +1163,21 @@ class OperationService:
         self, session: AsyncSession, name: str, args: JsonObject, actor: str
     ) -> tuple[JsonObject, tuple[str, JsonObject] | None]:
         event: tuple[str, JsonObject] | None = None
+        if name in native_interactions.OPERATIONS:
+            return await native_interactions.execute(self, session, name, args, actor), None
+        if name in STAGE_OPERATIONS:
+            return await self.stages.execute(session, name, args, actor), None
+        if name in github_issues.OPERATIONS:
+            return await github_issues.execute(self, session, name, args, actor), None
+        if name in project_insights.OPERATIONS:
+            return await project_insights.execute(self, session, name, args, actor), None
+        if name in PROJECT_OPERATIONS:
+            project_result = await self.projects.execute(session, name, args, actor)
+            if name == "get_project":
+                project_result["issues"] = await github_issues.project_issues(
+                    session, args["project_id"]
+                )
+            return project_result, None
         if name in ARTIFACT_OPERATIONS:
             return await self.artifacts.execute(session, name, args, actor), None
         if name in COLLABORATION_OPERATIONS:
@@ -1248,6 +1341,7 @@ class OperationService:
                     if request.operation
                     in DIRECT_OPERATIONS
                     | ARTIFACT_OPERATIONS
+                    | PROJECT_OPERATIONS
                     | {
                         "get_agent",
                         "rename_agent",
@@ -1261,9 +1355,18 @@ class OperationService:
                     else actor
                 )
                 context = await session.get(RequestContext, request.id)
-                if request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS:
+                if (
+                    request.operation
+                    in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS | PROJECT_OPERATIONS
+                ):
                     validator = (
-                        self.artifacts
+                        native_interactions
+                        if request.operation in native_interactions.OPERATIONS
+                        else self.stages
+                        if request.operation in STAGE_OPERATIONS
+                        else self.projects
+                        if request.operation in PROJECT_OPERATIONS
+                        else self.artifacts
                         if request.operation in ARTIFACT_OPERATIONS
                         else self.collaboration
                     )
@@ -1615,13 +1718,25 @@ class OperationService:
                         task_scope = requested.get("metadata", {}).get("task_id")
                         if (
                             task_scope
-                            and request.operation in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS
+                            and request.operation
+                            in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS | PROJECT_OPERATIONS
                         ):
                             await self.collaboration._task(session, task_scope, agent_id)
                             session.add(RequestContext(request_id=request.id, task_id=task_scope))
                             await session.flush()
                         if not await self._direct_request(session, request):
                             event = ("agent.request", {"agent_id": agent_id, "envelope": body})
+                elif envelope.type == "native.request":
+                    native_result = await native_interactions.receive(
+                        self, session, agent_id, envelope
+                    )
+                    event = ("native.request", native_result)
+                elif envelope.type == "repository.result":
+                    result = await self.projects.receive_result(session, agent_id, envelope.payload)
+                    await github_issues.receive_result(
+                        self, session, envelope.payload["command_id"]
+                    )
+                    event = ("repository.result", {"agent_id": agent_id, **result})
                 elif envelope.type == "agent.contact":
                     event = ("agent.contact", {"agent_id": agent_id, "envelope": body})
                 else:
@@ -1641,31 +1756,41 @@ class OperationService:
 
     async def _direct_request(self, session: AsyncSession, request: AgentRequest) -> bool:
         """Resolve deterministic peer operations through the same validation and policy boundary."""
-        if request.operation not in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS:
-            return False
-        operation = self._policy(request.operation, request.arguments)
-        if (
-            request.operation not in TELEMETRY_OPERATIONS | ARTIFACT_CONTINUATIONS
-            and self._approval_reason(operation, f"agent:{request.agent_id}", None)
-        ):
+        if request.operation not in DIRECT_OPERATIONS | ARTIFACT_OPERATIONS | PROJECT_OPERATIONS:
             return False
         try:
             async with session.begin_nested():
+                operation = self._policy(request.operation, request.arguments)
+                operation = await self._project_policy(
+                    session, operation, request.arguments, f"agent:{request.agent_id}"
+                )
+                if (
+                    request.operation not in TELEMETRY_OPERATIONS | ARTIFACT_CONTINUATIONS
+                    and self._approval_reason(operation, f"agent:{request.agent_id}", None)
+                ):
+                    return False
                 context = await session.get(RequestContext, request.id)
+                execution_args = dict(request.arguments)
                 validator = (
-                    self.artifacts
+                    native_interactions
+                    if request.operation in native_interactions.OPERATIONS
+                    else self.stages
+                    if request.operation in STAGE_OPERATIONS
+                    else self.projects
+                    if request.operation in PROJECT_OPERATIONS
+                    else self.artifacts
                     if request.operation in ARTIFACT_OPERATIONS
                     else self.collaboration
                 )
                 await validator.validate_scope(
                     session,
                     request.operation,
-                    request.arguments,
+                    execution_args,
                     request.agent_id,
                     context.task_id if context else None,
                 )
                 result, _ = await self._core(
-                    session, request.operation, request.arguments, f"agent:{request.agent_id}"
+                    session, request.operation, execution_args, f"agent:{request.agent_id}"
                 )
             request.status, request.result = "approved", result
         except OperationError as exc:
@@ -1697,6 +1822,7 @@ class OperationService:
         async with self.db.write_lock:
             async with self.db.sessions.begin() as session:
                 await self._connection_agent(session, agent_id)
+                await self._expire_messages(session, agent_id)
                 messages = (
                     await session.scalars(
                         select(Message)
@@ -1709,25 +1835,7 @@ class OperationService:
                         .order_by(Message.created_at)
                     )
                 ).all()
-                pending: list[Envelope] = []
-                for message in messages:
-                    if message.expires_at is not None and message.expires_at < time.time():
-                        message.expired = True
-                        if message.body.get("type") == "task.dispatch":
-                            task = await session.get(Task, message.body["payload"]["task_id"])
-                            if task and task.status == "queued":
-                                task.status, task.updated_at = "expired", time.time()
-                                await self.coordination.terminal(session, task)
-                        session.add(
-                            AuditEvent(
-                                actor="system",
-                                action="message.expired",
-                                details={"agent_id": agent_id, "message_id": message.message_id},
-                            )
-                        )
-                    else:
-                        pending.append(Envelope.model_validate(message.body))
-                return pending
+                return [Envelope.model_validate(message.body) for message in messages]
 
     def _config_view(self, actor: str) -> JsonObject:
         if actor == "supervisor":

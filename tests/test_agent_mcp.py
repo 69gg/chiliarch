@@ -25,6 +25,7 @@ COORDINATION_TOOLS = {
     "acknowledge_messages",
     "send_message",
     "request_operation",
+    "project_tools",
     "get_request_result",
     "list_agents",
     "create_channel",

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from chiliarch import __version__
+from chiliarch.adapters.native import NativeInteraction
 
 JsonObject = dict[str, Any]
 Send = Callable[[JsonObject], Awaitable[None]]
@@ -192,6 +193,68 @@ class OpenCodeProtocol:
             }
         )
         raise OpenCodeProtocolError("Native OpenCode requires unsupported interactive client input")
+
+    async def handle_request(
+        self, event: JsonObject, send: Send, interact: NativeInteraction
+    ) -> None:
+        """Bridge ACP v1 permission choices without granting invented permissions."""
+        params = event.get("params")
+        if (
+            event.get("jsonrpc") != "2.0"
+            or not isinstance(params, dict)
+            or type(event.get("id")) not in {str, int}
+        ):
+            raise OpenCodeProtocolError("Native OpenCode emitted an invalid interactive request")
+        if (
+            self._finished
+            or self._session_id is None
+            or params.get("sessionId") != self._session_id
+        ):
+            raise OpenCodeProtocolError(
+                "Native OpenCode request does not belong to the active session"
+            )
+        if event.get("method") != "session/request_permission":
+            await self._reject_request(event, send)
+            return
+        options = params.get("options")
+        if (
+            not isinstance(options, list)
+            or not options
+            or any(
+                not isinstance(option, dict)
+                or not isinstance(option.get("optionId"), str)
+                or not option["optionId"]
+                or not isinstance(option.get("name"), str)
+                or option.get("kind")
+                not in {"allow_once", "allow_always", "reject_once", "reject_always"}
+                for option in options
+            )
+        ):
+            raise OpenCodeProtocolError("Native OpenCode emitted invalid permission choices")
+        if len({option["optionId"] for option in options}) != len(options):
+            raise OpenCodeProtocolError("Native OpenCode permission choice IDs must be unique")
+        answer = await interact(
+            {
+                "kind": "permission",
+                "title": "OpenCode 请求操作许可",
+                "native_method": "session/request_permission",
+                "details": params,
+                "options": [
+                    {"id": option["optionId"], "label": option["name"]} for option in options
+                ],
+            }
+        )
+        choice = answer.get("choice")
+        if choice not in {option["optionId"] for option in options}:
+            raise OpenCodeProtocolError("Native OpenCode approval did not select an offered option")
+        if not self._finished:
+            await send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": event["id"],
+                    "result": {"outcome": {"outcome": "selected", "optionId": choice}},
+                }
+            )
 
     def _notification(self, method: str, params: JsonObject) -> list[JsonObject]:
         if method != "session/update" or self._pending != "prompt" or self._finished:

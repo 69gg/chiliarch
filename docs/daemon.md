@@ -93,7 +93,7 @@ chiliarch daemon agents
 
 两种模式都能通过 MCP 读信、联系总管、查询同伴与协调。当前会话不会因后台收信自动被唤醒；Codex App 的无人值守工作使用同机独立 Codex CLI，不操纵 App 窗口。
 
-原生模型、认证、项目指令与权限按本机设置加载，任务只额外获得自己的 Chiliarch mailbox。平台 ask / auto / yolo 不替代原生审批。遇到原生交互要求无法继续时，需在原生宿主处理或由用户调整自己的设置。
+原生模型、认证、项目指令与权限按本机设置加载，任务只额外获得自己的 Chiliarch mailbox。平台 ask / auto / yolo 不替代原生审批。受支持的 Codex/OpenCode 原生交互可在平台待处理入口答复；其他原生交互仍需在宿主处理。
 
 任务可以选择已有绝对工作目录；同一实际目录的 Chiliarch 托管任务互斥。锁不影响手动 App、其他用户或外部程序。不要删除锁文件来并行写同一项目。
 
@@ -158,3 +158,12 @@ stop / restart / uninstall 会停止全部托管工作，先等任务结束。re
 当前用户登录服务跨 Windows、macOS、Linux 工作。Windows runner 支持原生 exe、标准 npm 安装入口和明确的 Python wrapper；自定义 cmd / bat 被拒绝时指定实际可执行入口，不拼接任务到 shell 命令。
 
 默认日志位于守护目录的 `logs/chiliarch.jsonl`，配置与轮换见[日志说明](configuration.md#日志存储与轮换)。升级见[升级指南](upgrading.md)，备份时保留守护目录、每个身份的状态库和 runner 设置。
+
+
+## GitHub 工作区与原生交互
+
+登记项目并绑定 agent 后，守护进程在自身数据目录的 `projects/` 下保存专用仓库、工作区、命令 journal 和发布验证目录。它使用当前用户的 Git/gh 登录与签名配置。各身份仍独立配对；同一守护进程集中执行仓库机械操作，不需要额外模型或入站端口。
+
+已停止且满足安全清理条件的工作区可以通过 `cleanup_project_workspace` 删除；脏文件、仍在运行的任务和结果未知的操作会阻止清理，不强制移除。
+
+Codex 支持命令/文件许可及信息问题的转发，OpenCode v1/v2 支持 ACP 权限请求。平台的原生请求入口收到请求后，按原选项答复；这不改变用户原生权限配置。Claude 当前 print 通道、Codex 扩展权限配置或其他未支持的原生交互仍需在宿主处理，不能静默批准。运行中取消会关闭等待并清理原生进程，不重开原生会话。

@@ -14,6 +14,7 @@
 | `acknowledge_messages` | 保存同一作用域的读取 cursor，不代替处理回执 |
 | `send_message` | 向总管汇报 / 提问；queued 仅表示本地排队 |
 | `request_operation` | 申请平台业务操作；保存 request_id，pending 时未获决定 |
+| `project_tools` | 获取项目、GitHub 与阶段工具的完整说明和参数 schema |
 | `get_request_result` | 查询同一个请求的批准、拒绝或失败结果 |
 | `list_agents` | 平台返回可发现同伴与已上报能力 |
 | `create_channel` | 创建有明确成员的讨论，可关联目标 |
@@ -72,3 +73,16 @@ Manual 先 claim_task，仅执行领取成功的任务，再按进展汇报。�
 原生宿主可能缓存工具定义。升级 Chiliarch 后，刷新工具列表、重连 MCP 或打开新会话；托管任务提示在新任务时生效，不打断正在执行的工作。
 
 [接入总览](index.md) · [消息协作](../collaboration.md) · [目标与验收](../coordination.md)。
+
+
+## GitHub 项目与阶段工具
+
+`project_tools` 是 MCP 的发现入口，返回项目与阶段操作的完整 schema、描述和风险。之后用 `request_operation(operation, arguments)` 调用，不必记住接入文档。总管直接拥有这些业务工具。
+
+常用流程是 `list_projects → get_project → create_project_work_item → start_project_work_item`；仓库准备成功才会创建原生任务。读取异步结果用 `get_project_command`；提交/PR 用 `deliver_project_work_item`，CI 查询用 `inspect_project_delivery`，评审用 `review_project_delivery`，合并用 `merge_project_delivery`。独立评审必须提供真实已完成的 reviewer Task，绑定准确的 delivery/head/base；不能只填写别人的 agent ID。
+
+Issue 可通过 `inspect_project_issue` 查看、`import_project_issue` 导入目标、`comment_project_issue` 汇报、`update_project_issue` 改状态/标签。未知副作用用 `reconcile_project_command` 查询，不重新创建变更。发布需要项目允许，并配置实际验证版本/变更日志的命令；使用 `publish_project_release` 和 `inspect_project_release` 跟进。
+
+等待协作者时，申请 `save_task_checkpoint`：提供当前 task_id、阶段 summary、产物和 waiting_for 任务 IDs。批准后正常结束本轮；等实际进程退出且依赖被验收后，状态变为 ready。总管用 `resume_task_checkpoint` 续接一次，保留同一原生会话和目录。失败、中断、未知状态不能自动续接；运行中的托管任务应请求总管安排续接，而不是自己再启动一份。
+
+Codex 托管任务可以通过原生 turn/steer 收到发给当前 task_id 的同伴消息；消息是协作资料，不是新权限。其他宿主继续主动 `read_messages` 或接收合法后续任务。即使注入成功，也仍需根据实际处理情况报告 processed，不能把传输确认当作业务完成。

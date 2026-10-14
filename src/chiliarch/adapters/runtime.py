@@ -14,7 +14,13 @@ from typing import Any, Literal
 
 from filelock import FileLock, Timeout
 
-from chiliarch.client import AgentClient, RuntimeMetadata, TaskExecutionError, TaskHandler
+from chiliarch.client import (
+    AgentClient,
+    RepositoryHandler,
+    RuntimeMetadata,
+    TaskExecutionError,
+    TaskHandler,
+)
 from chiliarch.config import TransportSettings
 from chiliarch.daemon_services import default_daemon_directory
 
@@ -172,6 +178,7 @@ async def outbound_client(
     options: TransportSettings | None = None,
     max_concurrent_tasks: int = 1,
     runtime_metadata: RuntimeMetadata | None = None,
+    repository_handler: RepositoryHandler | None = None,
 ) -> AsyncIterator[tuple[AgentClient, asyncio.Task[None]]]:
     async with connection_owner(state_path):
         client = await AgentClient.from_state(
@@ -181,6 +188,7 @@ async def outbound_client(
             max_concurrent_tasks=max_concurrent_tasks,
             manual_tasks=manual_tasks,
             runtime_metadata=runtime_metadata,
+            repository_handler=repository_handler,
         )
         task = asyncio.create_task(
             client.run(preferred=preferred), name="chiliarch.agent.connection"

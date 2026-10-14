@@ -14,7 +14,9 @@ from typing import Any, Literal
 import pytest
 
 from chiliarch.adapters.runners import RunnerError, RunnerHandler, RunnerSettings, create_handler
+from chiliarch.client import ClientStore
 from tests.test_agent_runners import process_running
+from tests.test_native_bridge import wait_requests
 from tests.test_runner_continuations import client_for, observed, run, task
 
 JsonObject = dict[str, Any]
@@ -185,7 +187,6 @@ async def test_task_workdir_changes_process_and_acp_cwd_but_not_default(
         {"result": {"stopReason": "cancelled"}},
         {"result": {"stopReason": "max_tokens"}},
         {"error": {"code": -32000, "message": "private-credential"}},
-        {"permission": True},
         {"exitcode": 2},
     ],
 )
@@ -199,12 +200,46 @@ async def test_output_or_zero_exit_cannot_replace_native_success(
                 {"task_id": "task", "instruction": "inspect"}, no_progress
             )
     assert "private-credential" not in str(failure.value)
-    if fixture.get("permission"):
-        assert "approval" in str(failure.value)
     if fixture.get("exitcode"):
         assert "exit code 2" in str(failure.value)
     execution = observed(tmp_path)
     assert not process_running(execution["pid"], expected_creation_time=execution["creation_time"])
+
+
+@pytest.mark.parametrize("kind", ["opencode", "opencode-v1"])
+async def test_pending_native_permission_requires_reply_and_timeout_cleans_process(
+    tmp_path: Path, kind: Kind
+) -> None:
+    configuration = settings(tmp_path, kind, permission=True)
+    state_path = tmp_path / "state.db"
+    handler = create_handler(configuration, state_path)
+    store = ClientStore(state_path)
+    await store.open()
+    active = asyncio.create_task(
+        handler({"task_id": "task", "instruction": "inspect"}, no_progress)
+    )
+    try:
+        request = (await wait_requests(store))[0]
+        assert request.payload["task_id"] == "task"
+        assert request.payload["kind"] == "permission"
+        assert request.payload["options"] == [{"id": "allow", "label": "Allow"}]
+        assert not active.done()
+        assert handler.runtime_metadata()["native_interactions"]["pending_task_ids"] == ["task"]
+        # Native output plus an unanswered approval cannot finish the task. Start
+        # the test deadline only after startup, so slow Windows workers are safe.
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await active
+        assert active.cancelled()
+        assert handler.runtime_metadata()["native_interactions"]["pending_task_ids"] == []
+        execution = observed(tmp_path)
+        assert not process_running(
+            execution["pid"], expected_creation_time=execution["creation_time"]
+        )
+    finally:
+        active.cancel()
+        await asyncio.gather(active, return_exceptions=True)
+        await store.close()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process identity requires native Windows")

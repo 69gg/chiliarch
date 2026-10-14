@@ -179,3 +179,12 @@ runner 不提供模型或权限覆盖。原生模型、provider、认证、沙�
 ## 启动更新开关
 
 `CHILIARCH_AUTO_UPDATE=0` 关闭新版本检查和安装，属于启动环境设置，不在 WebUI 热重载配置中。已有自启动服务需要刷新保存的环境，见[升级指南](upgrading.md#关闭自动更新)。
+
+
+## GitHub 项目设置
+
+项目设置在“项目”页面或总管工具中保存到平台数据库，不放入服务器 TOML。每个项目单独配置目标分支、受管节点/已有仓库路径、签名要求、必需 CI 检查、独立评审、合并方式、自动合并与发布权限。分支前缀可设置。
+
+`policy.observation_interval_seconds` 默认为 60 秒，设置 0 关闭自动只读观察。只在存在启用的事件规则、开放交付或待确认发布时查询；遵守 GitHub 返回的限流等待时间，相同结果不反复唤醒总管。
+
+发布配置的 `commands` 是命令名到 argv 数组的映射，`verify_command` 指向其中验证版本、变更日志及发布就绪状态的命令。支持 `{version}`、`{commit_sha}` 占位；`verify_timeout_seconds` 限制验证时间。tag 模板含 `{version}`，`workflow` 指定需要跟进的发布工作流，`release_owner` 选择 `workflow` 或 `daemon`。发布验证在精确提交的独立 worktree 执行，验证失败不打 tag。完整操作见 [GitHub 项目](github.md)。

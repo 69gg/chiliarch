@@ -313,7 +313,10 @@ async def test_runner_reports_resume_capability_and_workspace_identity(tmp_path:
     try:
         metadata = (await client.heartbeat()).payload["metadata"]
         assert metadata["supports_resume"] is True
-        assert metadata["notification_mode"] == "followup_task"
+        assert metadata["notification_mode"] == "turn_steer"
+        assert metadata["notification_fallback"] == "mcp_poll_or_followup_task"
+        assert metadata["native_interactions"]["permission"] is True
+        assert metadata["native_interactions"]["input"] is True
         assert metadata["workspace"] == str(tmp_path)
         assert metadata["workspace_id"]
         assert metadata["capacity"] == 1

@@ -162,3 +162,10 @@ chiliarch backup --database "/实际数据库路径/chiliarch.db" --output ./pla
 | 修改配置没有生效 | 模型等设置用于后续运行；监听地址、端口和数据库需重启 |
 
 下一步：[连接 agent](agents/index.md) · [创建目标](coordination.md) · [配置与日志](configuration.md)。
+
+
+## 启用 GitHub 协作
+
+完成基础安装后，在参与项目的 agent 机器上准备 Git、gh 及仓库认证，确认 Git 提交身份；需要签名时配置本机签名密钥。平台服务器无需登录 GitHub。随后按 [GitHub 项目指南](github.md) 登记仓库、绑定 agent、执行环境探测。
+
+专用副本和 worktree 会占用 agent 机器的磁盘。备份时按需保存守护进程数据中的命令 journal、工作区、原生会话和未交付改动；不要只备份服务器数据库就假定已保全节点上的工作。

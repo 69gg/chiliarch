@@ -464,6 +464,238 @@
       ],
       "title": "CollaborationMessagePayload",
       "type": "object"
+    },
+    "RepositoryCommandPayload": {
+      "additionalProperties": false,
+      "description": "Mechanical repository work, executed by an outbound daemon, never by the server.",
+      "properties": {
+        "command_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Command Id",
+          "type": "string"
+        },
+        "action": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        }
+      },
+      "required": [
+        "command_id",
+        "action"
+      ],
+      "title": "RepositoryCommandPayload",
+      "type": "object"
+    },
+    "RepositoryResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Command Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "command_id",
+        "status"
+      ],
+      "title": "RepositoryResultPayload",
+      "type": "object"
+    },
+    "NativeField": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/NativeOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "secret": {
+          "default": false,
+          "title": "Secret",
+          "type": "boolean"
+        },
+        "multiple": {
+          "default": false,
+          "title": "Multiple",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "NativeField",
+      "type": "object"
+    },
+    "NativeOption": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "NativeOption",
+      "type": "object"
+    },
+    "NativeRequestPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "permission",
+            "input"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "native_method": {
+          "minLength": 1,
+          "title": "Native Method",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/NativeOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/NativeField"
+          },
+          "title": "Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "interaction_id",
+        "task_id",
+        "kind",
+        "title",
+        "native_method"
+      ],
+      "title": "NativeRequestPayload",
+      "type": "object"
+    },
+    "NativeResponsePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "answer": {
+          "additionalProperties": true,
+          "title": "Answer",
+          "type": "object"
+        }
+      },
+      "required": [
+        "interaction_id",
+        "task_id",
+        "status"
+      ],
+      "title": "NativeResponsePayload",
+      "type": "object"
     }
   },
   "oneOf": [
@@ -610,6 +842,62 @@
     {
       "properties": {
         "type": {
+          "const": "repository.command"
+        },
+        "payload": {
+          "$ref": "#/$defs/RepositoryCommandPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "repository.result"
+        },
+        "payload": {
+          "$ref": "#/$defs/RepositoryResultPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "native.request"
+        },
+        "payload": {
+          "$ref": "#/$defs/NativeRequestPayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "native.response"
+        },
+        "payload": {
+          "$ref": "#/$defs/NativeResponsePayload"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
           "pattern": "^(?!task\\.|agent\\.|request\\.)[^.]+\\..+$",
           "not": {
             "enum": [
@@ -622,7 +910,11 @@
               "agent.contact",
               "agent.message",
               "request.resolved",
-              "collaboration.message"
+              "collaboration.message",
+              "repository.command",
+              "repository.result",
+              "native.request",
+              "native.response"
             ]
           }
         },
