@@ -119,6 +119,26 @@ async def test_platform_cli_stops_while_sse_client_continues_reading(
     configuration = configurations[0]
     assert configuration.timeout_graceful_shutdown == 1
     application = configuration.app
+    cleanup_entered = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    database_closed = asyncio.Event()
+    original_supervisor_stop = application.state.supervisor.stop
+    original_database_close = application.state.database.close
+
+    async def hold_application_cleanup() -> None:
+        # Uvicorn's graceful deadline bounds HTTP draining, not lifespan
+        # cleanup. A deterministic barrier proves these are separate phases
+        # without depending on the runner's SQLite/thread scheduling speed.
+        cleanup_entered.set()
+        await release_cleanup.wait()
+        await original_supervisor_stop()
+
+    async def close_database() -> None:
+        await original_database_close()
+        database_closed.set()
+
+    monkeypatch.setattr(application.state.supervisor, "stop", hold_application_cleanup)
+    monkeypatch.setattr(application.state.database, "close", close_database)
     lifespans: set[asyncio.Task[Any]] = set()
     track_lifespan(configuration, lifespans)
     server = uvicorn.Server(configuration)
@@ -129,6 +149,9 @@ async def test_platform_cli_stops_while_sse_client_continues_reading(
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         await wait_started(server, task)
+        maintenance = application.state.service._maintenance_task
+        sweeper = application.state.supervisor.sweeper
+        assert maintenance is not None and sweeper is not None
         pairing = await application.state.service.execute("create_pairing_code", {})
         async with httpx.AsyncClient(base_url=url, trust_env=False) as http:
             paired = await http.post(
@@ -160,17 +183,29 @@ async def test_platform_cli_stops_while_sse_client_continues_reading(
                     await asyncio.wait_for(heartbeat.wait(), 5)
                     assert not disconnected.is_set()
                     assert server.server_state.tasks
+                    requests = tuple(server.server_state.tasks)
                     server.should_exit = True
-                    done, pending = await asyncio.wait([task], timeout=5)
-                    assert done and not pending, "An active SSE stream must not prevent shutdown"
-                    task.result()
-                    await asyncio.wait_for(disconnected.wait(), 5)
+                    async with asyncio.timeout(5):
+                        await disconnected.wait()
+                        await asyncio.shield(asyncio.gather(*requests, return_exceptions=True))
+                        await cleanup_entered.wait()
                     assert not server.server_state.tasks
+                    assert not task.done(), "Shutdown must await application resource cleanup"
+                    assert not database_closed.is_set()
+                    release_cleanup.set()
+                    # SQLite connection cleanup must finish after HTTP tasks
+                    # stop. Give it its own deadline instead of spending that
+                    # same budget first on the intentionally persistent SSE.
+                    async with asyncio.timeout(5):
+                        await asyncio.shield(task)
                     assert application.state.supervisor.closed
                     assert application.state.service._maintenance_task is None
+                    assert maintenance.done() and sweeper.done()
+                    assert database_closed.is_set()
                 finally:
                     await cancel_and_join([reading])
     finally:
+        release_cleanup.set()
         try:
             await finish_server(server, task, lifespans)
         finally:
