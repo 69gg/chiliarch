@@ -60,6 +60,11 @@ system_prompt_as_user = false
 # Chat Completions / Responses 默认不设置输出上限；需要时可在此显式添加
 # 当前 API 支持的 max_completion_tokens / max_tokens 或 max_output_tokens。
 
+[github]
+# GitHub 项目功能默认开启；关闭后隐藏入口与工具并暂停自动观察。
+# 已提交的命令继续收尾，普通任务和 agent 协作不受影响。
+enabled = true
+
 [supervisor]
 mode = "auto"
 run_timeout = 600.0

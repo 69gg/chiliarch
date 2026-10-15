@@ -548,7 +548,22 @@ class OperationService:
         self.operations["resolve_native_interaction"].agent_requestable = False
 
     def schemas(self) -> list[JsonObject]:
-        return [operation.schema() for operation in self.operations.values()]
+        return [
+            operation.schema()
+            for operation in self.operations.values()
+            if self.settings_manager.current.github.enabled
+            or operation.name not in PROJECT_OPERATIONS
+        ]
+
+    def require_github_enabled(self) -> None:
+        if not self.settings_manager.current.github.enabled:
+            raise OperationError("GitHub functionality is disabled (github.enabled=false)", 409)
+
+    def _require_operation_enabled(self, name: str) -> None:
+        # Discovery remains callable by existing MCP clients so they receive a
+        # clear disabled result instead of relying on a previously saved schema.
+        if name in PROJECT_OPERATIONS and name != "list_project_tools":
+            self.require_github_enabled()
 
     def add_listener(self, callback: Listener) -> None:
         self.listeners.append(callback)
@@ -634,6 +649,7 @@ class OperationService:
     async def _project_policy(
         self, session: AsyncSession, operation: Operation, arguments: JsonObject, actor: str
     ) -> Operation:
+        self._require_operation_enabled(operation.name)
         if (
             operation.name not in PROJECT_OPERATIONS
             or operation.name in project_insights.OPERATIONS
@@ -691,6 +707,7 @@ class OperationService:
         extension_request_id: str | None = None
         async with self.db.write_lock:
             async with self.db.sessions.begin() as session:
+                self._require_operation_enabled(name)
                 if name == "resolve_native_interaction" and actor != "user":
                     native = await session.get(
                         native_interactions.NativeInteraction, validated["interaction_id"]
@@ -1162,6 +1179,9 @@ class OperationService:
     async def _core(
         self, session: AsyncSession, name: str, args: JsonObject, actor: str
     ) -> tuple[JsonObject, tuple[str, JsonObject] | None]:
+        # Approval execution recurses directly into _core, bypassing the normal
+        # execute/policy path. Recheck the live switch at this shared boundary.
+        self._require_operation_enabled(name)
         event: tuple[str, JsonObject] | None = None
         if name in native_interactions.OPERATIONS:
             return await native_interactions.execute(self, session, name, args, actor), None

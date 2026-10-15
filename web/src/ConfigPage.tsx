@@ -3,12 +3,14 @@ import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
 import { parseObject } from "./AgentsPage";
 import { ErrorNotice, JsonView } from "./components";
+import { isGitHubEnabled } from "./features";
 import type { Json, JsonObject, PlatformState } from "./types";
 
 const MASK = "********";
 const SECTION_LABELS: Record<string, string> = {
   model: "总管模型",
   supervisor: "总管运行",
+  github: "GitHub 功能",
   transport: "连接与队列",
   artifacts: "共享产物",
   logs: "日志存储与轮换",
@@ -98,8 +100,17 @@ const NULLABLE_NUMBERS = new Set([
   "anthropic_max_tokens",
 ]);
 
+function sectionValues(config: JsonObject, section: string): JsonObject {
+  const values = config[section] as JsonObject | undefined;
+  return section === "github"
+    ? { ...values, enabled: isGitHubEnabled(config) }
+    : (values ?? {});
+}
+
 export function configDraft(config: JsonObject): Record<string, string> {
-  const result: Record<string, string> = {};
+  const result: Record<string, string> = {
+    "github.enabled": String(isGitHubEnabled(config)),
+  };
   for (const [section, values] of Object.entries(config)) {
     if (!values || typeof values !== "object" || Array.isArray(values))
       continue;
@@ -134,7 +145,7 @@ export function configPatch(
       continue;
     if (field === "api_key" && !text) continue;
     if (text === original[path]) continue;
-    const values = config[section] as JsonObject;
+    const values = sectionValues(config, section);
     const previous = values[field];
     let value: Json;
     if (field === "headers" || field === "request_params")
@@ -276,13 +287,14 @@ export default function ConfigPage({
   const groups = [
     "model",
     "supervisor",
+    "github",
     "transport",
     "artifacts",
     "logs",
     "server",
     "auth",
     "database",
-  ].filter((section) => original[section]);
+  ].filter((section) => section === "github" || original[section]);
 
   return (
     <div className="configuration-page">
@@ -330,9 +342,17 @@ export default function ConfigPage({
                     任务停滞时通知总管核查；临时模型故障按退避间隔恢复。用户主动停止不会自动恢复。
                   </p>
                 )}
+                {section === "github" && (
+                  <p className="muted" id="github-feature-help">
+                    管理 GitHub 项目、Issue、分支、PR、CI
+                    与发布。保存后即时生效；关闭会隐藏项目入口并暂停新的 GitHub
+                    项目操作与后台观察，保留项目数据。已下发的仓库命令仍会完成并回写结果；普通
+                    agent 协作、原生请求和阶段续接不受影响。
+                  </p>
+                )}
               </div>
               <div className="settings-grid">
-                {Object.entries(original[section] as JsonObject)
+                {Object.entries(sectionValues(original, section))
                   .filter(([field]) => field !== "password_hash")
                   .filter(
                     ([field]) =>
@@ -458,7 +478,10 @@ function ConfigField({
   onChange: (value: string) => void;
 }): ReactNode {
   const id = `config-${section}-${field}`;
-  const label = LABELS[field] ?? field;
+  const label =
+    section === "github" && field === "enabled"
+      ? "启用 GitHub 功能"
+      : (LABELS[field] ?? field);
   if (typeof original === "boolean")
     return (
       <label className="checkbox-field" htmlFor={id}>
@@ -467,7 +490,11 @@ function ConfigField({
           type="checkbox"
           aria-label={label}
           aria-describedby={
-            field === "enable_thinking_param_enabled" ? `${id}-help` : undefined
+            section === "github" && field === "enabled"
+              ? "github-feature-help"
+              : field === "enable_thinking_param_enabled"
+                ? `${id}-help`
+                : undefined
           }
           checked={value === "true"}
           onChange={(event) => onChange(String(event.target.checked))}

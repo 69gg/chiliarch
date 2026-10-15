@@ -199,12 +199,20 @@ class ArtifactSettings(ConfigModel):
     max_total_bytes: int = Field(default=1024 * 1024 * 1024, ge=1)
 
 
+class GitHubSettings(ConfigModel):
+    enabled: bool = Field(
+        default=True,
+        description="Enable GitHub project tools and automatic observations. Disabling takes effect immediately; existing tasks and dispatched repository commands still finish and report results.",
+    )
+
+
 class Settings(ConfigModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     transport: TransportSettings = Field(default_factory=TransportSettings)
     artifacts: ArtifactSettings = Field(default_factory=ArtifactSettings)
+    github: GitHubSettings = Field(default_factory=GitHubSettings)
     model: ModelSettings = Field(default_factory=ModelSettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
     logs: LogSettings = Field(default_factory=LogSettings)

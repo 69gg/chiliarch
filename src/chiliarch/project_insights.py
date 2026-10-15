@@ -48,7 +48,7 @@ class RecommendAgents(ProjectId):
 SPECS: list[tuple[str, str, type[BaseModel], str, bool]] = [
     (
         "list_project_tools",
-        "Discover GitHub project operation schemas, descriptions, approval risks and prerequisites before requesting work. Returns no credentials and grants no permissions; project membership and current ask/auto/yolo policy are checked when an operation is requested.",
+        "Discover GitHub project operation schemas, descriptions, approval risks and prerequisites before requesting work. If github.enabled is false, returns enabled=false and no schemas; previously discovered tools cannot bypass the switch. Returns no credentials and grants no permissions; project membership and current ask/auto/yolo policy are checked when an operation is requested.",
         Empty,
         "low",
         False,
@@ -88,6 +88,12 @@ async def execute(
     from chiliarch.service import OperationError
 
     if name == "list_project_tools":
+        if not service.settings_manager.current.github.enabled:
+            return {
+                "enabled": False,
+                "tools": [],
+                "message": "GitHub functionality is disabled (github.enabled=false). Existing tasks and dispatched commands may finish; ordinary collaboration and task checkpoints remain available.",
+            }
         from chiliarch.github_issues import OPERATIONS as ISSUE_OPERATIONS
         from chiliarch.projects import OPERATIONS as PROJECT_OPERATIONS
         from chiliarch.task_stages import OPERATIONS as STAGE_OPERATIONS
@@ -100,7 +106,10 @@ async def execute(
                 "bind_project_agent",
                 "configure_project_rule",
             }
-        return {"tools": [service.operations[key].schema() for key in sorted(names)]}
+        return {
+            "enabled": True,
+            "tools": [service.operations[key].schema() for key in sorted(names)],
+        }
     project = await session.get(Project, args["project_id"])
     if project is None:
         raise OperationError("Project not found", 404)

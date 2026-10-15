@@ -386,6 +386,7 @@ class ProjectService:
     ) -> RepositoryCommand:
         from chiliarch.service import OperationError
 
+        self.service.require_github_enabled()
         await self._binding(session, project.id, agent_id)
         agent = await self.service._agent(session, agent_id)
         if not agent.metadata_json.get("supports_repository_commands"):
@@ -1490,6 +1491,8 @@ class ProjectService:
     async def _events(
         self, session: AsyncSession, project_id: str, events: list[JsonObject]
     ) -> None:
+        if not self.service.settings_manager.current.github.enabled:
+            return
         rules = (
             await session.scalars(
                 select(ProjectRule).where(
@@ -1824,6 +1827,8 @@ class ProjectService:
         """Schedule read-only observations; never replay an uncertain mutation."""
         from chiliarch.service import OperationError
 
+        if not self.service.settings_manager.current.github.enabled:
+            return False
         now = time.time()
         changed = False
         for project in (await session.scalars(select(Project))).all():

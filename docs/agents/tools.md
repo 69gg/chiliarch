@@ -79,6 +79,8 @@ Manual 先 claim_task，仅执行领取成功的任务，再按进展汇报。�
 
 `project_tools` 是 MCP 的发现入口，返回项目与阶段操作的完整 schema、描述和风险。之后用 `request_operation(operation, arguments)` 调用，不必记住接入文档。总管直接拥有这些业务工具。
 
+平台 `github.enabled=false` 时，GitHub 工具不可用；收到功能已关闭的结果后停止相关申请，不用旧 schema 重试。普通任务、消息及阶段操作继续可用。已提交的仓库命令保留结果，重新开启后可查询和核对。
+
 常用流程是 `list_projects → get_project → create_project_work_item → start_project_work_item`；仓库准备成功才会创建原生任务。读取异步结果用 `get_project_command`；提交/PR 用 `deliver_project_work_item`，CI 查询用 `inspect_project_delivery`，评审用 `review_project_delivery`，合并用 `merge_project_delivery`。独立评审必须提供真实已完成的 reviewer Task，绑定准确的 delivery/head/base；不能只填写别人的 agent ID。
 
 Issue 可通过 `inspect_project_issue` 查看、`import_project_issue` 导入目标、`comment_project_issue` 汇报、`update_project_issue` 改状态/标签。未知副作用用 `reconcile_project_command` 查询，不重新创建变更。发布需要项目允许，并配置实际验证版本/变更日志的命令；使用 `publish_project_release` 和 `inspect_project_release` 跟进。

@@ -8,6 +8,7 @@ import ConfigPage from "./ConfigPage";
 import GoalsPage from "./GoalsPage";
 import CollaborationPage from "./CollaborationPage";
 import NativeInteractions from "./NativeInteractions";
+import { isGitHubEnabled } from "./features";
 import type { JsonObject, PlatformState } from "./types";
 
 const ProjectsPage = lazy(() => import("./ProjectsPage"));
@@ -89,7 +90,10 @@ export default function App(): ReactNode {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [state, setState] = useState<PlatformState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState<Page>(initialPage);
+  const [requestedPage, setPage] = useState<Page>(initialPage);
+  const githubAvailable = !state || isGitHubEnabled(state.config);
+  const page =
+    requestedPage === "projects" && !githubAvailable ? "ai" : requestedPage;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem("chiliarch-sidebar-collapsed") === "true",
   );
@@ -145,6 +149,12 @@ export default function App(): ReactNode {
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
   }, []);
+  useEffect(() => {
+    if (!githubAvailable && requestedPage === "projects") {
+      setPage("ai");
+      history.replaceState(null, "", "#ai");
+    }
+  }, [githubAvailable, requestedPage]);
 
   const loadState = useCallback(async (): Promise<void> => {
     setRefreshing(true);
@@ -260,16 +270,18 @@ export default function App(): ReactNode {
             <NavIcon type="goals" />
             <span className="nav-label">目标</span>
           </button>
-          <button
-            className={page === "projects" ? "active" : ""}
-            aria-label="项目"
-            title={sidebarCollapsed ? "项目" : undefined}
-            aria-current={page === "projects" ? "page" : undefined}
-            onClick={() => navigate("projects")}
-          >
-            <NavIcon type="projects" />
-            <span className="nav-label">项目</span>
-          </button>
+          {githubAvailable && (
+            <button
+              className={page === "projects" ? "active" : ""}
+              aria-label="项目"
+              title={sidebarCollapsed ? "项目" : undefined}
+              aria-current={page === "projects" ? "page" : undefined}
+              onClick={() => navigate("projects")}
+            >
+              <NavIcon type="projects" />
+              <span className="nav-label">项目</span>
+            </button>
+          )}
           <button
             className={page === "collaboration" ? "active" : ""}
             aria-label="协作"

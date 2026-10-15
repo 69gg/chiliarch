@@ -95,6 +95,8 @@ Agent 配对默认登记 managed runner，状态库旁的本地 TOML 保存每�
 
 ## GitHub 项目与原生协作
 
+`github.enabled` 是默认开启、可热重载的平台功能门禁：统一操作入口、总管工具列表、WebUI 和自动观察共用这一配置。关闭不删除历史或伪造取消，已提交命令继续回写；原生交互与普通协作不依赖此开关。
+
 `projects` 保存项目、工作项、执行尝试、节点绑定、命令和交付证据；`github_issues` 关联显式导入的 Issue 与目标。`github_executor` 位于节点，用本机 Git/gh 执行结构化 argv，专用 clone/worktree 与持久 journal 隔离每次尝试。GitHub 凭据与签名私钥不上传平台，网络目标仅为该项目配置的 GitHub host / Git remote；服务端仍不连接节点。
 
 节点本地 SQLite 记录仓库命令与原生消息注入的副作用状态。平台上的项目状态由已认证结果投影；head/base 变化使旧评审失效，未知结果只核对。只读观察可转移到在线节点，合并、push、tag 等副作用不会因失联自动换机器重做。
