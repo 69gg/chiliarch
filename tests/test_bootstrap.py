@@ -175,6 +175,7 @@ raise SystemExit(7)
         "import json, os, subprocess, sys\n"
         "from pathlib import Path\n"
         "from typing import Any\n"
+        "from types import SimpleNamespace\n"
         "from chiliarch import bootstrap\n"
         f"target = {target!r}\n"
         "os.environ['TEST_LAUNCHER_PID'] = str(os.getpid())\n"
@@ -185,7 +186,10 @@ raise SystemExit(7)
         "    original_popen = subprocess.Popen\n"
         "    def start(arguments: list[str], **options: Any) -> subprocess.Popen[bytes]:\n"
         "        return original_popen(command(arguments), **options)\n"
-        "    bootstrap.subprocess.Popen = start\n"
+        # Limit interception to bootstrap. Replacing subprocess.Popen globally
+        # breaks Windows asyncio, whose Popen class is derived during CLI import.
+        "    bootstrap.subprocess = SimpleNamespace(Popen=start, DEVNULL=subprocess.DEVNULL, "
+        "CREATE_NO_WINDOW=subprocess.CREATE_NO_WINDOW)\n"
         "else:\n"
         "    original_exec = os.execve\n"
         "    def execute(path: str, arguments: list[str], environment: dict[str, str]) -> None:\n"
@@ -209,7 +213,12 @@ raise SystemExit(7)
         deadline = time.monotonic() + 10
         while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert ready.exists()
+        if not ready.exists():
+            stdout, stderr = process.communicate("\n", timeout=10)
+            pytest.fail(
+                f"Dispatch target did not start (exit={process.returncode}); "
+                f"stdout={stdout!r}; stderr={stderr!r}"
+            )
         assert process.poll() is None  # Windows launcher must await its still-running child.
         stdout, stderr = process.communicate("标准输入 中文\n", timeout=10)
         assert process.returncode == 7
@@ -261,13 +270,15 @@ for line in sys.stdin.buffer:
         "import json, subprocess, sys\n"
         "from pathlib import Path\n"
         "from typing import Any\n"
+        "from types import SimpleNamespace\n"
         "from chiliarch import bootstrap\n"
         f"target = {target!r}\n"
         "original_popen = subprocess.Popen\n"
         "def start(arguments: list[str], **options: Any) -> subprocess.Popen[bytes]:\n"
         "    assert arguments[1:6] == ['-I', '-X', 'utf8', '-m', 'chiliarch']\n"
         "    return original_popen([*arguments[:4], '-c', target], **options)\n"
-        "bootstrap.subprocess.Popen = start\n"
+        "bootstrap.subprocess = SimpleNamespace(Popen=start, DEVNULL=subprocess.DEVNULL, "
+        "CREATE_NO_WINDOW=subprocess.CREATE_NO_WINDOW)\n"
         "bootstrap._dispatch(Path(sys.executable).with_name('python.exe'), "
         "['agent', 'mcp', '--agent', 'worker'])\n",
         encoding="utf-8",
@@ -293,7 +304,14 @@ for line in sys.stdin.buffer:
                 frame = {"sequence": sequence, "message": "继续协作"}
                 process.stdin.write((json.dumps(frame) + "\n").encode())
                 await process.stdin.drain()
-                assert json.loads(await process.stdout.readline()) == {
+                reply = await process.stdout.readline()
+                if not reply:
+                    diagnostic = await process.stderr.read()
+                    pytest.fail(
+                        f"MCP target exited before replying (exit={await process.wait()}); "
+                        f"stderr={diagnostic!r}"
+                    )
+                assert json.loads(reply) == {
                     "request": frame,
                     "visible_console": False,
                     "marker": "1",
