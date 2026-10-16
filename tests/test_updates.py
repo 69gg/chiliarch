@@ -123,7 +123,8 @@ def test_prepares_separate_runtime_preserves_tool_and_selects_offline(
     monkeypatch.setattr(sys, "prefix", str(selected.parent.parent))
     monkeypatch.setattr(sys, "executable", str(selected))
     assert updates.select_runtime(check=False) is None
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
     assert (installer.directory / "update.log").is_file()
 
 
@@ -229,7 +230,7 @@ def test_failed_update_preserves_verified_runtime_and_no_secrets_in_logs(
     assert (installer.directory / "active.json").read_bytes() == previous
     assert selected is not None and selected.exists()
     captured = capsys.readouterr()
-    assert captured.out == "" and "secret" not in captured.err
+    assert captured.out == captured.err == ""
     assert "secret" not in (installer.directory / "update.log").read_text()
 
 
@@ -323,6 +324,70 @@ def test_installer_command_cannot_follow_uv_target_or_current_project(
     assert "UV_TARGET" not in environment and "UV_SYSTEM_PYTHON" not in environment
     assert "VIRTUAL_ENV" not in environment
     assert environment["HTTPS_PROXY"] == "http://proxy.invalid"
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_installer_commands_never_create_windows_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def command(arguments: list[str], **kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(updates.subprocess, "run", command)
+    updates._command(["fake-uv", "pip", "install"], timeout=1, cwd=tmp_path)
+    assert calls[0]["creationflags"] == (subprocess.CREATE_NO_WINDOW if platform == "win32" else 0)
+    assert calls[0]["stdin"] == subprocess.DEVNULL
+    assert calls[0]["stdout"] == subprocess.DEVNULL
+    assert calls[0]["stderr"] == subprocess.DEVNULL
+
+
+def test_pythonw_startup_selects_runtime_without_relaunching_console_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tags = tuple(updates.sys_tags())
+    monkeypatch.setattr(updates, "sys_tags", lambda: iter(tags))
+    monkeypatch.setattr(sys, "platform", "win32")
+    installer = Installer(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "executable", str(installer.origin / "Scripts/pythonw.exe"))
+    assert updates.select_runtime(check=False) is None
+    selected = updates.select_runtime(check=True)
+    assert selected is not None
+    create = installer.commands[0]
+    assert create[create.index("--python") + 1] == str(installer.origin / "Scripts/python.exe")
+    monkeypatch.setattr(sys, "prefix", str(selected.parent.parent))
+    monkeypatch.setattr(sys, "executable", str(selected.with_name("pythonw.exe")))
+    assert updates.select_runtime(check=False) is None
+
+
+def test_update_notice_without_standard_streams_is_logged(
+    installer: Installer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with monkeypatch.context() as silent:
+        silent.setattr(sys, "stdout", None)
+        silent.setattr(sys, "stderr", None)
+        updates._notice("后台更新完成")
+    assert "后台更新完成" in (installer.directory / "update.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console process creation")
+def test_real_installer_child_has_no_console(tmp_path: Path) -> None:
+    target = tmp_path / "console.json"
+    updates._command(
+        [
+            sys.executable,
+            "-c",
+            "import ctypes,json,sys; from pathlib import Path; "
+            "Path(sys.argv[1]).write_text(json.dumps(ctypes.windll.kernel32.GetConsoleWindow()))",
+            str(target),
+        ],
+        timeout=20,
+        cwd=tmp_path,
+    )
+    assert json.loads(target.read_text()) == 0
 
 
 def test_verification_really_checks_imports_version_and_shipped_resources(tmp_path: Path) -> None:

@@ -72,27 +72,33 @@ class _ToolReceipt:
 
 
 def _notice(message: str, directory: Path | None = None) -> None:
-    # MCP stdout is reserved for JSON-RPC, including when startup falls back.
-    print(f"Chiliarch 更新：{message}", file=sys.stderr)
-    if directory is not None:
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-            os.chmod(directory, 0o700)
-            handler = RotatingFileHandler(
-                directory / "update.log", maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
-            )
+    # Startup checks run silently, including failures that fall back to the
+    # installed version. pythonw may have no standard streams at all; MCP owns
+    # its streams and must never receive installer diagnostics either.
+    try:
+        if directory is None:
             try:
-                os.chmod(directory / "update.log", 0o600)
-                handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-                handler.emit(
-                    logging.LogRecord(
-                        "chiliarch.updates", logging.INFO, __file__, 0, message, (), None
-                    )
-                )
-            finally:
-                handler.close()
-        except OSError:
-            pass
+                receipt = _tool_receipt()
+            except (OSError, ValueError, TypeError, KeyError):
+                receipt = None
+            directory = receipt.directory if receipt is not None else None
+        if directory is None:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        handler = RotatingFileHandler(
+            directory / "update.log", maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
+        )
+        try:
+            os.chmod(directory / "update.log", 0o600)
+            handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+            handler.emit(
+                logging.LogRecord("chiliarch.updates", logging.INFO, __file__, 0, message, (), None)
+            )
+        finally:
+            handler.close()
+    except OSError:
+        pass
 
 
 def _enabled() -> bool:
@@ -205,6 +211,7 @@ def _command(arguments: list[str], *, timeout: float, cwd: Path) -> None:
         stderr=subprocess.DEVNULL,
         check=True,
         timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
     )
 
 
@@ -407,7 +414,7 @@ def _prepare(installation: Installation, version: Version) -> Path:
                 "--no-project",
                 "--no-python-downloads",
                 "--python",
-                sys.executable,
+                str(_python(Path(sys.prefix))) if sys.platform == "win32" else sys.executable,
                 str(prefix),
             ],
             timeout=CREATE_TIMEOUT_SECONDS,
@@ -498,6 +505,9 @@ def select_runtime(*, check: bool) -> Path | None:
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         if check:
             _notice("检查或安装未完成；继续使用已安装版本。", directory)
-    if selected is None or selected.absolute() == Path(sys.executable).absolute():
+    # The windowless Windows launcher and the console interpreter belong to the
+    # same runtime. Switching pythonw.exe to python.exe would create a redundant
+    # child (and could otherwise bring back a console at every startup).
+    if selected is None or selected.parent.parent.resolve() == Path(sys.prefix).resolve():
         return None
     return selected

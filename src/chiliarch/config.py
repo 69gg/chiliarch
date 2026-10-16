@@ -256,7 +256,13 @@ def atomic_write(path: Path, settings: Settings) -> None:
     atomic_write_toml(path, raw_settings(settings))
 
 
-def atomic_write_toml(path: Path, data: dict[str, Any]) -> None:
+class _ConfigurationChanged(OSError):
+    """A configuration was edited while preparing its missing defaults."""
+
+
+def atomic_write_toml(
+    path: Path, data: dict[str, Any], *, expected_content: bytes | None = None
+) -> None:
     """Persist validated TOML using the same private, cross-platform atomic write."""
     path.parent.mkdir(parents=True, exist_ok=True)
     content = tomli_w.dumps(data)
@@ -267,6 +273,17 @@ def atomic_write_toml(path: Path, data: dict[str, Any]) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        if expected_content is not None:
+            # Do not overwrite an editor or another process's newer configuration.
+            # This is a best-effort pre-replace check, not a filesystem transaction.
+            try:
+                unchanged = path.read_bytes() == expected_content
+            except FileNotFoundError:
+                unchanged = False
+            if not unchanged:
+                raise _ConfigurationChanged("Configuration changed before default persistence")
+            if not path.stat().st_mode & 0o222:
+                raise PermissionError("Configuration is read-only")
         os.replace(temporary, path)
         # Windows _commit supports file descriptors, but ordinary os.open
         # cannot open a directory. The file is already flushed before replace.
@@ -279,6 +296,21 @@ def atomic_write_toml(path: Path, data: dict[str, Any]) -> None:
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary)
+
+
+def _missing_defaults(
+    data: dict[str, Any], model: BaseModel, serialized: dict[str, Any]
+) -> dict[str, Any]:
+    """Fill model fields while retaining raw values and user-owned free-form maps."""
+    result = dict(data)
+    for field in type(model).model_fields:
+        if field not in serialized:
+            continue  # TOML has no null; optional None defaults remain omitted.
+        if field not in data:
+            result[field] = serialized[field]
+        elif isinstance(data[field], dict) and isinstance(getattr(model, field), BaseModel):
+            result[field] = _missing_defaults(data[field], getattr(model, field), serialized[field])
+    return result
 
 
 class SettingsManager:
@@ -295,12 +327,42 @@ class SettingsManager:
         self._task: asyncio.Task[None] | None = None
         self._mtime = self._file_stamp()
 
-    def _read(self) -> Settings:
-        data: dict[str, Any] = {}
-        if self.path and self.path.exists():
-            with self.path.open("rb") as stream:
-                data = tomllib.load(stream)
-        return Settings.model_validate(data)
+    def _read(self, *, persist_defaults: bool = True) -> Settings:
+        if self.path is None:
+            return Settings()
+        try:
+            source = self.path.read_bytes()
+        except FileNotFoundError:
+            return Settings()  # Loading defaults must not initialize an absent file.
+        data = tomllib.loads(source.decode("utf-8"))
+        candidate = Settings.model_validate(data)
+        # Invalid environment overrides must not cause a valid file to be rewritten.
+        self._effective(candidate)
+        complete = _missing_defaults(data, candidate, raw_settings(candidate))
+        if not persist_defaults or complete == data:
+            return candidate
+        try:
+            atomic_write_toml(self.path, complete, expected_content=source)
+        except _ConfigurationChanged:
+            logger.warning(
+                "Configuration changed while filling defaults; the newer file is retained. "
+                "Missing defaults remain active in memory and will be saved on the next load.",
+                extra={"event": "config.defaults_deferred", "path": str(self.path)},
+            )
+            return self._read(persist_defaults=False)
+        except OSError as error:
+            logger.warning(
+                "Cannot save new configuration defaults (%s); existing values are retained "
+                "and missing defaults remain active in memory.",
+                type(error).__name__,
+                extra={"event": "config.defaults_deferred", "path": str(self.path)},
+            )
+        else:
+            logger.info(
+                "Missing configuration fields filled with current defaults",
+                extra={"event": "config.defaults_saved", "path": str(self.path)},
+            )
+        return candidate
 
     def _effective(self, settings: Settings) -> Settings:
         result = Settings.model_validate(merge_config(raw_settings(settings), environment_patch()))

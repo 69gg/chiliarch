@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -24,9 +25,10 @@ from chiliarch.daemon_models import (
     DaemonError,
     read_configuration,
 )
-from chiliarch.daemon_services import ServiceManager, default_daemon_directory
+from chiliarch.daemon_services import ServiceError, ServiceManager, default_daemon_directory
 
 JsonObject = dict[str, Any]
+logger = logging.getLogger(__name__)
 
 
 class DaemonUnavailable(DaemonError):
@@ -425,6 +427,14 @@ async def ensure_daemon(directory: Path | None = None, *, autostart: bool = True
         service = await asyncio.to_thread(manager.status)
         if autostart and service.available and not service.installed:
             service = await asyncio.to_thread(manager.install)
+        elif service.available and service.installed:
+            try:
+                await asyncio.to_thread(manager.refresh)
+            except (ServiceError, OSError):
+                logger.warning(
+                    "Login startup definition could not be refreshed; preserving existing service",
+                    extra={"event": "daemon.startup_refresh_failed"},
+                )
         healthy = await _health(directory)
         if healthy is not None:
             return {**healthy, "reused": True, "autostart": asdict(service)}
@@ -454,6 +464,7 @@ async def ensure_daemon(directory: Path | None = None, *, autostart: bool = True
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=dict(os.environ, CHILIARCH_BACKGROUND="1"),
                 cwd=directory,
                 **options,
             )

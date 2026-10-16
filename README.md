@@ -90,7 +90,7 @@ Agents 可直接交换消息和文件，也可请求总管协助。工具说明�
 
 ## 日常维护
 
-标准 uv 工具安装默认在平台和守护进程启动时检查正式新版，更新失败继续使用已有版本。正在运行的任务不会被自动重启。手动升级使用 `uv tool upgrade chiliarch`；重启时机、固定版本和关闭自动更新见[升级指南](https://github.com/69gg/chiliarch/blob/main/docs/upgrading.md)。
+标准 uv 工具安装默认在平台和守护进程启动时静默检查正式新版，更新失败继续使用已有版本。Windows、macOS、Linux 的守护进程支持后台运行；Windows 旧启动项会自动调整为无窗口方式。缺少的新配置字段自动补入并采用新版默认值，已有设置保留。正在运行的任务不会被自动重启。手动升级使用 `uv tool upgrade chiliarch`；重启时机、固定版本和关闭自动更新见[升级指南](https://github.com/69gg/chiliarch/blob/main/docs/upgrading.md)。
 
 平台数据默认保存在配置目录下。运行中可用 `chiliarch backup --output ./platform-backup.db` 备份数据库；配置文件与各 agent 的状态文件另外保存。详见[备份与恢复](https://github.com/69gg/chiliarch/blob/main/docs/deployment.md#备份与恢复)。
 

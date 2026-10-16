@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from chiliarch import daemon_services
 from chiliarch.daemon_services import (
     CommandResult,
     ServiceError,
@@ -87,13 +88,20 @@ class NativeManager:
             action = args[1]
             if action == "/Create":
                 path = Path(args[args.index("/XML") + 1])
+                content = path.read_bytes().decode("utf-16")
+                task = ET.fromstring(content)
                 self.task = {
-                    "xml": path.read_bytes().decode("utf-16"),
-                    "enabled": True,
-                    "running": False,
+                    "xml": content,
+                    "enabled": task.findtext("t:Settings/t:Enabled", namespaces=NS) == "true",
+                    "running": self.task.get("running", False),
                 }
             elif action == "/Change":
                 self.task["enabled"] = "/Enable" in args
+                task = ET.fromstring(self.task["xml"])
+                enabled = task.find("t:Settings/t:Enabled", NS)
+                assert enabled is not None
+                enabled.text = str(self.task["enabled"]).lower()
+                self.task["xml"] = ET.tostring(task, encoding="unicode")
             elif action in {"/Run", "/End"}:
                 self.task["running"] = action == "/Run"
             elif action == "/Delete":
@@ -118,6 +126,9 @@ def manager(tmp_path: Path, platform: str) -> tuple[ServiceManager, NativeManage
         user_id=501,
     )
     native.manager = service
+    if platform == "win32":
+        service.python.parent.mkdir(parents=True, exist_ok=True)
+        service.python.with_name("pythonw.exe").touch()
     return service, native
 
 
@@ -165,6 +176,7 @@ def test_linux_definition_preserves_unicode_paths_and_disables_expansion(tmp_pat
         "PYTHONUTF8": "1",
         "PATH": "/custom bin:/usr/bin",
         "LANG": "zh_CN.UTF-8",
+        "CHILIARCH_BACKGROUND": "1",
     }
 
 
@@ -200,7 +212,9 @@ def test_windows_definition_is_user_bound_unprivileged_and_suitable_for_daemon(
     assert settings.findtext("t:StopIfGoingOnBatteries", namespaces=NS) == "false"
     assert settings.findtext("t:MultipleInstancesPolicy", namespaces=NS) == "IgnoreNew"
     assert settings.findtext("t:RestartOnFailure/t:Interval", namespaces=NS) == "PT1M"
-    assert task.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(service.python)
+    assert task.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(
+        service.python.with_name("pythonw.exe")
+    )
     assert task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS) == subprocess.list2cmdline(
         service._windows_command()[1:]
     )
@@ -261,6 +275,7 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
         {
             **directories,
             "CHILIARCH_AUTO_UPDATE": "false",
+            "CHILIARCH_BACKGROUND": "0",
             "OPENAI_API_KEY": "secret-openai",
             "ANTHROPIC_API_KEY": "secret-anthropic",
             "CLAUDE_CODE_OAUTH_TOKEN": "secret-oauth",
@@ -281,6 +296,7 @@ def test_startup_inherits_only_nonsecret_configuration_directories(
         "LANG": "zh_CN.UTF-8",
         **directories,
         "CHILIARCH_AUTO_UPDATE": "false",
+        **({"CHILIARCH_BACKGROUND": "1"} if platform != "win32" else {}),
     }
 
 
@@ -314,7 +330,13 @@ def test_windows_startup_applies_environment_in_same_process_without_shell(
         command[1:]
     )
     inherited = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
-    inherited.update({"CODEX_HOME": "different-login-default", "UNRELATED_RUNTIME": "retained"})
+    inherited.update(
+        {
+            "CODEX_HOME": "different-login-default",
+            "UNRELATED_RUNTIME": "retained",
+            "CHILIARCH_BACKGROUND": "0",
+        }
+    )
     # A Windows venv launcher can have a different PID from its Python interpreter.
     # Measure inside that interpreter, immediately before running the real bootstrap.
     command[2] = "import os;print(os.getpid(),flush=True);" + command[2]
@@ -335,6 +357,7 @@ def test_windows_startup_applies_environment_in_same_process_without_shell(
     assert received["arguments"] == service.command[3:]
     assert received["environment"].items() >= definition_environment(service).items()
     assert received["environment"]["UNRELATED_RUNTIME"] == "retained"
+    assert received["environment"]["CHILIARCH_BACKGROUND"] == "1"
     assert "API_KEY" not in received["environment"]
 
 
@@ -363,6 +386,248 @@ def test_windows_legacy_task_can_be_identified_and_upgraded(tmp_path: Path) -> N
     assert service.install().installed
     assert definition_environment(service)["CODEX_HOME"] == str(tmp_path / "native config")
     assert "/F" in next(call for call in native.calls if "/Create" in call)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("bootstrap", ["direct", "environment"])
+def test_windows_refresh_migrates_task_without_changing_user_settings(
+    tmp_path: Path, enabled: bool, bootstrap: str
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.environment["CODEX_HOME"] = str(tmp_path / "saved config")
+    service.install()
+    task = ET.fromstring(native.task["xml"])
+    command = task.find("t:Actions/t:Exec/t:Command", NS)
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", NS)
+    enabled_setting = task.find("t:Settings/t:Enabled", NS)
+    trigger = task.find("t:Triggers/t:LogonTrigger", NS)
+    assert command is not None and arguments is not None
+    assert enabled_setting is not None and trigger is not None
+    command.text = str(service.python)
+    if bootstrap == "direct":
+        arguments.text = subprocess.list2cmdline(service.command[1:])
+        original_environment: dict[str, str] = {}
+    else:
+        encoded = service._windows_command()
+        encoded[2] = daemon_services._WINDOWS_LEGACY_BOOTSTRAP
+        arguments.text = subprocess.list2cmdline(encoded[1:])
+        original_environment = definition_environment(service)
+    enabled_setting.text = str(enabled).lower()
+    ET.SubElement(trigger, f"{{{NS['t']}}}Delay").text = "PT17S"
+    native.task = {
+        "xml": ET.tostring(task, encoding="unicode"),
+        "enabled": enabled,
+        "running": True,
+    }
+    service.definition_path.write_text(native.task["xml"], encoding="utf-8")
+    service.environment["CODEX_HOME"] = str(tmp_path / "different shell config")
+    service.environment["PATH"] = "/different/login/path"
+    native.calls.clear()
+
+    assert service.refresh()
+    updated = ET.fromstring(native.task["xml"])
+    assert updated.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(
+        service.python.with_name("pythonw.exe")
+    )
+    updated_arguments = updated.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+    assert service._windows_environment(updated_arguments) == original_environment
+    assert updated_arguments == subprocess.list2cmdline(
+        service._windows_command(original_environment)[1:]
+    )
+    assert native.task["enabled"] is enabled
+    assert native.task["running"] is True
+    assert updated.findtext("t:Triggers/t:LogonTrigger/t:Delay", namespaces=NS) == "PT17S"
+    assert updated.findtext("t:Actions/t:Exec/t:WorkingDirectory", namespaces=NS) == str(
+        service.directory
+    )
+    assert not any("/Run" in call or "/End" in call or "/Change" in call for call in native.calls)
+    command.text = updated.findtext("t:Actions/t:Exec/t:Command", namespaces=NS)
+    arguments.text = updated_arguments
+    assert ET.tostring(updated) == ET.tostring(task)
+    assert service.status().installed
+    assert not service.refresh()
+    assert len([call for call in native.calls if "/Create" in call]) == 1
+
+
+def test_windows_refresh_enters_updated_runtime_instead_of_old_origin_bootstrap(
+    tmp_path: Path,
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.environment["CODEX_HOME"] = str(tmp_path / "saved native settings")
+    service.install()
+    original_environment = definition_environment(service)
+    task = ET.fromstring(native.task["xml"])
+    command = task.find("t:Actions/t:Exec/t:Command", NS)
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", NS)
+    assert command is not None and arguments is not None
+    original_pythonw = service.python.with_name("pythonw.exe")
+    command.text = str(service.python)
+    old_entry = service._windows_command(original_environment)
+    old_entry[2] = daemon_services._WINDOWS_LEGACY_BOOTSTRAP
+    arguments.text = subprocess.list2cmdline(old_entry[1:])
+    native.task["xml"] = ET.tostring(task, encoding="unicode")
+    service.definition_path.write_text(native.task["xml"], encoding="utf-8")
+    service.python = tmp_path / "updates" / "runtimes" / "new-version" / "Scripts" / "python.exe"
+    service.python.parent.mkdir(parents=True)
+    service.python.touch()
+    updated_pythonw = service.python.with_name("pythonw.exe")
+    updated_pythonw.touch()
+    service.environment["CODEX_HOME"] = str(tmp_path / "different launching shell")
+    native.calls.clear()
+    assert service.refresh()
+    updated = ET.fromstring(native.task["xml"])
+    assert updated.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(updated_pythonw)
+    assert original_pythonw.is_file()  # Existing old interpreters must not win selection.
+    assert (
+        service._windows_environment(
+            updated.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+        )
+        == original_environment
+    )
+    assert not service.refresh()
+    assert len([call for call in native.calls if "/Create" in call]) == 1
+    assert not any("/Run" in call or "/End" in call for call in native.calls)
+
+
+def test_windows_refresh_retains_existing_pythonw_when_current_runtime_has_none(
+    tmp_path: Path,
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.install()
+    original_pythonw = service.python.with_name("pythonw.exe")
+    service.python = tmp_path / "custom runtime" / "python.exe"
+    assert not service.refresh()
+    assert ET.fromstring(native.task["xml"]).findtext(
+        "t:Actions/t:Exec/t:Command", namespaces=NS
+    ) == str(original_pythonw)
+
+
+def test_windows_refresh_uses_current_environment_if_old_interpreter_was_removed(
+    tmp_path: Path,
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.install()
+    service.python.with_name("pythonw.exe").unlink()
+    service.python = tmp_path / "new tool" / "Scripts" / "python.exe"
+    service.python.parent.mkdir(parents=True)
+    service.python.with_name("pythonw.exe").touch()
+    assert service.refresh()
+    assert ET.fromstring(native.task["xml"]).findtext(
+        "t:Actions/t:Exec/t:Command", namespaces=NS
+    ) == str(service.python.with_name("pythonw.exe"))
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_refresh_does_not_install_missing_tasks_or_modify_other_platforms(
+    tmp_path: Path, platform: str
+) -> None:
+    service, native = manager(tmp_path, platform)
+    assert not service.refresh()
+    assert not service.definition_path.exists()
+    assert not native.task
+    if platform != "win32":
+        service.install()
+        service.disable()
+        content = service.definition_path.read_bytes()
+        native.calls.clear()
+        assert not service.refresh()
+        assert service.definition_path.read_bytes() == content
+        assert not native.calls
+        assert not service.status().enabled
+
+
+def test_refresh_registration_failure_keeps_previous_definition_and_task(tmp_path: Path) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.install()
+    task = ET.fromstring(native.task["xml"])
+    command = task.find("t:Actions/t:Exec/t:Command", NS)
+    assert command is not None
+    command.text = str(service.python)
+    native.task["xml"] = ET.tostring(task, encoding="unicode")
+    previous_task = dict(native.task)
+    previous_content = service.definition_path.read_bytes()
+    native.fail_action = "/Create"
+    with pytest.raises(ServiceError, match="registration denied"):
+        service.refresh()
+    assert native.task == previous_task
+    assert service.definition_path.read_bytes() == previous_content
+    assert not list(service.directory.glob("service-refresh-*.xml"))
+
+
+def test_windows_service_refuses_visible_interpreter_when_pythonw_is_missing(
+    tmp_path: Path,
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    service.python.with_name("pythonw.exe").unlink()
+    with pytest.raises(ServiceError, match="pythonw.exe"):
+        service.install()
+    assert not native.task
+    assert not service.definition_path.exists()
+
+
+def test_windows_refresh_does_not_claim_foreign_or_unavailable_tasks(tmp_path: Path) -> None:
+    service, native = manager(tmp_path, "win32")
+    native.task = {
+        "xml": '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Actions /></Task>'
+    }
+    with pytest.raises(ServiceError, match="unowned|another application"):
+        service.refresh()
+    assert not any("/Create" in call for call in native.calls)
+    native.fail_action = "-Command"
+    assert not service.refresh()
+    assert not service.definition_path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises the real Windows GUI interpreter")
+def test_windows_pythonw_bootstrap_has_no_console(tmp_path: Path) -> None:
+    service = ServiceManager(tmp_path / "daemon", platform="win32", environment={})
+    result_file = tmp_path / "result.json"
+    package = tmp_path / "chiliarch"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__main__.py").write_text(
+        "import ctypes,json,os,sys\n"
+        "from pathlib import Path\n"
+        "ctypes.windll.kernel32.GetConsoleWindow.restype=ctypes.c_void_p\n"
+        f"Path({str(result_file)!r}).write_text(json.dumps({{"
+        "'console':ctypes.windll.kernel32.GetConsoleWindow(),"
+        "'background':os.environ.get('CHILIARCH_BACKGROUND'),"
+        "'arguments':sys.argv[1:]}),encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        service._windows_command(),
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+        check=True,
+    )
+    received = json.loads(result_file.read_text(encoding="utf-8"))
+    assert received["console"] is None
+    assert received["background"] == "1"
+    assert received["arguments"] == service.command[3:]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_native_service_commands_do_not_create_windows_consoles(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    received: dict[str, Any] = {}
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        received.update(kwargs)
+        return subprocess.CompletedProcess(arguments, 0, "result", "")
+
+    monkeypatch.setattr(daemon_services.sys, "platform", platform)
+    monkeypatch.setattr(daemon_services.subprocess, "CREATE_NO_WINDOW", 123, raising=False)
+    monkeypatch.setattr(daemon_services.subprocess, "run", run)
+    assert daemon_services._execute(["powershell.exe", "-NoProfile"]) == CommandResult(
+        0, "result", ""
+    )
+    assert received["creationflags"] == (123 if platform == "win32" else 0)
+    assert received["stdin"] == subprocess.DEVNULL
 
 
 @pytest.mark.parametrize("tampering", ["bootstrap", "environment", "arguments", "encoding"])

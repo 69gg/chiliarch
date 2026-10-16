@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from test_updates import Installer
@@ -78,7 +78,10 @@ def test_dispatch_once_and_consume_marker(monkeypatch: pytest.MonkeyPatch) -> No
     assert "CHILIARCH_UPDATE_BOOTSTRAPPED" not in os.environ
 
 
-def test_failed_process_creation_uses_current_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_process_creation_uses_current_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    installer = Installer(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "chiliarch.updates.select_runtime", Mock(return_value=Path("missing-python"))
     )
@@ -88,6 +91,43 @@ def test_failed_process_creation_uses_current_runtime(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "argv", ["chiliarch", "--version"])
     bootstrap.main()
     execute.assert_called_once_with()
+    assert "新版无法启动" in (installer.directory / "update.log").read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("arguments", "marker", "background"),
+    [
+        (["daemon", "run"], "1", True),
+        (["serve", "--port", "9000"], "1", True),
+        (["daemon", "run"], "0", False),
+        (["agent", "mcp", "--agent", "worker"], "1", False),
+        (["daemon", "status"], "1", False),
+        (["--version"], "1", False),
+        (["daemon", "run", "--help"], "1", False),
+    ],
+)
+def test_windows_background_dispatch_keeps_service_hidden_and_mcp_connected(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str], marker: str, background: bool
+) -> None:
+    monkeypatch.setenv("CHILIARCH_BACKGROUND", marker)
+    # Do not replace the host os.name globally: pathlib and pytest also use it.
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name="nt", environ=os.environ))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    process = MagicMock()
+    process.__enter__.return_value.wait.return_value = 7
+    start = Mock(return_value=process)
+    monkeypatch.setattr(bootstrap.subprocess, "Popen", start)
+    with pytest.raises(SystemExit) as error:
+        bootstrap._dispatch(Path("new-python"), arguments)
+    assert error.value.code == 7
+    options = start.call_args.kwargs
+    assert options["creationflags"] == (subprocess.CREATE_NO_WINDOW if background else 0)
+    for stream in ("stdin", "stdout", "stderr"):
+        assert options[stream] == (subprocess.DEVNULL if background else None)
+    assert options["env"]["CHILIARCH_UPDATE_BOOTSTRAPPED"] == "1"
+    process.__enter__.return_value.wait.assert_called_once_with()
 
 
 def test_real_dispatch_preserves_stdio_arguments_cwd_and_exit(tmp_path: Path) -> None:
@@ -149,6 +189,7 @@ raise SystemExit(7)
     process = subprocess.Popen(
         [sys.executable, str(launcher)],
         cwd=tmp_path,
+        env=dict(os.environ, CHILIARCH_BACKGROUND="1"),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -255,8 +296,11 @@ def test_failed_server_startup_update_still_serves_existing_config(
     installer.failure = failure
     config = tmp_path / "server.toml"
     config.write_text('[auth]\npassword_hash = "existing-hash"\n', encoding="utf-8")
-    before = config.read_bytes()
     manager = SettingsManager(config)
+    assert manager.saved.auth.password_hash == "existing-hash"
+    # Loading may fill newly introduced defaults; update failure must not alter
+    # the resulting saved configuration or replace its existing credentials.
+    before = config.read_bytes()
     application = SimpleNamespace(state=SimpleNamespace(settings_manager=manager))
     created: list[Path] = []
 

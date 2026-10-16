@@ -311,7 +311,8 @@ class WindowsJob:
 _WINDOWS_BOOTSTRAP = (
     "import os,subprocess,sys;"
     "gate=os.read(0,1);"
-    "sys.exit(subprocess.call(sys.argv[1:]) if gate == b'G' else 125)"
+    "sys.exit(subprocess.call(sys.argv[1:],creationflags=subprocess.CREATE_NO_WINDOW) "
+    "if gate == b'G' else 125)"
 )
 
 
@@ -418,6 +419,10 @@ async def _spawn(command: list[str], cwd: Path, limit: int) -> ProcessTree:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=job is None,
+            # Neither the bootstrap nor its worker may create a console when
+            # the daemon runs under pythonw. Pipes and Job ownership remain
+            # unchanged; native permission questions still use their protocol.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if job else 0,
             limit=limit,
         )
         if job:

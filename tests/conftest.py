@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,4 +16,10 @@ def isolated_runner_workspace_state(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "chiliarch.adapters.runtime.default_daemon_directory",
         lambda: tmp_path / "runner-state" / "daemon",
+    )
+    # Runtime tests must never query/change the developer's login tasks. Native
+    # definition tests instantiate their own real manager with a fake executor.
+    monkeypatch.setattr(
+        "chiliarch.daemon.ServiceManager",
+        lambda directory: SimpleNamespace(refresh=lambda: False),
     )

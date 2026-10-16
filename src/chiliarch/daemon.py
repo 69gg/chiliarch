@@ -32,6 +32,7 @@ from chiliarch.daemon_models import (
     private_write,
     read_configuration,
 )
+from chiliarch.daemon_services import ServiceError, ServiceManager
 from chiliarch.github_executor import GitHubExecutor
 from chiliarch.logging import close_logging, configure_logging
 
@@ -371,6 +372,21 @@ async def run_daemon(directory: Path) -> None:
     try:
         runtime = DaemonRuntime(directory)
         configure_logging(runtime.configuration.logs, shared=True)
+        # Reconcile owned login entries with this version before serving. This
+        # does not restart this process or re-enable deliberately disabled tasks.
+        try:
+            refreshed = await asyncio.to_thread(ServiceManager(directory).refresh)
+        except (ServiceError, OSError):
+            logger.warning(
+                "Login startup definition could not be refreshed; continuing daemon startup",
+                extra={"event": "daemon.startup_refresh_failed"},
+            )
+        else:
+            if refreshed:
+                logger.info(
+                    "Login startup definition updated",
+                    extra={"event": "daemon.startup_refreshed"},
+                )
         listener.bind(("127.0.0.1", runtime.configuration.port))
         listener.setblocking(False)
         server = uvicorn.Server(

@@ -34,7 +34,7 @@ chiliarch daemon run
 
 | 系统 | 使用方式 | 运行身份 |
 | --- | --- | --- |
-| Windows | 当前用户登录触发的计划任务 | 当前用户，普通权限 |
+| Windows | 当前用户登录触发的无窗口计划任务 | 当前用户，普通权限 |
 | macOS | LaunchAgent | 当前用户 |
 | Linux | systemd 用户服务 | 当前用户，不默认开启 linger |
 
@@ -47,6 +47,10 @@ chiliarch daemon autostart enable
 ```
 
 禁用自启动保留服务数据和配对身份，仍可以 `daemon start` 手动运行。自启动登记和健康检查分别报告，设置完成后以 status 的实际结果为准。
+
+这三种自启动方式都在后台运行，无需保留终端。Windows 更新、启动原生 agent 和执行 GitHub 仓库命令也不会额外弹出控制台。旧版 Chiliarch 的 Windows 启动项在新版首次运行时自动调整，保留原环境和禁用状态；若当次窗口已由旧启动器打开，下一次重启即使用新方式。详见[自动升级](upgrading.md)。
+
+你手动执行 `daemon run` 时仍在前台运行，直接关闭它的终端会中断服务。需要停止时优先在另一个终端执行 `chiliarch daemon stop`；要长期运行则使用 `daemon start`，确认健康后可关闭发出命令的终端。
 
 ## 目录与本地通信
 
@@ -127,7 +131,7 @@ chiliarch daemon install
 chiliarch daemon status
 ```
 
-两次使用同一守护目录，独立目录每次都传原 `--directory`。卸载会停止本机全部身份，但保留登记、状态库与日志。只运行 start / restart / install 不会重写已有环境快照。
+两次使用同一守护目录，独立目录每次都传原 `--directory`。卸载会停止本机全部身份，但保留登记、状态库与日志。自动升级启动方式只更新程序管理的启动逻辑，start / restart / install 不会用新终端变量覆盖已有环境快照。
 
 自启动也保存 `CHILIARCH_AUTO_UPDATE` 和已设置的 uv 路径变量；更新开关改变时同样按上述步骤刷新。前台运行则从预期环境重新启动即可。
 

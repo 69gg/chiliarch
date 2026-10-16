@@ -42,6 +42,8 @@ OpenCode 必须核实**当前会话实际程序**的 --version 与 acp --help：
 3. 服务健康则复用；已安装但停止则 daemon start；确实没有才 daemon install。
 4. 检查实际健康与自启动状态，默认当前用户登录后启动。系统管理器不支持时说明前台 / 后台替代，不声称自启动成功。
 
+默认使用 daemon install / start 的后台方式，不要为长期运行留下 daemon run 前台窗口。Windows、macOS 和 Linux 的更新均为静默启动检查，Windows 原生托管进程不创建控制台。旧版启动项会自动调整，缺失的新配置项采用新版默认值；保留用户的显式配置、已有配对及禁用自启动选择，不为升级重新 init 或配对。如果第一次更新由旧 Windows 启动器打开了窗口，空闲后再 restart 应用新的启动方式。
+
 服务健康但软件版本不同，不必强制重启；以本地 API 兼容性为准。服务不健康或不兼容时先处理阻塞，保留登记和状态，不强停其他正在执行的任务。
 
 只核对 PATH、CODEX_HOME、CLAUDE_CONFIG_DIR、OPENCODE_CONFIG 等非秘密目录环境。自启动保存安装时的环境，不会因你在新终端设置变量而更新；刷新方式见守护指南。OPENCODE_CONFIG_CONTENT 可能含秘密，不复制进启动项，需要持久配置时请用户选择原生私有文件。

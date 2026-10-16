@@ -32,10 +32,83 @@ from chiliarch.daemon_models import (
     private_write,
     read_configuration,
 )
-from chiliarch.daemon_services import ServiceStatus
+from chiliarch.daemon_services import ServiceError, ServiceStatus
 from chiliarch.protocol import Envelope
 
 WORKSPACE = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("refresh_result", [True, False, "unavailable", "readonly"])
+async def test_daemon_refreshes_owned_startup_without_changing_user_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_result: bool | str,
+) -> None:
+    directory = tmp_path / "upgraded daemon"
+    directory.mkdir()
+    config_file = directory / "daemon.json"
+    # An older/minimal config gets new defaults without replacing explicit values.
+    private_write(config_file, {"port": 0, "graceful_shutdown_seconds": 7, "agents": []})
+    original_config = config_file.read_bytes()
+    refreshed: list[Path] = []
+
+    class Startup:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def refresh(self) -> bool:
+            from filelock import FileLock, Timeout
+
+            assert config_file.read_bytes() == original_config
+            with pytest.raises(Timeout):
+                with FileLock(str(self.path / "daemon.lock"), timeout=0):
+                    pytest.fail("Only the daemon owning the directory may refresh its startup")
+            refreshed.append(self.path)
+            if refresh_result == "unavailable":
+                raise ServiceError("Task Scheduler temporarily unavailable")
+            if refresh_result == "readonly":
+                raise PermissionError("Task definition is temporarily read-only")
+            return bool(refresh_result)
+
+    monkeypatch.setattr("chiliarch.daemon.ServiceManager", Startup)
+    running = asyncio.create_task(run_daemon(directory))
+    try:
+        async with DaemonClient(directory) as client:
+            async with asyncio.timeout(10):
+                while True:
+                    if running.done():
+                        running.result()
+                    try:
+                        health = await client.health()
+                        break
+                    except DaemonError:
+                        await asyncio.sleep(0.01)
+            assert health["status"] == "ok"
+            assert refreshed == [directory.resolve()]
+            # Daemon startup already persists model defaults; the saved custom
+            # values survive both startup reconciliation and normalization.
+            assert (
+                json.loads(config_file.read_bytes()).items() >= json.loads(original_config).items()
+            )
+            config = read_configuration(directory)
+            assert config.graceful_shutdown_seconds == 7
+            assert config.startup_timeout_seconds == 20
+            if refresh_result:
+                from chiliarch.logging import tail_logs
+
+                events = {line.get("event") for line in tail_logs(config.logs)}
+                event = (
+                    "daemon.startup_refresh_failed"
+                    if refresh_result in {"unavailable", "readonly"}
+                    else "daemon.startup_refreshed"
+                )
+                assert event in events
+            await client.shutdown()
+            await asyncio.wait_for(asyncio.shield(running), 10)
+    finally:
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
 
 
 async def paired_state(path: Path, name: str) -> None:
@@ -347,11 +420,52 @@ class UnavailableService:
 
 
 class DisabledService(UnavailableService):
+    def refresh(self) -> bool:
+        return False
+
     def status(self) -> ServiceStatus:
         return ServiceStatus("fixture", True, True, False, False)
 
     def start(self) -> ServiceStatus:
         raise AssertionError("Disabled login tasks must use manual background startup")
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_existing_service_is_refreshed_before_start_or_healthy_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    running: bool,
+    refresh_fails: bool,
+) -> None:
+    actions: list[str] = []
+
+    class InstalledService(UnavailableService):
+        def status(self) -> ServiceStatus:
+            return ServiceStatus("fixture", True, True, True, running or "start" in actions)
+
+        def refresh(self) -> bool:
+            actions.append("refresh")
+            if refresh_fails:
+                raise PermissionError("Task definition is temporarily read-only")
+            return True
+
+        def start(self) -> ServiceStatus:
+            assert actions == ["refresh"]
+            actions.append("start")
+            return self.status()
+
+    async def health(directory: Path) -> dict[str, Any] | None:
+        assert "refresh" in actions
+        if running or "start" in actions:
+            return {"status": "ok", "directory": str(directory)}
+        return None
+
+    monkeypatch.setattr("chiliarch.daemon_client.ServiceManager", InstalledService)
+    monkeypatch.setattr("chiliarch.daemon_client._health", health)
+    result = await ensure_daemon(tmp_path)
+    assert result["reused"] is running
+    assert actions == (["refresh"] if running else ["refresh", "start"])
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -480,6 +594,8 @@ async def test_concurrent_ensure_starts_once_and_preserves_autostart_preference(
     def spawn(command: list[str], **options: Any) -> Any:
         started.append(command)
         assert options["cwd"] == tmp_path
+        assert options["env"]["CHILIARCH_BACKGROUND"] == "1"
+        assert options["stdin"] == options["stdout"] == options["stderr"] == subprocess.DEVNULL
         return type("Child", (), {"poll": lambda self: None})()
 
     monkeypatch.setattr("chiliarch.daemon_client._health", health)

@@ -14,6 +14,7 @@ import plistlib
 import shlex
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -49,11 +50,14 @@ _SAFE_ENVIRONMENT = (
 )
 # Task Scheduler has no per-action environment. Apply only the captured whitelist
 # in the same Python process before entering the CLI, without invoking a shell.
-_WINDOWS_BOOTSTRAP = (
+_WINDOWS_LEGACY_BOOTSTRAP = (
     "import base64,json,os,runpy,sys;"
     "environment,sys.argv=json.loads(base64.b64decode(sys.argv[1]));"
     "os.environ.update(environment);"
     "runpy.run_module('chiliarch',run_name='__main__',alter_sys=True)"
+)
+_WINDOWS_BOOTSTRAP = _WINDOWS_LEGACY_BOOTSTRAP.replace(
+    "runpy.run_module(", "os.environ['CHILIARCH_BACKGROUND']='1';runpy.run_module("
 )
 
 
@@ -120,6 +124,8 @@ def _execute(arguments: Sequence[str]) -> CommandResult:
         errors="replace",
         timeout=30,
         check=False,
+        stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
     )
     return CommandResult(result.returncode, result.stdout, result.stderr)
 
@@ -233,6 +239,7 @@ class ServiceManager:
             "HOME": str(self.home),
             "PYTHONUTF8": "1",
             **{key: self.environment[key] for key in _SAFE_ENVIRONMENT if key in self.environment},
+            **({"CHILIARCH_BACKGROUND": "1"} if self.platform != "win32" else {}),
         }
 
     def _linux_definition(self) -> bytes:
@@ -321,7 +328,7 @@ class ServiceManager:
             actions,
             "Exec",
             {
-                "Command": str(self.python),
+                "Command": str(self._windows_python()),
                 "Arguments": subprocess.list2cmdline(self._windows_command()[1:]),
                 "WorkingDirectory": str(self.directory),
             },
@@ -329,33 +336,56 @@ class ServiceManager:
         content: bytes = ET.tostring(task, encoding="utf-16", xml_declaration=True)
         return content
 
-    def _windows_command(self) -> list[str]:
+    def _windows_python(self, existing: str | None = None) -> Path:
+        # Enter through this validated runtime on the next login. An older uv
+        # origin may still contain a bootstrap that launches a visible console
+        # while selecting the new runtime, even when its own entry is pythonw.
+        # Updated runtimes keep their origin marker and remain able to select
+        # later automatic releases or a manually upgraded uv tool installation.
+        candidates = [self.python, Path(existing)] if existing else [self.python]
+        for interpreter in candidates:
+            pythonw = interpreter.with_name("pythonw.exe")
+            if pythonw.is_file():
+                return pythonw
+        raise ServiceError("This Python installation has no pythonw.exe for background startup")
+
+    def _windows_command(
+        self,
+        environment: Mapping[str, str] | None = None,
+        *,
+        python_executable: Path | None = None,
+    ) -> list[str]:
         # Encode data separately from the fixed code and Windows argument quoting.
         # This also prevents Task Scheduler from expanding %NAME% in CLI arguments.
-        payload = json.dumps([self._environment(), self.command[2:]]).encode("utf-8")
+        payload = json.dumps(
+            [self._environment() if environment is None else dict(environment), self.command[2:]]
+        ).encode("utf-8")
         return [
-            str(self.python),
+            str(python_executable or self._windows_python()),
             "-c",
             _WINDOWS_BOOTSTRAP,
             base64.b64encode(payload).decode("ascii"),
         ]
 
-    def _owns_windows_arguments(self, arguments: str | None) -> bool:
+    def _windows_environment(self, arguments: str | None) -> dict[str, str] | None:
         if arguments == subprocess.list2cmdline(self.command[1:]):
-            return True  # Entries installed before environment inheritance remain manageable.
-        prefix = subprocess.list2cmdline(["-c", _WINDOWS_BOOTSTRAP]) + " "
-        if arguments is None or not arguments.startswith(prefix):
-            return False
-        payload = json.loads(base64.b64decode(arguments[len(prefix) :], validate=True))
-        if not isinstance(payload, list) or len(payload) != 2:
-            return False
-        environment, command = payload
-        return (
-            command == self.command[2:]
-            and isinstance(environment, dict)
-            and environment.keys() <= {*_SAFE_ENVIRONMENT, "HOME", "PYTHONUTF8"}
-            and all(isinstance(value, str) for value in environment.values())
-        )
+            return {}  # Old entries inherited the login environment without overrides.
+        for bootstrap in (_WINDOWS_BOOTSTRAP, _WINDOWS_LEGACY_BOOTSTRAP):
+            prefix = subprocess.list2cmdline(["-c", bootstrap]) + " "
+            if arguments is None or not arguments.startswith(prefix):
+                continue
+            payload = json.loads(base64.b64decode(arguments[len(prefix) :], validate=True))
+            if not isinstance(payload, list) or len(payload) != 2:
+                return None
+            environment, command = payload
+            if (
+                command == self.command[2:]
+                and isinstance(environment, dict)
+                and environment.keys() <= {*_SAFE_ENVIRONMENT, "HOME", "PYTHONUTF8"}
+                and all(isinstance(value, str) for value in environment.values())
+            ):
+                return dict(environment)
+        return None
 
     def definition(self) -> bytes:
         """Render the native startup definition, without installing or starting it."""
@@ -396,9 +426,11 @@ class ServiceManager:
                 owned = (
                     task.findtext("t:RegistrationInfo/t:Description", namespaces=_TASK_NS)
                     == self.marker
-                    and self._owns_windows_arguments(
+                    and self._windows_environment(
                         task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=_TASK_NS)
                     )
+                    is not None
+                    and len(task.findall("t:Actions/*", _TASK_NS)) == 1
                     and command_text is not None
                     and Path(command_text).is_absolute()
                     and task.findtext("t:Principals/t:Principal/t:UserId", namespaces=_TASK_NS)
@@ -561,6 +593,53 @@ class ServiceManager:
                 arguments.append("/F")
             self._run(arguments)
         return self.status()
+
+    def refresh(self) -> bool:
+        """Upgrade an owned Windows login task without starting or enabling it.
+
+        Preserve the registered task's captured environment and user settings.
+        Missing entries stay absent, and other native service managers are untouched.
+        The current process keeps running; the new action applies to its next start.
+        """
+        if self.platform != "win32" or not self.available():
+            return False
+        existing = self._windows_task()
+        if not existing:
+            return False
+        self._assert_owned(existing["xml"])
+        task = ET.fromstring(existing["xml"])
+        command = task.find("t:Actions/t:Exec/t:Command", _TASK_NS)
+        arguments = task.find("t:Actions/t:Exec/t:Arguments", _TASK_NS)
+        assert command is not None and arguments is not None  # Validated above.
+        environment = self._windows_environment(arguments.text)
+        assert environment is not None
+        pythonw = str(self._windows_python(command.text))
+        updated_arguments = subprocess.list2cmdline(
+            self._windows_command(environment, python_executable=Path(pythonw))[1:]
+        )
+        if command.text == pythonw and arguments.text == updated_arguments:
+            return False
+        command.text = pythonw
+        arguments.text = updated_arguments
+        if self.definition_path.is_symlink():
+            raise ServiceError("Refusing to replace a startup definition symlink")
+        if self.definition_path.exists():
+            self._assert_owned(self.definition_path.read_bytes())
+        self.directory.mkdir(parents=True, exist_ok=True)
+        ET.register_namespace("", _TASK_NAMESPACE)
+        content = ET.tostring(task, encoding="utf-16", xml_declaration=True)
+        descriptor, filename = tempfile.mkstemp(
+            prefix="service-refresh-", suffix=".xml", dir=self.directory
+        )
+        temporary = Path(filename)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+            self._run(["schtasks.exe", "/Create", "/TN", self.name, "/XML", str(temporary), "/F"])
+            temporary.replace(self.definition_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return True
 
     def _require_installed(self) -> None:
         self._require_available()

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sys
 import traceback
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
@@ -133,9 +134,12 @@ def configure_logging(settings: LogSettings, *, shared: bool = False) -> logging
         )
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
-    console = logging.StreamHandler()
-    console.setFormatter(JsonFormatter())
-    logger.addHandler(console)
+    # pythonw has no stderr. Managed background services keep their rotating
+    # file log without attempting to write to a missing or inherited console.
+    if sys.stderr is not None and os.environ.get("CHILIARCH_BACKGROUND") != "1":
+        console = logging.StreamHandler()
+        console.setFormatter(JsonFormatter())
+        logger.addHandler(console)
     return logger
 
 

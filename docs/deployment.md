@@ -73,7 +73,7 @@ chiliarch serve
 chiliarch serve --host 0.0.0.0 --port 8000
 ```
 
-平台与 agent 守护进程在启动时分别检查新版，详见[升级指南](upgrading.md)。
+平台与 agent 守护进程在启动时分别静默检查新版，更新情况写入日志；已有配置缺失的新增字段会自动补全，显式设置保留。Agent 机器的后台运行和 Windows 无窗口启动见[守护进程](daemon.md)，更多更新说明见[升级指南](upgrading.md)。
 
 ## 5. 连接其他机器
 

@@ -20,6 +20,31 @@ from chiliarch.config import MASK, LogSettings, Settings, SettingsManager, atomi
 from chiliarch.logging import close_logging, configure_logging, tail_logs
 
 
+@pytest.mark.parametrize("missing_stderr", [False, True])
+def test_background_logging_keeps_rotated_files_without_console(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_stderr: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = LogSettings(directory=tmp_path / "logs", max_bytes=1024, backup_count=2)
+    if missing_stderr:
+        monkeypatch.setattr(sys, "stderr", None)
+    else:
+        monkeypatch.setenv("CHILIARCH_BACKGROUND", "1")
+    try:
+        logger = configure_logging(settings, shared=True)
+        for index in range(20):
+            logger.info("Background event %s", index, extra={"event": "fixture.background"})
+        assert all(isinstance(handler, logging.FileHandler) for handler in logger.handlers)
+        assert (settings.directory / "chiliarch.jsonl.1").is_file()
+        assert tail_logs(settings)[-1]["message"] == "Background event 19"
+    finally:
+        close_logging()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
 @pytest.mark.parametrize("content", [None, "", "[supervisor]\n"])
 def test_missing_supervisor_mode_defaults_to_auto(
     tmp_path: Path, content: str | None, monkeypatch: pytest.MonkeyPatch

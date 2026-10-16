@@ -8,6 +8,21 @@ import sys
 from pathlib import Path
 
 _BOOTSTRAPPED = "CHILIARCH_UPDATE_BOOTSTRAPPED"
+_BACKGROUND = "CHILIARCH_BACKGROUND"
+
+
+def _background_service(arguments: list[str]) -> bool:
+    """Limit the inherited service marker to service entrypoints, never MCP pipes."""
+    if os.environ.get(_BACKGROUND) != "1" or any(
+        argument in {"--help", "-h", "--version"} for argument in arguments
+    ):
+        return False
+    from chiliarch.cli import parser
+
+    parsed = parser().parse_args(arguments)
+    return bool(
+        parsed.command == "serve" or (parsed.command == "daemon" and parsed.daemon_command == "run")
+    )
 
 
 def _checks_on_start(arguments: list[str]) -> bool:
@@ -40,7 +55,15 @@ def _dispatch(python: Path, arguments: list[str]) -> None:
     # Windows has no POSIX exec: keep the launcher alive so the Scheduled Task
     # and foreground shell track the complete service lifetime. Console Ctrl+C
     # also reaches the child, which owns its normal graceful shutdown.
-    with subprocess.Popen(command, env=environment) as child:
+    background = _background_service(arguments)
+    with subprocess.Popen(
+        command,
+        env=environment,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if background else 0,
+        stdin=subprocess.DEVNULL if background else None,
+        stdout=subprocess.DEVNULL if background else None,
+        stderr=subprocess.DEVNULL if background else None,
+    ) as child:
         while True:
             try:
                 raise SystemExit(child.wait())
@@ -61,7 +84,9 @@ def main() -> None:
                 _dispatch(python, arguments)
                 return
             except OSError:
-                print("Chiliarch 新版无法启动，继续使用当前版本。", file=sys.stderr)
+                from chiliarch.updates import _notice
+
+                _notice("新版无法启动，继续使用当前版本。")
     from chiliarch.cli import main as cli_main
 
     cli_main()
