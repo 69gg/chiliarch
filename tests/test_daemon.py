@@ -65,7 +65,10 @@ async def test_daemon_refreshes_owned_startup_without_changing_user_configuratio
                     pytest.fail("Only the daemon owning the directory may refresh its startup")
             refreshed.append(self.path)
             if refresh_result == "unavailable":
-                raise ServiceError("Task Scheduler temporarily unavailable")
+                raise ServiceError(
+                    "Task Scheduler failed: private diagnostic text",
+                    reason="native_command_failed",
+                )
             if refresh_result == "readonly":
                 raise PermissionError("Task definition is temporarily read-only")
             return bool(refresh_result)
@@ -96,13 +99,27 @@ async def test_daemon_refreshes_owned_startup_without_changing_user_configuratio
             if refresh_result:
                 from chiliarch.logging import tail_logs
 
-                events = {line.get("event") for line in tail_logs(config.logs)}
+                events = {line.get("event"): line for line in tail_logs(config.logs)}
                 event = (
                     "daemon.startup_refresh_failed"
                     if refresh_result in {"unavailable", "readonly"}
                     else "daemon.startup_refreshed"
                 )
                 assert event in events
+                if refresh_result in {"unavailable", "readonly"}:
+                    failure = events[event]
+                    assert failure["reason"] == (
+                        "native_command_failed"
+                        if refresh_result == "unavailable"
+                        else "filesystem_error"
+                    )
+                    assert failure["error_type"] == (
+                        "ServiceError" if refresh_result == "unavailable" else "PermissionError"
+                    )
+                    assert failure["traceback"][-1]["function"] == "refresh"
+                    # Native command output may contain captured environment
+                    # data; retain a safe reason and stack, not exception text.
+                    assert "private diagnostic text" not in json.dumps(failure)
             await client.shutdown()
             await asyncio.wait_for(asyncio.shield(running), 10)
     finally:
@@ -439,6 +456,11 @@ async def test_existing_service_is_refreshed_before_start_or_healthy_reuse(
     refresh_fails: bool,
 ) -> None:
     actions: list[str] = []
+    from chiliarch.config import LogSettings
+    from chiliarch.logging import configure_logging, tail_logs
+
+    logs = LogSettings(directory=tmp_path / "logs")
+    configure_logging(logs)
 
     class InstalledService(UnavailableService):
         def status(self) -> ServiceStatus:
@@ -466,6 +488,14 @@ async def test_existing_service_is_refreshed_before_start_or_healthy_reuse(
     result = await ensure_daemon(tmp_path)
     assert result["reused"] is running
     assert actions == (["refresh"] if running else ["refresh", "start"])
+    failures = [
+        line for line in tail_logs(logs) if line.get("event") == "daemon.startup_refresh_failed"
+    ]
+    assert len(failures) == int(refresh_fails)
+    if failures:
+        assert failures[0]["reason"] == "filesystem_error"
+        assert failures[0]["error_type"] == "PermissionError"
+        assert failures[0]["traceback"][-1]["function"] == "refresh"
 
 
 @pytest.mark.parametrize("legacy", [False, True])

@@ -163,6 +163,14 @@ stop / restart / uninstall 会停止全部托管工作，先等任务结束。re
 
 默认日志位于守护目录的 `logs/chiliarch.jsonl`，配置与轮换见[日志说明](configuration.md#日志存储与轮换)。升级见[升级指南](upgrading.md)，备份时保留守护目录、每个身份的状态库和 runner 设置。
 
+### Windows 升级后仍出现窗口
+
+先运行 `chiliarch daemon status`。若出现 `daemon.startup_refresh_failed`，说明后台启动项未能更新；服务继续运行不代表启动方式已更新成功。日志中的 `reason` 会区分启动参数、用户身份、运行权限不匹配，以及系统命令或文件访问失败，并记录异常类型和调用位置，不记录启动参数里的环境数据。
+
+Windows 任务计划程序可能省略默认的 `RunLevel` 字段；缺失表示普通权限，不能据此认定启动项属于其他应用。Chiliarch 接受这种正常导出，仍拒绝提权任务、其他用户及不匹配的启动命令。修复版启动成功更新任务后，空闲时执行 `chiliarch daemon restart` 应用无窗口方式，无需删除数据或重新配对。
+
+若仍提示启动项不匹配，请保留原任务并提供 status 输出及日志里的 `reason`。不要通过删除所有任务或提升为管理员运行来绕过身份检查。
+
 
 ## GitHub 工作区与原生交互
 

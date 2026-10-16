@@ -430,10 +430,18 @@ async def ensure_daemon(directory: Path | None = None, *, autostart: bool = True
         elif service.available and service.installed:
             try:
                 await asyncio.to_thread(manager.refresh)
-            except (ServiceError, OSError):
+            except (ServiceError, OSError) as error:
                 logger.warning(
                     "Login startup definition could not be refreshed; preserving existing service",
-                    extra={"event": "daemon.startup_refresh_failed"},
+                    extra={
+                        "event": "daemon.startup_refresh_failed",
+                        "reason": error.reason
+                        if isinstance(error, ServiceError)
+                        else "filesystem_error",
+                        "error_type": type(error).__name__,
+                        "errno": error.errno if isinstance(error, OSError) else None,
+                    },
+                    exc_info=True,
                 )
         healthy = await _health(directory)
         if healthy is not None:

@@ -376,10 +376,18 @@ async def run_daemon(directory: Path) -> None:
         # does not restart this process or re-enable deliberately disabled tasks.
         try:
             refreshed = await asyncio.to_thread(ServiceManager(directory).refresh)
-        except (ServiceError, OSError):
+        except (ServiceError, OSError) as error:
             logger.warning(
                 "Login startup definition could not be refreshed; continuing daemon startup",
-                extra={"event": "daemon.startup_refresh_failed"},
+                extra={
+                    "event": "daemon.startup_refresh_failed",
+                    "reason": error.reason
+                    if isinstance(error, ServiceError)
+                    else "filesystem_error",
+                    "error_type": type(error).__name__,
+                    "errno": error.errno if isinstance(error, OSError) else None,
+                },
+                exc_info=True,
             )
         else:
             if refreshed:

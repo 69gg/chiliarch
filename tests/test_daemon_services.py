@@ -390,8 +390,9 @@ def test_windows_legacy_task_can_be_identified_and_upgraded(tmp_path: Path) -> N
 
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("bootstrap", ["direct", "environment"])
+@pytest.mark.parametrize("omit_run_level", [False, True])
 def test_windows_refresh_migrates_task_without_changing_user_settings(
-    tmp_path: Path, enabled: bool, bootstrap: str
+    tmp_path: Path, enabled: bool, bootstrap: str, omit_run_level: bool
 ) -> None:
     service, native = manager(tmp_path, "win32")
     service.environment["CODEX_HOME"] = str(tmp_path / "saved config")
@@ -404,6 +405,12 @@ def test_windows_refresh_migrates_task_without_changing_user_settings(
     assert command is not None and arguments is not None
     assert enabled_setting is not None and trigger is not None
     command.text = str(service.python)
+    if omit_run_level:
+        principal = task.find("t:Principals/t:Principal", NS)
+        assert principal is not None
+        level = principal.find("t:RunLevel", NS)
+        assert level is not None
+        principal.remove(level)
     if bootstrap == "direct":
         arguments.text = subprocess.list2cmdline(service.command[1:])
         original_environment: dict[str, str] = {}
@@ -447,6 +454,96 @@ def test_windows_refresh_migrates_task_without_changing_user_settings(
     assert service.status().installed
     assert not service.refresh()
     assert len([call for call in native.calls if "/Create" in call]) == 1
+
+
+@pytest.mark.parametrize("tampering", ["elevated", "foreign-user", "empty-level"])
+def test_windows_refresh_still_rejects_changed_security_context(
+    tmp_path: Path, tampering: str
+) -> None:
+    service, native = manager(tmp_path, "win32")
+    task = ET.fromstring(service.definition())
+    if tampering == "foreign-user":
+        element = task.find("t:Principals/t:Principal/t:UserId", NS)
+        assert element is not None
+        element.text = "S-1-5-21-444-555-666-1002"
+    else:
+        element = task.find("t:Principals/t:Principal/t:RunLevel", NS)
+        assert element is not None
+        element.text = "HighestAvailable" if tampering == "elevated" else ""
+    native.task = {"xml": ET.tostring(task, encoding="unicode"), "enabled": False}
+    before = dict(native.task)
+    with pytest.raises(ServiceError, match="unowned") as raised:
+        service.refresh()
+    assert raised.value.reason == (
+        "startup_principal_mismatch"
+        if tampering == "foreign-user"
+        else "startup_run_level_mismatch"
+    )
+    assert native.task == before
+    assert not any("/Create" in call or "/Change" in call for call in native.calls)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("GITHUB_ACTIONS") != "true",
+    reason="Registers only an isolated disabled test task on disposable Windows CI runners",
+)
+def test_windows_native_scheduler_exports_and_refreshes_legacy_task(tmp_path: Path) -> None:
+    # No user service or agent is started. The random pytest directory determines
+    # a unique task name, and both the task and its logon trigger stay disabled.
+    service = ServiceManager(
+        tmp_path / "isolated task 计划",
+        environment={"CODEX_HOME": str(tmp_path / "saved native configuration")},
+    )
+    assert service.available()
+    assert not service._windows_task()
+    service.directory.mkdir(parents=True)
+    task = ET.fromstring(service.definition())
+    updates = {
+        "t:Actions/t:Exec/t:Command": str(service.python),
+        "t:Settings/t:Enabled": "false",
+        "t:Triggers/t:LogonTrigger/t:Enabled": "false",
+    }
+    for query, value in updates.items():
+        element = task.find(query, NS)
+        assert element is not None
+        element.text = value
+    command = service._windows_command()
+    command[2] = daemon_services._WINDOWS_LEGACY_BOOTSTRAP
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", NS)
+    assert arguments is not None
+    arguments.text = subprocess.list2cmdline(command[1:])
+    saved_environment = service._windows_environment(arguments.text)
+    service.definition_path.write_bytes(ET.tostring(task, encoding="utf-16", xml_declaration=True))
+    registered = False
+    try:
+        # No /F: an unexpected collision must never replace another test or task.
+        service._run(
+            ["schtasks.exe", "/Create", "/TN", service.name, "/XML", str(service.definition_path)]
+        )
+        registered = True
+        exported = service._windows_task()
+        assert not exported["enabled"] and not exported["running"]
+        service.environment["CODEX_HOME"] = str(tmp_path / "different caller configuration")
+        assert service.refresh()
+        updated = service._windows_task()
+        assert not updated["enabled"] and not updated["running"]
+        document = ET.fromstring(updated["xml"])
+        assert document.findtext("t:Actions/t:Exec/t:Command", namespaces=NS) == str(
+            service.python.with_name("pythonw.exe")
+        )
+        assert (
+            service._windows_environment(
+                document.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+            )
+            == saved_environment
+        )
+        assert document.findtext("t:Triggers/t:LogonTrigger/t:Enabled", namespaces=NS) == "false"
+        assert document.findtext("t:Settings/t:ExecutionTimeLimit", namespaces=NS) == "PT0S"
+        assert not service.refresh()
+    finally:
+        if registered:
+            service._run(["schtasks.exe", "/Delete", "/TN", service.name, "/F"])
+    assert not service._windows_task()
 
 
 def test_windows_refresh_enters_updated_runtime_instead_of_old_origin_bootstrap(
@@ -650,8 +747,11 @@ def test_windows_task_with_altered_startup_is_not_owned(tmp_path: Path, tamperin
         command[-1] = "invalid-base64"
     arguments.text = subprocess.list2cmdline(command[1:])
     native.task = {"xml": ET.tostring(task, encoding="unicode")}
-    with pytest.raises(ServiceError, match="unowned|another application"):
+    with pytest.raises(ServiceError, match="unowned|another application") as raised:
         service.install()
+    assert raised.value.reason == (
+        "startup_definition_invalid" if tampering == "encoding" else "startup_command_mismatch"
+    )
     assert not any("/Create" in call for call in native.calls)
 
 

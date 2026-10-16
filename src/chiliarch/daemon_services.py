@@ -64,6 +64,10 @@ _WINDOWS_BOOTSTRAP = _WINDOWS_LEGACY_BOOTSTRAP.replace(
 class ServiceError(RuntimeError):
     """A startup manager is unavailable, failed, or would modify an unowned service."""
 
+    def __init__(self, message: str, *, reason: str = "service_error") -> None:
+        super().__init__(f"{message} [{reason}]" if reason != "service_error" else message)
+        self.reason = reason
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -198,10 +202,18 @@ class ServiceManager:
         try:
             result = self.executor(arguments)
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise ServiceError(f"Cannot contact {self.backend}: {error}") from error
+            reason = (
+                "native_command_timeout"
+                if isinstance(error, subprocess.TimeoutExpired)
+                else "native_command_unavailable"
+            )
+            raise ServiceError(f"Cannot contact {self.backend}: {error}", reason=reason) from error
         if check and result.returncode:
             diagnostic = (result.stderr or result.stdout).strip()
-            raise ServiceError(f"{self.backend} command failed ({result.returncode}): {diagnostic}")
+            raise ServiceError(
+                f"{self.backend} command failed ({result.returncode}): {diagnostic}",
+                reason="native_command_failed",
+            )
         return result
 
     @property
@@ -398,6 +410,7 @@ class ServiceManager:
         raise ServiceError("This system only supports foreground execution")
 
     def _assert_owned(self, content: bytes | str) -> None:
+        checks: tuple[tuple[bool, str], ...]
         try:
             if self.platform == "linux":
                 text = content.decode("utf-8") if isinstance(content, bytes) else content
@@ -405,40 +418,66 @@ class ServiceManager:
                 parser.read_string(text)
                 command = shlex.split(parser["Service"]["ExecStart"].removeprefix(":"))
                 command = [part.replace("%%", "%") for part in command]
-                owned = (
-                    text.startswith(f"# {self.marker}\n")
-                    and command[1:] == self.command[1:]
-                    and Path(command[0]).is_absolute()
+                checks = (
+                    (text.startswith(f"# {self.marker}\n"), "startup_marker_mismatch"),
+                    (command[1:] == self.command[1:], "startup_command_mismatch"),
+                    (Path(command[0]).is_absolute(), "startup_interpreter_invalid"),
                 )
             elif self.platform == "darwin":
                 plist = plistlib.loads(
                     content if isinstance(content, bytes) else content.encode("utf-8")
                 )
                 command = plist.get("ProgramArguments", [])
-                owned = (
-                    plist.get("Label") == self.name
-                    and command[1:] == self.command[1:]
-                    and Path(command[0]).is_absolute()
+                checks = (
+                    (plist.get("Label") == self.name, "startup_marker_mismatch"),
+                    (command[1:] == self.command[1:], "startup_command_mismatch"),
+                    (Path(command[0]).is_absolute(), "startup_interpreter_invalid"),
                 )
             else:
                 task = ET.fromstring(content)
                 command_text = task.findtext("t:Actions/t:Exec/t:Command", namespaces=_TASK_NS)
-                owned = (
-                    task.findtext("t:RegistrationInfo/t:Description", namespaces=_TASK_NS)
-                    == self.marker
-                    and self._windows_environment(
-                        task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=_TASK_NS)
-                    )
-                    is not None
-                    and len(task.findall("t:Actions/*", _TASK_NS)) == 1
-                    and command_text is not None
-                    and Path(command_text).is_absolute()
-                    and task.findtext("t:Principals/t:Principal/t:UserId", namespaces=_TASK_NS)
-                    == self._windows_sid()
-                    and task.findtext("t:Principals/t:Principal/t:LogonType", namespaces=_TASK_NS)
-                    == "InteractiveToken"
-                    and task.findtext("t:Principals/t:Principal/t:RunLevel", namespaces=_TASK_NS)
-                    == "LeastPrivilege"
+                checks = (
+                    (
+                        task.findtext("t:RegistrationInfo/t:Description", namespaces=_TASK_NS)
+                        == self.marker,
+                        "startup_marker_mismatch",
+                    ),
+                    (
+                        self._windows_environment(
+                            task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=_TASK_NS)
+                        )
+                        is not None,
+                        "startup_command_mismatch",
+                    ),
+                    (
+                        len(task.findall("t:Actions/*", _TASK_NS)) == 1,
+                        "startup_action_count_mismatch",
+                    ),
+                    (
+                        command_text is not None and Path(command_text).is_absolute(),
+                        "startup_interpreter_invalid",
+                    ),
+                    (
+                        task.findtext("t:Principals/t:Principal/t:UserId", namespaces=_TASK_NS)
+                        == self._windows_sid(),
+                        "startup_principal_mismatch",
+                    ),
+                    (
+                        task.findtext("t:Principals/t:Principal/t:LogonType", namespaces=_TASK_NS)
+                        == "InteractiveToken",
+                        "startup_logon_type_mismatch",
+                    ),
+                    # Task Scheduler may omit this optional XML element when
+                    # exporting its default least-privilege value.
+                    (
+                        task.findtext(
+                            "t:Principals/t:Principal/t:RunLevel",
+                            default="LeastPrivilege",
+                            namespaces=_TASK_NS,
+                        )
+                        == "LeastPrivilege",
+                        "startup_run_level_mismatch",
+                    ),
                 )
         except (
             ValueError,
@@ -450,22 +489,30 @@ class ServiceManager:
             plistlib.InvalidFileException,
         ) as error:
             raise ServiceError(
-                "Existing startup definition is invalid or belongs to another application"
+                "Existing startup definition is invalid or belongs to another application",
+                reason="startup_definition_invalid",
             ) from error
-        if not owned:
-            raise ServiceError(
-                "Refusing to change an unowned startup definition with the same name"
-            )
+        for valid, reason in checks:
+            if not valid:
+                raise ServiceError(
+                    "Refusing to change an unowned startup definition with the same name",
+                    reason=reason,
+                )
 
     def _windows_task(self) -> dict[str, Any]:
         # The task name is internally generated ASCII, never arbitrary user/script input.
         script = (
             "$ErrorActionPreference='Stop'; "
-            "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
             f"$t=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {{$_.TaskName -eq '{self.name}'}}; "
-            "if($null -eq $t){'{}'}else{"
+            "$json=if($null -eq $t){'{}'}else{"
             f"@{{xml=(Export-ScheduledTask -TaskPath '\\' -TaskName '{self.name}'); "
-            "running=($t.State -eq 'Running'); enabled=[bool]$t.Settings.Enabled} | ConvertTo-Json -Compress}"
+            "running=($t.State -eq 'Running'); enabled=[bool]$t.Settings.Enabled} | ConvertTo-Json -Compress}; "
+            # Windows PowerShell uses .NET Framework, where OutputEncoding's
+            # setter requires a console even when stdout is redirected. Write
+            # UTF-8 directly to the pipe so CREATE_NO_WINDOW remains supported.
+            "$bytes=[Text.Encoding]::UTF8.GetBytes($json); "
+            "$stream=[Console]::OpenStandardOutput(); "
+            "$stream.Write($bytes,0,$bytes.Length); $stream.Flush()"
         )
         result = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script])
         try:
