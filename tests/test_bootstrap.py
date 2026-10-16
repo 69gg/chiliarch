@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import json
 import os
@@ -97,19 +98,26 @@ def test_failed_process_creation_uses_current_runtime(
 
 
 @pytest.mark.parametrize(
-    ("arguments", "marker", "background"),
+    ("arguments", "marker", "background", "windowless"),
     [
-        (["daemon", "run"], "1", True),
-        (["serve", "--port", "9000"], "1", True),
-        (["daemon", "run"], "0", False),
-        (["agent", "mcp", "--agent", "worker"], "1", False),
-        (["daemon", "status"], "1", False),
-        (["--version"], "1", False),
-        (["daemon", "run", "--help"], "1", False),
+        (["daemon", "run"], "1", True, True),
+        (["serve", "--port", "9000"], "1", True, True),
+        (["daemon", "run"], "0", False, False),
+        (["agent", "mcp", "--agent", "worker"], "1", False, True),
+        (["--config", "local.toml", "agent", "mcp", "--agent", "worker"], "0", False, True),
+        (["agent", "doctor", "--agent", "mcp"], "1", False, False),
+        (["--config", "mcp", "serve"], "0", False, False),
+        (["daemon", "status"], "1", False, False),
+        (["--version"], "1", False, False),
+        (["daemon", "run", "--help"], "1", False, False),
     ],
 )
 def test_windows_background_dispatch_keeps_service_hidden_and_mcp_connected(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str], marker: str, background: bool
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    marker: str,
+    background: bool,
+    windowless: bool,
 ) -> None:
     monkeypatch.setenv("CHILIARCH_BACKGROUND", marker)
     # Do not replace the host os.name globally: pathlib and pytest also use it.
@@ -123,9 +131,9 @@ def test_windows_background_dispatch_keeps_service_hidden_and_mcp_connected(
         bootstrap._dispatch(Path("new-python"), arguments)
     assert error.value.code == 7
     options = start.call_args.kwargs
-    assert options["creationflags"] == (subprocess.CREATE_NO_WINDOW if background else 0)
-    for stream in ("stdin", "stdout", "stderr"):
-        assert options[stream] == (subprocess.DEVNULL if background else None)
+    assert options["creationflags"] == (subprocess.CREATE_NO_WINDOW if windowless else 0)
+    for descriptor, stream in enumerate(("stdin", "stdout", "stderr")):
+        assert options[stream] == (subprocess.DEVNULL if background else descriptor)
     assert options["env"]["CHILIARCH_UPDATE_BOOTSTRAPPED"] == "1"
     process.__enter__.return_value.wait.assert_called_once_with()
 
@@ -223,6 +231,90 @@ raise SystemExit(7)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate(timeout=10)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows windowless runtime handoff")
+@pytest.mark.parametrize("launcher_name", ["python.exe", "pythonw.exe"])
+async def test_windowless_mcp_handoff_retains_live_pipes(
+    tmp_path: Path, launcher_name: str
+) -> None:
+    target = """
+import ctypes, json, os, sys
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+user = ctypes.WinDLL('user32', use_last_error=True)
+kernel.GetConsoleWindow.restype = ctypes.c_void_p
+user.IsWindowVisible.argtypes = [ctypes.c_void_p]
+visible = bool(user.IsWindowVisible(kernel.GetConsoleWindow()))
+for line in sys.stdin.buffer:
+    request = json.loads(line)
+    if request.get('exit'):
+        raise SystemExit(7)
+    response = {'request': request, 'visible_console': visible,
+                'marker': os.getenv('CHILIARCH_UPDATE_BOOTSTRAPPED')}
+    sys.stdout.buffer.write((json.dumps(response) + '\\n').encode())
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(b'diagnostic\\n')
+    sys.stderr.buffer.flush()
+"""
+    launcher = tmp_path / "mcp-handoff.py"
+    launcher.write_text(
+        "import json, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "from typing import Any\n"
+        "from chiliarch import bootstrap\n"
+        f"target = {target!r}\n"
+        "original_popen = subprocess.Popen\n"
+        "def start(arguments: list[str], **options: Any) -> subprocess.Popen[bytes]:\n"
+        "    assert arguments[1:6] == ['-I', '-X', 'utf8', '-m', 'chiliarch']\n"
+        "    return original_popen([*arguments[:4], '-c', target], **options)\n"
+        "bootstrap.subprocess.Popen = start\n"
+        "bootstrap._dispatch(Path(sys.executable).with_name('python.exe'), "
+        "['agent', 'mcp', '--agent', 'worker'])\n",
+        encoding="utf-8",
+    )
+    interpreter = Path(sys.executable).with_name(launcher_name)
+    assert interpreter.is_file()
+    process = await asyncio.create_subprocess_exec(
+        str(interpreter),
+        str(launcher),
+        cwd=tmp_path,
+        env=dict(os.environ, CHILIARCH_BACKGROUND="1"),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    try:
+        async with asyncio.timeout(10):
+            for sequence in range(2):
+                frame = {"sequence": sequence, "message": "继续协作"}
+                process.stdin.write((json.dumps(frame) + "\n").encode())
+                await process.stdin.drain()
+                assert json.loads(await process.stdout.readline()) == {
+                    "request": frame,
+                    "visible_console": False,
+                    "marker": "1",
+                }
+                assert await process.stderr.readline() == b"diagnostic\n"
+                assert process.returncode is None
+                assert not process.stdin.is_closing()
+            process.stdin.write(b'{"exit": true}\n')
+            await process.stdin.drain()
+            assert await process.wait() == 7
+            assert await process.stdout.read() == b""
+            assert await process.stderr.read() == b""
+    finally:
+        # Closing the protocol lets the target exit even if an assertion fails;
+        # its Windows launcher remains responsible for waiting for that child.
+        process.stdin.close()
+        try:
+            await asyncio.wait_for(process.wait(), 5)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX exec preserves the supervisor PID")

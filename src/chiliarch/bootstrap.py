@@ -44,6 +44,16 @@ def _checks_on_start(arguments: list[str]) -> bool:
     return False
 
 
+def _mcp_bridge(arguments: list[str]) -> bool:
+    """Identify stdio MCP by command semantics, never by an option's value."""
+    if any(argument in {"--help", "-h", "--version"} for argument in arguments):
+        return False
+    from chiliarch.cli import parser
+
+    parsed = parser().parse_args(arguments)
+    return bool(parsed.command == "agent" and parsed.agent_command == "mcp")
+
+
 def _dispatch(python: Path, arguments: list[str]) -> None:
     environment = dict(os.environ, **{_BOOTSTRAPPED: "1"})
     # Isolate module discovery from the user's current directory/PYTHONPATH. The
@@ -56,13 +66,17 @@ def _dispatch(python: Path, arguments: list[str]) -> None:
     # and foreground shell track the complete service lifetime. Console Ctrl+C
     # also reaches the child, which owns its normal graceful shutdown.
     background = _background_service(arguments)
+    windowless = background or _mcp_bridge(arguments)
     with subprocess.Popen(
         command,
         env=environment,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if background else 0,
-        stdin=subprocess.DEVNULL if background else None,
-        stdout=subprocess.DEVNULL if background else None,
-        stderr=subprocess.DEVNULL if background else None,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if windowless else 0,
+        # Windows close_fds does not implicitly preserve a windowless parent's
+        # pipes. MCP must keep all three explicit handles even when inheriting
+        # the daemon's background marker; foreground commands retain theirs too.
+        stdin=subprocess.DEVNULL if background else 0,
+        stdout=subprocess.DEVNULL if background else 1,
+        stderr=subprocess.DEVNULL if background else 2,
     ) as child:
         while True:
             try:
