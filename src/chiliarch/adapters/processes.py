@@ -311,7 +311,11 @@ class WindowsJob:
 _WINDOWS_BOOTSTRAP = (
     "import os,subprocess,sys;"
     "gate=os.read(0,1);"
-    "sys.exit(subprocess.call(sys.argv[1:],creationflags=subprocess.CREATE_NO_WINDOW) "
+    # Without explicit stdio, Popen relies on console inheritance. A windowless
+    # process has no console to inherit; duplicate only our three pipe handles
+    # into the worker, retaining close_fds=True for the non-inheritable Job.
+    "sys.exit(subprocess.call(sys.argv[1:],stdin=0,stdout=1,stderr=2,"
+    "creationflags=subprocess.CREATE_NO_WINDOW) "
     "if gate == b'G' else 125)"
 )
 

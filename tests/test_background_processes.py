@@ -25,15 +25,16 @@ if os.name == 'nt':
     kernel.GetConsoleWindow.restype = ctypes.c_void_p
     user.IsWindowVisible.argtypes = [ctypes.c_void_p]
     visible = bool(user.IsWindowVisible(kernel.GetConsoleWindow()))
-request = sys.stdin.buffer.read()
-sys.stdout.buffer.write(json.dumps({
-    'request': request.decode('utf-8'),
-    'cwd': os.getcwd(),
-    'visible_console': visible,
-}).encode('utf-8'))
-sys.stdout.buffer.flush()
-sys.stderr.buffer.write(b'native diagnostic')
-sys.stderr.buffer.flush()
+for line in sys.stdin.buffer:
+    request = json.loads(line)
+    sys.stdout.buffer.write((json.dumps({
+        'request': request,
+        'cwd': os.getcwd(),
+        'visible_console': visible,
+    }) + '\\n').encode('utf-8'))
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(b'native diagnostic\\n')
+    sys.stderr.buffer.flush()
 """
 
 
@@ -55,14 +56,28 @@ async def test_background_worker_keeps_pipes_and_no_visible_console(
     tree = await start_process_tree([str(python), "-u", "-c", _WORKER], workspace, 65536)
     try:
         async with asyncio.timeout(10):
-            stdout, stderr = await tree.process.communicate("调度消息\n".encode())
+            assert tree.process.stdin is not None
+            assert tree.process.stdout is not None
+            assert tree.process.stderr is not None
+            # App-server and stream-json workers respond while stdin remains
+            # open. communicate(input) closes stdin and cannot verify this.
+            for sequence in range(2):
+                frame = {"sequence": sequence, "message": "调度消息\n"}
+                tree.process.stdin.write((json.dumps(frame) + "\n").encode())
+                await tree.process.stdin.drain()
+                assert json.loads(await tree.process.stdout.readline()) == {
+                    "request": frame,
+                    "cwd": str(workspace),
+                    "visible_console": False,
+                }
+                assert await tree.process.stderr.readline() == b"native diagnostic\n"
+                assert tree.process.returncode is None
+                assert not tree.process.stdin.is_closing()
+            tree.process.stdin.close()
+            await tree.process.wait()
+            assert await tree.process.stdout.read() == b""
+            assert await tree.process.stderr.read() == b""
         assert tree.process.returncode == 0
-        assert json.loads(stdout) == {
-            "request": "调度消息\n",
-            "cwd": str(workspace),
-            "visible_console": False,
-        }
-        assert stderr == b"native diagnostic"
     finally:
         await tree.terminate(0.05)
     if os.name == "nt":
