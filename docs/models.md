@@ -35,6 +35,8 @@ Anthropic 也接受 `request_params.max_tokens`，同时填写时专用字段优
 
 只启用当前服务支持的参数。公开思考能否显示，取决于服务商是否返回可读内容或摘要；平台不会编造思考，也不展示加密内容或签名数据。
 
+Chat Completions 的同一个流式片段同时返回思考和正文时，平台先显示思考，再显示正文；不同片段仍按接收顺序显示。
+
 | 设置 | 作用 |
 | --- | --- |
 | 请求推理 / `reasoning_enabled` | Chat 格式下可自动请求 `enable_thinking=true` |

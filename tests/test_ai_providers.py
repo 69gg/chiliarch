@@ -431,6 +431,54 @@ def text_response(api: str) -> list[JSONObject]:
     ]
 
 
+@pytest.mark.parametrize("same_chunk", [True, False])
+async def test_chat_reasoning_precedes_content_only_within_the_same_chunk(
+    same_chunk: bool,
+) -> None:
+    transition = (
+        [chat({"content": "你好！", "reasoning_content": "."})]
+        if same_chunk
+        else [chat({"content": "你好！"}), chat({"reasoning_content": "."})]
+    )
+    events = [
+        chat({"reasoning_content": "Let me respond in Chinese"}),
+        *transition,
+        chat({"content": "我是 Chiliarch AI。"}, "stop"),
+    ]
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=SSE(events)
+        )
+
+    provider = Provider(
+        ModelSettings(api_mode="chat_completions", model="test"),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    turn = ModelTurn()
+    try:
+        received = [
+            (event.type, event.data["delta"])
+            async for event in provider.stream(
+                [{"role": "user", "content": "你好！"}], [], "system", turn
+            )
+        ]
+    finally:
+        await provider.close()
+    transition_expected = [("reasoning_delta", "."), ("text_delta", "你好！")]
+    if not same_chunk:
+        transition_expected.reverse()
+    assert received == [
+        ("reasoning_delta", "Let me respond in Chinese"),
+        *transition_expected,
+        ("text_delta", "我是 Chiliarch AI。"),
+    ]
+    assert turn.reasoning == "Let me respond in Chinese."
+    assert turn.content == "你好！我是 Chiliarch AI。"
+    assert turn.native[0]["reasoning_content"] == turn.reasoning
+    assert turn.native[0]["content"] == turn.content
+
+
 @pytest.mark.parametrize("api", ["chat_completions", "responses", "anthropic"])
 async def test_sdk_stream_tool_result_and_native_reasoning_replay(api: str) -> None:
     requests: list[httpx.Request] = []

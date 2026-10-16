@@ -496,12 +496,6 @@ class Provider:
                     if choice.get("index", 0) != 0:
                         continue
                     delta = choice.get("delta", {})
-                    text = _reasoning_text(delta.get("content"))
-                    if not text:
-                        text = _reasoning_text(delta.get("refusal"))
-                    if text:
-                        turn.content += text
-                        yield ModelEvent("text_delta", {"delta": text})
                     for name in ("reasoning_content", "reasoning", "thinking", "reasoning_details"):
                         if name in delta and delta[name] is not None:
                             reasoning[name] = _merge(reasoning.get(name), delta[name])
@@ -509,6 +503,12 @@ class Provider:
                             if text:
                                 turn.reasoning += text
                                 yield ModelEvent("reasoning_delta", {"delta": text})
+                    text = _reasoning_text(delta.get("content"))
+                    if not text:
+                        text = _reasoning_text(delta.get("refusal"))
+                    if text:
+                        turn.content += text
+                        yield ModelEvent("text_delta", {"delta": text})
                     for incoming in delta.get("tool_calls") or []:
                         index = incoming.get("index", 0)
                         call = calls.setdefault(
