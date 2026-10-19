@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 import pytest
 
+from chiliarch.adapters import runners
+from chiliarch.adapters.processes import ProcessTree
 from chiliarch.adapters.runners import RunnerError, RunnerHandler, RunnerSettings, create_handler
 from chiliarch.client import ClientStore
 from tests.test_agent_runners import process_running
@@ -207,18 +209,45 @@ async def test_output_or_zero_exit_cannot_replace_native_success(
 
 
 @pytest.mark.parametrize("kind", ["opencode", "opencode-v1"])
+@pytest.mark.parametrize("slow_start", [False, True])
 async def test_pending_native_permission_requires_reply_and_timeout_cleans_process(
-    tmp_path: Path, kind: Kind
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: Kind, slow_start: bool
 ) -> None:
+    if slow_start:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        start = runners.start_process_tree
+
+        async def delayed_start(command: list[str], cwd: Path, limit: int) -> ProcessTree:
+            # Advance only this event loop, not wall time: startup can legitimately
+            # exceed the mailbox's five-second observation window on Windows.
+            monkeypatch.setattr(loop, "time", lambda: real_time() + 6)
+            await asyncio.sleep(0)
+            return await start(command, cwd, limit)
+
+        monkeypatch.setattr(runners, "start_process_tree", delayed_start)
     configuration = settings(tmp_path, kind, permission=True)
     state_path = tmp_path / "state.db"
     handler = create_handler(configuration, state_path)
     store = ClientStore(state_path)
     await store.open()
-    active = asyncio.create_task(
-        handler({"task_id": "task", "instruction": "inspect"}, no_progress)
-    )
+    pending = asyncio.Event()
+
+    async def report(_: float, __: str) -> None:
+        if handler.runtime_metadata()["native_interactions"]["pending_task_ids"] == ["task"]:
+            pending.set()
+
+    active = asyncio.create_task(handler({"task_id": "task", "instruction": "inspect"}, report))
+    ready = asyncio.create_task(pending.wait())
     try:
+        # The real protocol callback is the boundary between subprocess startup
+        # and persistence. Fail early if the runner exits instead of asking.
+        async with asyncio.timeout(30):
+            await asyncio.wait([active, ready], return_when=asyncio.FIRST_COMPLETED)
+        if active.done():
+            active.result()
+            pytest.fail("Native runner exited before requesting permission")
+        assert ready.done()
         request = (await wait_requests(store))[0]
         assert request.payload["task_id"] == "task"
         assert request.payload["kind"] == "permission"
@@ -237,8 +266,9 @@ async def test_pending_native_permission_requires_reply_and_timeout_cleans_proce
             execution["pid"], expected_creation_time=execution["creation_time"]
         )
     finally:
+        ready.cancel()
         active.cancel()
-        await asyncio.gather(active, return_exceptions=True)
+        await asyncio.gather(active, ready, return_exceptions=True)
         await store.close()
 
 

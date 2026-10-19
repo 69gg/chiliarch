@@ -36,11 +36,6 @@ def test_task_query_without_console_preserves_unicode_json(tmp_path: Path, exist
     ).decode("ascii")
     prelude = (
         "$ErrorActionPreference='Stop'; "
-        "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; "
-        'public static class ChiliarchConsoleProbe { [DllImport("kernel32.dll")] '
-        "public static extern IntPtr GetConsoleWindow(); }'; "
-        "if([ChiliarchConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero)"
-        "{throw 'Task query unexpectedly attached to a console'}; "
         f"$fixture=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{fixture}'))"
         " | ConvertFrom-Json; "
         "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskPath) "
@@ -64,3 +59,22 @@ def test_task_query_without_console_preserves_unicode_json(tmp_path: Path, exist
     assert len(results) == 1
     assert results[0].returncode == 0
     assert results[0].stderr == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires the Windows console API")
+def test_native_executor_really_has_no_console() -> None:
+    # Observe the same production launcher through ctypes instead of compiling a
+    # C# probe in every PowerShell query. Neither test needs a C# toolchain.
+    result = _execute(
+        [
+            sys.executable,
+            "-c",
+            "import ctypes,json; "
+            "get_console=ctypes.windll.kernel32.GetConsoleWindow; "
+            "get_console.argtypes=[]; get_console.restype=ctypes.c_void_p; "
+            "print(json.dumps({'console': bool(get_console())}))",
+        ]
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {"console": False}

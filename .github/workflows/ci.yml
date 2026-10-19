@@ -39,7 +39,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
       - run: uv run mypy
         if: matrix.python == '3.13'
-      - run: uv run pytest -vv --durations=20 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+      # Windows native-process/SQLite tests share the runner's disk and process
+      # startup budget; adding workers must not turn them into load benchmarks.
+      - run: uv run pytest -n ${{ runner.os == 'Windows' && '2' || 'auto' }} -vv --durations=20 -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
 
   web:
     runs-on: ubuntu-latest
