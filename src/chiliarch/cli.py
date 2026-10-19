@@ -51,6 +51,9 @@ def parser() -> argparse.ArgumentParser:
     pair.add_argument("--server", required=True)
     pair.add_argument("--code", help="Omit to enter the one-time code interactively")
     pair.add_argument("--name", required=True)
+    pair.add_argument(
+        "--introduction", help="Plain-text self-introduction, at most 4000 characters"
+    )
     pair.add_argument("--machine", default=socket.gethostname())
     pair.add_argument("--state", type=Path, default=Path("data/agent.db"))
     demo = commands.add_parser(
@@ -121,6 +124,7 @@ async def _agent_command(arguments: argparse.Namespace) -> None:
                 arguments.machine,
                 arguments.state,
                 capabilities=["simulated.tasks"],
+                introduction=arguments.introduction,
             )
             print(f"配对完成。本地凭证保存在 {arguments.state.resolve()}，不在终端显示。")
         else:

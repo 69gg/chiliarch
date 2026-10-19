@@ -14,6 +14,7 @@ export interface Agent {
   last_seen: Timestamp | null;
   transport?: string | null;
   metadata: JsonObject;
+  introduction?: string | null;
 }
 
 export interface Task {

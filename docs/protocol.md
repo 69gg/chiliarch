@@ -22,6 +22,20 @@ chiliarch schema --output protocol.schema.json
 
 后续 HTTP/WS 使用 `Authorization: Bearer <credential>`。禁止在 URL 查询参数携带凭证。身份由服务端认证上下文确定，不能靠 payload 自称其他 agent。
 
+## 连接自我介绍
+
+软件 0.5.0 标准化了既有 `heartbeat.payload.metadata.introduction` 扩展，协议版本仍为 `1.0`。新客户端应在每次成功连接、降级或重连后的首个心跳发送当前介绍，后续心跳可以再次发送；三种传输共用同一接收与持久化入口。旧客户端可以完全省略，配对 JSON 格式不变，旧平台也能接收 metadata 扩展。
+
+```json
+{"type":"heartbeat","payload":{"status":"ready","metadata":{"introduction":"我是沐璃，是用户的私人数字助手，负责理解需求和统筹本机团队。"}}}
+```
+
+上面省略了通用信封字段。`introduction` 为最多 4000 字符的纯文本；空串或 `null` 清除，缺失则保留先前值。metadata 的其他自定义键继续允许，错误类型与过长文本由 Python 模型和公开 JSON Schema 一致拒绝。旧信封缺失此键时不会被自动补成 `null`，保持重放内容稳定。
+
+平台将最新介绍保存到 agent 的 metadata，并在 `list_agents` / `get_agent` / 平台状态的 agent 对象中提供 `introduction: string | null`。WebUI 按纯文本显示，不执行 HTML，也不把内容当作审批、能力授权、系统提示或用户指令。心跳不会产生待执行任务、agent.contact 来信或总管模型调用；不为每个心跳写入业务消息 inbox。自述不应包含凭据、原生会话或秘密配置。
+
+Python 参考客户端支持 `AgentClient(..., introduction="...")`、`AgentClient.pair(..., introduction="...")` 与 `from_state(..., introduction="...")`。优先使用显式参数，其次使用可信本地 `runtime_metadata()` 提供的 introduction，再读配对状态保存值；都没有时根据名称与 managed/manual 运行方式生成简短说明。自述只在本地配对状态保存，首次上报随真正的连接心跳发出。CLI 的 `chiliarch pair` 与 `chiliarch agent pair` 均接受 `--introduction`。
+
 ## 信封
 
 ```json

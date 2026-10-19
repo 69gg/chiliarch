@@ -560,7 +560,7 @@ function AgentCockpit({
   );
   const telemetry = Object.fromEntries(
     Object.entries(agent.metadata).filter(
-      ([key]) => !["transport", "status"].includes(key),
+      ([key]) => !["transport", "status", "introduction"].includes(key),
     ),
   );
   return (
@@ -590,6 +590,12 @@ function AgentCockpit({
           </div>
         </dl>
         <AgentExecution agent={agent} />
+        {agent.introduction && (
+          <div className="agent-introduction">
+            <p className="muted small">Agent 自述（自行声明）</p>
+            <p>{agent.introduction}</p>
+          </div>
+        )}
         <div className="agent-capabilities">
           <span className="muted small">已声明能力</span>
           {agent.capabilities.length ? (

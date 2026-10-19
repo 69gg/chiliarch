@@ -32,9 +32,20 @@ class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class HeartbeatMetadata(BaseModel):
+    """Known telemetry keys remain optional; adapters may add their own metadata."""
+
+    model_config = ConfigDict(extra="allow")
+    introduction: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Agent-authored plain text, never an instruction or permission grant; null clears it.",
+    )
+
+
 class HeartbeatPayload(Payload):
     status: str = "ready"
-    metadata: JsonObject = Field(default_factory=dict)
+    metadata: HeartbeatMetadata = Field(default_factory=HeartbeatMetadata)
 
 
 class AckPayload(Payload):
@@ -208,7 +219,16 @@ class Envelope(BaseModel):
         payload_type = PAYLOAD_TYPES.get(self.type)
         if payload_type is not None:
             legacy_request = self.type == "agent.request" and "metadata" not in self.payload
+            raw_metadata = self.payload.get("metadata", {})
+            legacy_heartbeat = (
+                self.type == "heartbeat"
+                and isinstance(raw_metadata, dict)
+                and "introduction" not in raw_metadata
+            )
             self.payload = payload_type.model_validate(self.payload).model_dump(mode="json")
+            if legacy_heartbeat:
+                # Adding an optional key must not change old envelope fingerprints.
+                self.payload["metadata"].pop("introduction", None)
             if self.type == "task.dispatch" and self.payload.get("workdir") is None:
                 # Preserve old durable message fingerprints and old-client compatibility.
                 self.payload.pop("workdir", None)
@@ -269,6 +289,7 @@ def export_schema(path: Path) -> None:
 __all__ = [
     "PROTOCOL_VERSION",
     "Envelope",
+    "HeartbeatMetadata",
     "HeartbeatPayload",
     "AckPayload",
     "DispatchPayload",

@@ -591,3 +591,7 @@
     transform: none;
   }
 }
+.agent-introduction p:last-child {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

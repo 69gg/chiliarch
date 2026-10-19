@@ -25,7 +25,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from chiliarch.config import TransportSettings
 from chiliarch.delivery import DeliveryBackoff
-from chiliarch.protocol import Envelope
+from chiliarch.protocol import Envelope, HeartbeatMetadata
 
 JsonObject = dict[str, Any]
 TaskHandler = Callable[[JsonObject, Callable[[float, str], Awaitable[None]]], Awaitable[Any]]
@@ -541,6 +541,7 @@ class AgentClient:
         manual_tasks: bool = False,
         runtime_metadata: RuntimeMetadata | None = None,
         repository_handler: RepositoryHandler | None = None,
+        introduction: str | None = None,
     ) -> None:
         parsed = urlsplit(server_url)
         if (
@@ -562,6 +563,7 @@ class AgentClient:
         self.handler = handler
         self.manual_tasks = manual_tasks
         self.runtime_metadata = runtime_metadata
+        self.introduction = HeartbeatMetadata(introduction=introduction).introduction
         self.repository_handler = repository_handler
         self.max_concurrent_tasks = max_concurrent_tasks
         self.options = options or TransportSettings()
@@ -587,7 +589,11 @@ class AgentClient:
         *,
         capabilities: list[str] | None = None,
         handler: TaskHandler | None = None,
+        introduction: str | None = None,
     ) -> AgentClient:
+        # Validate before consuming the one-time code; pair HTTP stays compatible
+        # with older platforms, and introduction travels on the first heartbeat.
+        HeartbeatMetadata(introduction=introduction)
         async with httpx.AsyncClient() as http:
             response = await http.post(
                 server_url.rstrip("/") + "/api/agent/pair",
@@ -600,7 +606,13 @@ class AgentClient:
             )
             response.raise_for_status()
             identity = response.json()
-        client = cls(server_url, str(identity["credential"]), state_path, handler)
+        client = cls(
+            server_url,
+            str(identity["credential"]),
+            state_path,
+            handler,
+            introduction=introduction,
+        )
         await client.store.open()
         try:
             await client.store.save_identity(
@@ -610,6 +622,7 @@ class AgentClient:
                     "agent_id": str(identity["agent_id"]),
                     "name": name,
                     "machine": machine,
+                    **({"introduction": introduction} if introduction is not None else {}),
                 }
             )
         finally:
@@ -627,6 +640,7 @@ class AgentClient:
         manual_tasks: bool = False,
         runtime_metadata: RuntimeMetadata | None = None,
         repository_handler: RepositoryHandler | None = None,
+        introduction: str | None = None,
     ) -> AgentClient:
         if not await asyncio.to_thread(state_path.exists):
             raise ValueError("Pair the client before running it")
@@ -648,6 +662,7 @@ class AgentClient:
             manual_tasks=manual_tasks,
             runtime_metadata=runtime_metadata,
             repository_handler=repository_handler,
+            introduction=introduction,
         )
 
     async def execution_status(self) -> JsonObject:
@@ -681,6 +696,15 @@ class AgentClient:
 
     async def heartbeat(self) -> Envelope:
         metadata = await self.execution_status()
+        if self.introduction is not None:
+            metadata["introduction"] = self.introduction
+        elif "introduction" not in metadata:
+            identity = await self.store.identity()
+            mode = "手动领取任务的" if self.manual_tasks else "本机托管的"
+            metadata["introduction"] = identity.get(
+                "introduction",
+                f"我是{identity.get('name', 'chiliarch agent')}，通过 chiliarch 接入的{mode} agent。",
+            )
         return Envelope(
             type="heartbeat", payload={"status": metadata["state"], "metadata": metadata}
         )

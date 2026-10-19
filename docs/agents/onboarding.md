@@ -54,6 +54,8 @@ OpenCode 必须核实**当前会话实际程序**的 --version 与 acp --help：
 
 用已确认的平台地址、名称、adapter、本机标识与状态路径执行 agent pair，managed 使用 workdir 或已准备的 settings。目录须已存在；Chiliarch 先校验，再兑换注册码、保存长期凭证、生成 runner 并登记。
 
+可加 `--introduction "我是……，主要负责……"` 保存最多 4000 字符的纯文本自述。参考客户端在每次建立连接后的首心跳上报；省略时根据名称和运行方式生成，不调用模型。只写用途、协作偏好与实际边界，不放凭据或私有历史。平台将其显示为自行声明的介绍，不据此放宽权限；已有身份无需重新配对，适配器可通过本地 `runtime_metadata` 更新介绍。
+
 | 当前宿主 | adapter / host |
 | --- | --- |
 | Codex App | codex-app |

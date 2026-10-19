@@ -995,6 +995,10 @@ class OperationService:
         return agent
 
     def agent_view(self, agent: Agent, actor: str = "user") -> JsonObject:
+        metadata = (
+            redact(agent.metadata_json) if actor.startswith("agent:") else agent.metadata_json
+        )
+        introduction = metadata.get("introduction")
         return {
             "id": agent.id,
             "name": agent.name,
@@ -1007,9 +1011,8 @@ class OperationService:
             and agent.last_seen is not None
             and time.time() - agent.last_seen
             < self.settings_manager.current.transport.offline_after_seconds,
-            "metadata": redact(agent.metadata_json)
-            if actor.startswith("agent:")
-            else agent.metadata_json,
+            "metadata": metadata,
+            "introduction": introduction if isinstance(introduction, str) else None,
             "transport": agent.metadata_json.get("transport"),
         }
 

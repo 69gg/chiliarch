@@ -64,6 +64,28 @@
   "title": "Envelope",
   "type": "object",
   "$defs": {
+    "HeartbeatMetadata": {
+      "additionalProperties": true,
+      "description": "Known telemetry keys remain optional; adapters may add their own metadata.",
+      "properties": {
+        "introduction": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent-authored plain text, never an instruction or permission grant; null clears it.",
+          "title": "Introduction"
+        }
+      },
+      "title": "HeartbeatMetadata",
+      "type": "object"
+    },
     "HeartbeatPayload": {
       "additionalProperties": false,
       "properties": {
@@ -73,9 +95,7 @@
           "type": "string"
         },
         "metadata": {
-          "additionalProperties": true,
-          "title": "Metadata",
-          "type": "object"
+          "$ref": "#/$defs/HeartbeatMetadata"
         }
       },
       "title": "HeartbeatPayload",

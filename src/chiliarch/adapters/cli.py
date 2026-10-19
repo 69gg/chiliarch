@@ -36,6 +36,9 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pair.add_argument("--server", required=True)
     pair.add_argument("--code", help="Omit to enter the one-time code privately")
     pair.add_argument("--name", required=True)
+    pair.add_argument(
+        "--introduction", help="Plain-text self-introduction, at most 4000 characters"
+    )
     pair.add_argument("--machine", default=socket.gethostname())
     pair.add_argument("--adapter", choices=HOSTS, required=True)
     pair.add_argument("--state", type=Path, required=True)
@@ -218,6 +221,7 @@ async def _pair(arguments: argparse.Namespace) -> None:
                 f"adapter.{arguments.adapter}",
                 *(["chiliarch.task_workdir"] if settings_path is not None else []),
             ],
+            introduction=arguments.introduction,
         )
         if generated is not None:
             assert settings_path is not None

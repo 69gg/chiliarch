@@ -72,6 +72,23 @@ function approval(overrides: Partial<Approval> = {}): Approval {
 }
 
 describe("Agents 管理的机器列表与详情", () => {
+  it("把自行声明的介绍显示为纯文本，不解释 HTML", async () => {
+    const state = platformState();
+    const introduction = '<img src=x onerror="alert(1)"> 我是本机助手。';
+    state.agents = [agent({ introduction, metadata: { introduction } })];
+    const user = userEvent.setup();
+    const { container } = render(
+      <AgentsPage state={state} refresh={vi.fn()} />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "查看 开发机，机器 workstation-one" }),
+    );
+    expect(screen.getByText("Agent 自述（自行声明）")).toBeVisible();
+    expect(screen.getByText(introduction)).toBeVisible();
+    expect(container.querySelector(".agent-introduction img")).toBeNull();
+    expect(screen.queryByText("agent 上报信息")).toBeNull();
+  });
+
   it("按真实任务、请求与审批计数，进入独立详情并在返回后恢复卡片焦点", async () => {
     const state = platformState();
     state.agents = [

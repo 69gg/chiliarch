@@ -690,6 +690,48 @@ async def test_outbound_client_completes_tasks_through_real_fallback(
         await stop_client(client, runner)
 
 
+@pytest.mark.parametrize("transport", ["ws", "sse", "poll"])
+async def test_first_heartbeat_introduces_paired_identity_after_reconnect(
+    live: LiveServer, tmp_path: Path, transport: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pairing = await live.app.state.service.execute("create_pairing_code", {})
+    path = tmp_path / "introduction-client.db"
+    description = "我是校验助手，只按本机授权执行任务。"
+    received = asyncio.Event()
+    original_receive = live.app.state.service.receive
+
+    async def observe(agent_id: str, envelope: Envelope) -> JsonObject:
+        result: JsonObject = await original_receive(agent_id, envelope)
+        if (
+            envelope.type == "heartbeat"
+            and envelope.payload["metadata"].get("introduction") == description
+        ):
+            received.set()
+        return result
+
+    monkeypatch.setattr(live.app.state.service, "receive", observe)
+    paired = await AgentClient.pair(
+        live.url, pairing["code"], "reader", "isolated", path, introduction=description
+    )
+    for client in (paired, await AgentClient.from_state(path)):
+        received.clear()
+        client.options = live.settings.transport
+        runner = asyncio.create_task(client.run(preferred=transport))
+        try:
+            # Wait for the actual received heartbeat, not a sleep-based assumption.
+            await asyncio.wait_for(received.wait(), 5)
+            view = (await live.app.state.service.execute("list_agents", {}))["agents"][0]
+            assert view["introduction"] == description
+            assert view["transport"] == transport
+            assert view["capabilities"] == []
+        finally:
+            await stop_client(client, runner)
+        # Clear telemetry between connections: the restored client must send it again.
+        await live.app.state.service.receive(
+            view["id"], Envelope(type="heartbeat", payload={"metadata": {"introduction": None}})
+        )
+
+
 async def test_server_queue_survives_full_app_restart(live: LiveServer, tmp_path: Path) -> None:
     calls: list[str] = []
 

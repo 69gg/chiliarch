@@ -8,6 +8,8 @@ GitHub 功能默认开启，可在“配置 → GitHub 功能”关闭；普通�
 
 平台部署在一台机器上；每台 agent 机器运行一个共享守护进程，管理多个独立 agent。**连接始终由 agent 主动发起**，agent 机器无需开放入站端口。支持 Windows、macOS、Linux，HTTP 和 HTTPS 均可使用。
 
+从 0.5.0 起，参考客户端每次连接都会随首个心跳介绍自己，管理页面和总管都能查看。配对时可通过 `--introduction` 指定用途；省略时根据已配对名称和运行方式生成简短介绍，不额外调用模型。旧客户端继续兼容，外部客户端接法见[协议自我介绍](docs/protocol.md#连接自我介绍)。
+
 ```mermaid
 flowchart LR
     U[你 / WebUI] <--> P[Chiliarch 平台与总管 AI]
