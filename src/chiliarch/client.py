@@ -61,6 +61,16 @@ class ClientStore:
         self.changed = asyncio.Event()
 
     async def open(self) -> None:
+        try:
+            # aiosqlite's worker can finish connect/DDL after its caller is
+            # cancelled. Retain ownership until initialization settles so the
+            # caller never loses an open connection before entering its finally.
+            await self._settle(self._initialize())
+        except BaseException:
+            await self._settle(self.close())
+            raise
+
+    async def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = await aiosqlite.connect(self.path)
         os.chmod(self.path, 0o600)

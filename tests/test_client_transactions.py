@@ -14,6 +14,81 @@ from chiliarch.client import ClientStore
 from chiliarch.protocol import Envelope
 
 
+@pytest.mark.parametrize("phase", ["connect", "schema"])
+async def test_cancelled_initialization_closes_the_connection_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    store = ClientStore(tmp_path / "initialization.sqlite")
+    reached, release = asyncio.Event(), asyncio.Event()
+    connections: list[aiosqlite.Connection] = []
+    connect = aiosqlite.Connection._connect
+    executescript = aiosqlite.Connection.executescript
+
+    async def gated_connect(connection: aiosqlite.Connection) -> aiosqlite.Connection:
+        opened = await connect(connection)
+        connections.append(opened)
+        if phase == "connect":
+            reached.set()
+            await release.wait()
+        return opened
+
+    async def gated_schema(connection: aiosqlite.Connection, sql: str) -> aiosqlite.Cursor:
+        cursor = await executescript(connection, sql)
+        if phase == "schema":
+            reached.set()
+            await release.wait()
+        return cursor
+
+    monkeypatch.setattr(aiosqlite.Connection, "_connect", gated_connect)
+    monkeypatch.setattr(aiosqlite.Connection, "executescript", gated_schema)
+    opening = asyncio.create_task(store.open())
+    try:
+        async with asyncio.timeout(3):
+            await reached.wait()
+            opening.cancel()
+            await asyncio.sleep(0)
+            opening.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await opening
+        assert store.connection is None
+        assert len(connections) == 1
+        with pytest.raises(ValueError, match="no active connection"):
+            await connections[0].execute("SELECT 1")
+        # A cancelled initial connection cannot poison the persisted mailbox.
+        await store.open()
+        assert await store.identity() == {}
+    finally:
+        release.set()
+        await asyncio.gather(opening, return_exceptions=True)
+        await store.close()
+        for connection in connections:
+            await connection.close()
+
+
+async def test_failed_initialization_closes_the_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ClientStore(tmp_path / "failed-initialization.sqlite")
+    connections: list[aiosqlite.Connection] = []
+
+    async def invalid_schema(connection: aiosqlite.Connection, sql: str) -> aiosqlite.Cursor:
+        connections.append(connection)
+        raise aiosqlite.OperationalError("Injected initialization failure")
+
+    monkeypatch.setattr(aiosqlite.Connection, "executescript", invalid_schema)
+    try:
+        with pytest.raises(aiosqlite.OperationalError, match="Injected initialization failure"):
+            await store.open()
+        assert store.connection is None
+        with pytest.raises(ValueError, match="no active connection"):
+            await connections[0].execute("SELECT 1")
+    finally:
+        await store.close()
+        for connection in connections:
+            await connection.close()
+
+
 @pytest.mark.parametrize("operation", ["accept", "acknowledge", "enqueue"])
 async def test_cancelled_write_rolls_back_before_next_mailbox_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str

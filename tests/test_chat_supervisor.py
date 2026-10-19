@@ -16,7 +16,7 @@ from sqlalchemy import select
 from test_ai_providers import SSE, chat, text_response
 
 from chiliarch.ai import Provider
-from chiliarch.chat import AgentInbox, ChatMessage, ChatRun, Supervisor
+from chiliarch.chat import AgentInbox, ChatEvent, ChatMessage, ChatRun, Supervisor
 from chiliarch.config import Settings, SettingsManager
 from chiliarch.database import Database, OperationRecord
 from chiliarch.protocol import Envelope
@@ -89,22 +89,53 @@ class Upstream:
         )
 
 
-async def wait_status(supervisor: Supervisor, run_id: str, status: str) -> JSONObject:
-    async with asyncio.timeout(5):
-        # Subscribe before checking the durable state: completion cannot fall
-        # between the read and wait. Only persisted events trigger another read,
-        # avoiding a stream of SQLite sessions competing with the actual run.
-        async with supervisor.condition:
-            while True:
-                result = await supervisor.get_run(run_id)
-                if result["status"] == status:
-                    return result
-                if (
-                    result["status"] in {"failed", "interrupted", "cancelled"}
-                    and status != result["status"]
-                ):
-                    raise AssertionError(result)
-                await supervisor.condition.wait()
+async def wait_status(
+    supervisor: Supervisor,
+    run_id: str,
+    status: str,
+    *,
+    inactivity_timeout: float = 5,
+    total_timeout: float = 30,
+) -> JSONObject:
+    result: JSONObject = {}
+    cursor, last_event = 0, None
+    loop = asyncio.get_running_loop()
+    try:
+        async with asyncio.timeout(total_timeout), asyncio.timeout(inactivity_timeout) as idle:
+            # Subscribe before reading: completion cannot fall between the read
+            # and wait. Only this run's durable progress renews the idle budget;
+            # another run or a spurious wake-up cannot keep a stalled test alive.
+            async with supervisor.condition:
+                while True:
+                    result = await supervisor.get_run(run_id)
+                    if result["status"] == status:
+                        return result
+                    if result["status"] in {"failed", "interrupted", "cancelled"}:
+                        raise AssertionError(result)
+                    async with supervisor.db.sessions() as session:
+                        progress = (
+                            await session.execute(
+                                select(ChatEvent.seq, ChatEvent.type)
+                                .where(ChatEvent.run_id == run_id)
+                                .order_by(ChatEvent.seq.desc())
+                                .limit(1)
+                            )
+                        ).first()
+                    if progress is not None and progress.seq > cursor:
+                        cursor, last_event = progress.seq, progress.type
+                        idle.reschedule(loop.time() + inactivity_timeout)
+                    await supervisor.condition.wait()
+    except TimeoutError as error:
+        task = supervisor.tasks.get(run_id)
+        frames = (
+            [f"{frame.f_code.co_name}:{frame.f_lineno}" for frame in task.get_stack()]
+            if task is not None
+            else []
+        )
+        raise TimeoutError(
+            f"Run did not reach {status}: status={result.get('status')}, "
+            f"event_seq={cursor}, event_type={last_event}, task_stack={frames}"
+        ) from error
 
 
 def manager(mode: str = "ask", model: str = "test") -> SettingsManager:
