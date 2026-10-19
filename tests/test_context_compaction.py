@@ -89,6 +89,7 @@ class CompactionUpstream:
         self.mode, self.tool_first = mode, tool_first
         self.business: list[JSON] = []
         self.summaries: list[JSON] = []
+        self.business_summary_counts: list[int] = []
         self.business_usage: list[tuple[int, int]] = []
         self.summary = (
             "目标：保存状态并继续核对。change_state 已完成时不重复；未审批操作必须等待用户许可。"
@@ -103,6 +104,7 @@ class CompactionUpstream:
         body: JSON = json.loads(request.content)
         if body.get("tools"):
             self.business.append(body)
+            self.business_summary_counts.append(len(self.summaries))
             if len(self.business) == 10:
                 self.all_business_started.set()
             if self.business_gate is not None:
@@ -251,10 +253,16 @@ async def test_compaction_waits_for_approval_preserves_native_pairs_and_survives
         await db.close()
 
 
-async def test_large_legacy_history_and_no_usage_are_compacted_in_bounded_batches(
+@pytest.mark.parametrize(
+    "post_turn_tokens", [None, THRESHOLD], ids=["estimated-usage", "reported-threshold"]
+)
+async def test_large_legacy_history_is_compacted_in_bounded_batches(
     tmp_path: Path,
+    post_turn_tokens: int | None,
 ) -> None:
     upstream = CompactionUpstream()
+    if post_turn_tokens is not None:
+        upstream.business_usage = [(post_turn_tokens - 50, 50)]
     db, _, _, supervisor = await setup(tmp_path, upstream)
     try:
         conversation = await supervisor.create_conversation(title="历史记录")
@@ -273,23 +281,28 @@ async def test_large_legacy_history_and_no_usage_are_compacted_in_bounded_batche
                 )
         sent = await supervisor.send_message(conversation["id"], "继续核对，保留所有已有任务的结论")
         await wait_status(supervisor, sent["run_id"], "completed")
-        assert len(upstream.summaries) > 1
+        # Answering can cross the threshold again. Each compact_context call
+        # numbers its own input records from zero, so only reconstruct the
+        # initial legacy window from summaries preceding the business request.
+        initial_summaries = upstream.summaries[: upstream.business_summary_counts[0]]
+        assert len(initial_summaries) > 1
         records: dict[int, dict[int, str]] = {}
-        for body in upstream.summaries:
+        for body in initial_summaries:
             fragments = body["messages"][-1]["content"].split(
                 "\nConversation record fragments:\n", 1
             )[1]
             for line in fragments.splitlines():
                 fragment = json.loads(line)
-                records.setdefault(fragment["record"], {})[fragment["part"]] = fragment["data"]
+                parts = records.setdefault(fragment["record"], {})
+                assert fragment["part"] not in parts
+                parts[fragment["part"]] = fragment["data"]
         restored = [
             json.loads("".join(parts[index] for index in sorted(parts)))
             for _, parts in sorted(records.items())
         ]
         assert len(restored) == 241
-        assert [record["content"] for record in restored[:-1]] == [
-            f"历史记录 {index}：" + "中文资料" * 100 for index in range(240)
-        ]
+        for index, record in enumerate(restored[:-1]):
+            assert record["content"] == f"历史记录 {index}：" + "中文资料" * 100
         assert restored[-1]["content"] == "继续核对，保留所有已有任务的结论"
         provider = upstream.provider(supervisor.settings_manager.snapshot().model)
         try:
@@ -309,7 +322,24 @@ async def test_large_legacy_history_and_no_usage_are_compacted_in_bounded_batche
         assert len(original_question) < 240
         snapshot = await supervisor.get_conversation(conversation["id"])
         assert len(snapshot["messages"]) == 242
-        assert any(event["type"] == "context_compacted" for event in snapshot["events"])
+        for index, message in enumerate(snapshot["messages"][:240]):
+            assert message["content"] == f"历史记录 {index}：" + "中文资料" * 100
+        assert snapshot["messages"][-2]["content"] == "继续核对，保留所有已有任务的结论"
+        assert snapshot["messages"][-1]["content"] == "核对完成。"
+        compacted = [event for event in snapshot["events"] if event["type"] == "context_compacted"]
+        assert compacted and len(upstream.business) == 1
+        if post_turn_tokens is not None:
+            assert len(compacted) == 2
+            assert compacted[-1]["data"]["tokens_before"] == post_turn_tokens
+            assert len(upstream.summaries) > len(initial_summaries)
+        async with db.sessions() as session:
+            run = await session.get(ChatRun, sent["run_id"])
+            assert run is not None and run.history[0]["compacted"]
+            assert run.history[-1]["content"] == "核对完成。"
+            assert any(
+                message.get("content") == "继续核对，保留所有已有任务的结论"
+                for message in run.history
+            )
     finally:
         await supervisor.stop()
         await db.close()
