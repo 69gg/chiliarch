@@ -7,6 +7,7 @@ import json
 import secrets
 import subprocess
 import sys
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -38,6 +39,84 @@ from chiliarch.protocol import Envelope
 WORKSPACE = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("cancel_shutdown", [False, True])
+async def test_ready_does_not_wait_for_startup_refresh_and_shutdown_retains_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_shutdown: bool,
+) -> None:
+    from filelock import FileLock, Timeout
+
+    directory = tmp_path / "slow startup refresh"
+    entered, closed = asyncio.Event(), asyncio.Event()
+    release, finished = threading.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    original_close = DaemonRuntime.close
+
+    class Startup:
+        def __init__(self, path: Path) -> None:
+            assert path == directory.resolve()
+
+        def refresh(self) -> bool:
+            loop.call_soon_threadsafe(entered.set)
+            try:
+                assert release.wait(10), "The test must release the native refresh"
+                with pytest.raises(Timeout):
+                    with FileLock(str(directory / "daemon.lock"), timeout=0):
+                        pytest.fail("Refresh outlived daemon directory ownership")
+                return False
+            finally:
+                finished.set()
+
+    async def close(runtime: DaemonRuntime) -> None:
+        await original_close(runtime)
+        closed.set()
+
+    monkeypatch.setattr("chiliarch.daemon.ServiceManager", Startup)
+    monkeypatch.setattr(DaemonRuntime, "close", close)
+    running = asyncio.create_task(run_daemon(directory))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        async with DaemonClient(directory) as client:
+            async with asyncio.timeout(5):
+                while True:
+                    if running.done():
+                        running.result()
+                    try:
+                        health = await client.health()
+                        break
+                    except DaemonError:
+                        await asyncio.sleep(0.01)
+            assert health["status"] == "ok"
+            assert not finished.is_set()
+            await client.shutdown()
+        await asyncio.wait_for(closed.wait(), 5)
+        if cancel_shutdown:
+            running.cancel()
+            await asyncio.sleep(0)
+            running.cancel()
+            await asyncio.sleep(0)
+        assert not running.done()
+        with pytest.raises(Timeout):
+            with FileLock(str(directory / "daemon.lock"), timeout=0):
+                pytest.fail("Shutdown released ownership while native refresh was running")
+        release.set()
+        if cancel_shutdown:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(running), 5)
+        else:
+            await asyncio.wait_for(asyncio.shield(running), 5)
+        assert finished.is_set()
+        assert not (directory / "runtime.json").exists()
+        with FileLock(str(directory / "daemon.lock"), timeout=0):
+            pass
+    finally:
+        release.set()
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
 @pytest.mark.parametrize("refresh_result", [True, False, "unavailable", "readonly"])
 async def test_daemon_refreshes_owned_startup_without_changing_user_configuration(
     tmp_path: Path,
@@ -59,7 +138,9 @@ async def test_daemon_refreshes_owned_startup_without_changing_user_configuratio
         def refresh(self) -> bool:
             from filelock import FileLock, Timeout
 
-            assert config_file.read_bytes() == original_config
+            assert (
+                json.loads(config_file.read_bytes()).items() >= json.loads(original_config).items()
+            )
             with pytest.raises(Timeout):
                 with FileLock(str(self.path / "daemon.lock"), timeout=0):
                     pytest.fail("Only the daemon owning the directory may refresh its startup")
@@ -87,6 +168,8 @@ async def test_daemon_refreshes_owned_startup_without_changing_user_configuratio
                     except DaemonError:
                         await asyncio.sleep(0.01)
             assert health["status"] == "ok"
+            await client.shutdown()
+            await asyncio.wait_for(asyncio.shield(running), 10)
             assert refreshed == [directory.resolve()]
             # Daemon startup already persists model defaults; the saved custom
             # values survive both startup reconciliation and normalization.
@@ -120,8 +203,6 @@ async def test_daemon_refreshes_owned_startup_without_changing_user_configuratio
                     # Native command output may contain captured environment
                     # data; retain a safe reason and stack, not exception text.
                     assert "private diagnostic text" not in json.dumps(failure)
-            await client.shutdown()
-            await asyncio.wait_for(asyncio.shield(running), 10)
     finally:
         if not running.done():
             running.cancel()

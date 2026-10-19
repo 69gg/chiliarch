@@ -357,6 +357,28 @@ def create_daemon_app(runtime: DaemonRuntime) -> FastAPI:
     return app
 
 
+async def _refresh_startup(directory: Path) -> None:
+    try:
+        refreshed = await asyncio.to_thread(ServiceManager(directory).refresh)
+    except (ServiceError, OSError) as error:
+        logger.warning(
+            "Login startup definition could not be refreshed; daemon remains available",
+            extra={
+                "event": "daemon.startup_refresh_failed",
+                "reason": error.reason if isinstance(error, ServiceError) else "filesystem_error",
+                "error_type": type(error).__name__,
+                "errno": error.errno if isinstance(error, OSError) else None,
+            },
+            exc_info=True,
+        )
+    else:
+        if refreshed:
+            logger.info(
+                "Login startup definition updated",
+                extra={"event": "daemon.startup_refreshed"},
+            )
+
+
 async def run_daemon(directory: Path) -> None:
     directory = await asyncio.to_thread(lambda: directory.expanduser().resolve())
     directory.mkdir(parents=True, exist_ok=True)
@@ -369,32 +391,11 @@ async def run_daemon(directory: Path) -> None:
     runtime_file = directory / "runtime.json"
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     runtime: DaemonRuntime | None = None
+    refresher: asyncio.Task[None] | None = None
+    watcher: asyncio.Task[None] | None = None
     try:
         runtime = DaemonRuntime(directory)
         configure_logging(runtime.configuration.logs, shared=True)
-        # Reconcile owned login entries with this version before serving. This
-        # does not restart this process or re-enable deliberately disabled tasks.
-        try:
-            refreshed = await asyncio.to_thread(ServiceManager(directory).refresh)
-        except (ServiceError, OSError) as error:
-            logger.warning(
-                "Login startup definition could not be refreshed; continuing daemon startup",
-                extra={
-                    "event": "daemon.startup_refresh_failed",
-                    "reason": error.reason
-                    if isinstance(error, ServiceError)
-                    else "filesystem_error",
-                    "error_type": type(error).__name__,
-                    "errno": error.errno if isinstance(error, OSError) else None,
-                },
-                exc_info=True,
-            )
-        else:
-            if refreshed:
-                logger.info(
-                    "Login startup definition updated",
-                    extra={"event": "daemon.startup_refreshed"},
-                )
         listener.bind(("127.0.0.1", runtime.configuration.port))
         listener.setblocking(False)
         server = uvicorn.Server(
@@ -420,19 +421,44 @@ async def run_daemon(directory: Path) -> None:
             await runtime.shutdown.wait()
             server.should_exit = True
 
+        # Login-entry maintenance is optional and must not consume the health
+        # startup budget. Keep its thread owned until it has actually finished.
+        refresher = asyncio.create_task(_refresh_startup(directory))
         watcher = asyncio.create_task(request_shutdown())
         logger.info(
             "Daemon started", extra={"event": "daemon.started", "directory": str(directory)}
         )
-        try:
-            await server.serve(sockets=[listener])
-        finally:
-            watcher.cancel()
-            await asyncio.gather(watcher, return_exceptions=True)
+        await server.serve(sockets=[listener])
     finally:
-        if runtime is not None:
-            await runtime.close()
-        runtime_file.unlink(missing_ok=True)
-        listener.close()
-        close_logging()
-        await asyncio.to_thread(owner.release)
+
+        async def cleanup() -> None:
+            try:
+                if watcher is not None:
+                    watcher.cancel()
+                    await asyncio.gather(watcher, return_exceptions=True)
+                if runtime is not None:
+                    await runtime.close()
+            finally:
+                try:
+                    if refresher is not None:
+                        # Cancelling to_thread only abandons the awaiter, not
+                        # its native command. Do not release ownership first.
+                        await refresher
+                finally:
+                    try:
+                        listener.close()
+                        close_logging()
+                        runtime_file.unlink(missing_ok=True)
+                    finally:
+                        await asyncio.to_thread(owner.release)
+
+        closing = asyncio.create_task(cleanup())
+        interrupted = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                interrupted = True
+        closing.result()
+        if interrupted:
+            raise asyncio.CancelledError

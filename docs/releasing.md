@@ -42,6 +42,10 @@ CI 保留 Linux、macOS、Windows × Python 3.11、3.12、3.13 的 9 个组合�
 
 原生许可测试先用真实协议的 pending 通知确认启动、握手已完成（最多 30 秒，提前退出立即失败），随后保留 5 秒持久请求观察和批准未回答时的取消、进程退出断言；受控时钟覆盖启动超过 5 秒的情况，不靠真实长 sleep。Windows 查询测试仍执行完整生产 PowerShell 查询和 UTF-8 管道读取；无控制台启动由同一 `_execute` 启动器下的原生 `GetConsoleWindow` 探针单独验证，避免为每次查询额外编译 C#。这些测试不创建用户计划任务、不调用真实模型。
 
+守护进程门控回归用线程事件阻塞启动项刷新，同时访问真实回环健康接口，再验证正常关闭和重复取消仍保持目录锁直到刷新完成。Windows 查询回归仅替换 `Schedule.Service` COM 对象，执行真实 PowerShell 的本机连接、精确任务查找和 UTF-8 输出；仅 `GetTask` 的 `ERROR_FILE_NOT_FOUND` 视为缺失，连接、目录和权限错误必须失败。另有仅在一次性 Windows CI 上运行的禁用任务注册／迁移／删除测试，仍核对环境、启用状态、触发器和清理；真实 detached daemon 测试仍核对健康复用、停止及子进程退出。生产原生命令 30 秒、健康启动默认 20 秒均未放宽。
+
+Task Scheduler 接口依据微软的 [Connect](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskservice-connect)、[GetTask](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-gettask)、[XML](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-xml)、[State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state) 与 [Enabled](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-enabled) 文档；不依赖 ScheduledTasks 模块的全机 CIM 枚举。
+
 ## 同步版本与 CHANGELOG
 
 下一补丁版本示例：

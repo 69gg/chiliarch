@@ -59,6 +59,13 @@ _WINDOWS_LEGACY_BOOTSTRAP = (
 _WINDOWS_BOOTSTRAP = _WINDOWS_LEGACY_BOOTSTRAP.replace(
     "runpy.run_module(", "os.environ['CHILIARCH_BACKGROUND']='1';runpy.run_module("
 )
+# Connect locally as the current user. Avoid loading ScheduledTasks/CIM and
+# enumerating unrelated system tasks just to discover this directory's entry.
+_WINDOWS_SCHEDULER = (
+    "$ErrorActionPreference='Stop'; "
+    "$scheduler=New-Object -ComObject 'Schedule.Service'; "
+    "$scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); "
+)
 
 
 class ServiceError(RuntimeError):
@@ -231,7 +238,7 @@ class ServiceManager:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Get-ScheduledTask -ErrorAction Stop | Out-Null",
+                _WINDOWS_SCHEDULER,
             ]
         else:
             return False
@@ -502,11 +509,12 @@ class ServiceManager:
     def _windows_task(self) -> dict[str, Any]:
         # The task name is internally generated ASCII, never arbitrary user/script input.
         script = (
-            "$ErrorActionPreference='Stop'; "
-            f"$t=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {{$_.TaskName -eq '{self.name}'}}; "
+            _WINDOWS_SCHEDULER + f"$t=$null; try {{$t=$folder.GetTask('{self.name}')}} catch {{"
+            # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), including the .NET
+            # exception wrapped by PowerShell. Other COM failures must surface.
+            "if($_.Exception.GetBaseException().HResult -ne -2147024894){throw}}; "
             "$json=if($null -eq $t){'{}'}else{"
-            f"@{{xml=(Export-ScheduledTask -TaskPath '\\' -TaskName '{self.name}'); "
-            "running=($t.State -eq 'Running'); enabled=[bool]$t.Settings.Enabled} | ConvertTo-Json -Compress}; "
+            "@{xml=$t.Xml; running=($t.State -eq 4); enabled=[bool]$t.Enabled} | ConvertTo-Json -Compress}; "
             # Windows PowerShell uses .NET Framework, where OutputEncoding's
             # setter requires a console even when stdout is redirected. Write
             # UTF-8 directly to the pipe so CREATE_NO_WINDOW remains supported.
